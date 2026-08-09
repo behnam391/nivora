@@ -9,3 +9,6 @@ android/.libxray-download/
 android/.libxray-source/
 android/.xray-core-source/
 android/app/libs/*.aar
+*.jks
+*.keystore
+android/signing.properties

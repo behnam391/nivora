@@ -17,4 +17,4 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - run: chmod +x android/gradlew && android/gradlew -p android assembleDebug
+      - run: chmod +x android/gradlew && android/gradlew -p android testDebugUnitTest lintDebug assembleDebug

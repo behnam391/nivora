@@ -1,5 +1,6 @@
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
 android {
     namespace 'ir.nivora.app'
@@ -8,15 +9,60 @@ android {
         applicationId 'ir.nivora.app'
         minSdk 26
         targetSdk 36
-        versionCode 12
-        versionName '0.4.9'
+        versionCode 13
+        versionName '0.5.0'
+        ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
         def apiUrl = providers.gradleProperty('NIVORA_API_BASE_URL').getOrElse('https://b.nivorali.com')
         buildConfigField 'String', 'API_BASE_URL', '"' + apiUrl + '"'
     }
-    buildTypes { release { minifyEnabled true; proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro' } }
+    def releaseStore = System.getenv('NIVORA_KEYSTORE_PATH')
+    def releaseStorePassword = System.getenv('NIVORA_KEYSTORE_PASSWORD')
+    def releaseKeyAlias = System.getenv('NIVORA_KEY_ALIAS')
+    def releaseKeyPassword = System.getenv('NIVORA_KEY_PASSWORD')
+    signingConfigs {
+        if (releaseStore && releaseStorePassword && releaseKeyAlias && releaseKeyPassword) {
+            nivoraRelease {
+                storeFile file(releaseStore)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+                enableV4Signing true
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (signingConfigs.findByName('nivoraRelease')) signingConfig signingConfigs.nivoraRelease
+        }
+    }
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a', 'armeabi-v7a'
+            universalApk true
+        }
+    }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = '17' }
-    buildFeatures { buildConfig true }
+    buildFeatures { buildConfig true; compose true }
 }
 
-dependencies { implementation files('libs/libXray-26.7.28.aar') }
+dependencies {
+    implementation files('libs/libXray-26.7.28.aar')
+    def composeBom = platform('androidx.compose:compose-bom:2024.12.01')
+    implementation composeBom
+    androidTestImplementation composeBom
+    implementation 'androidx.activity:activity-compose:1.10.1'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.material:material-icons-extended'
+    implementation 'androidx.compose.runtime:runtime-saveable'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    debugImplementation 'androidx.compose.ui:ui-tooling'
+    testImplementation 'junit:junit:4.13.2'
+}

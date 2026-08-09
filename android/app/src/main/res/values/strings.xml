@@ -1,1 +1,3 @@
-<resources><string name="app_name">Nivora</string><string name="vpn_notification">اتصال امن Nivora فعال است</string></resources>
+<resources>
+    <string name="app_name">Nivora</string>
+</resources>

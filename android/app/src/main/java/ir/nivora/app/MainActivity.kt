@@ -1,45 +1,391 @@
 package ir.nivora.app
 
-import android.app.*
+import android.Manifest
+import android.app.Activity
 import android.content.*
-import android.graphics.Color
+import android.content.pm.PackageManager
 import android.net.VpnService
-import android.os.*
-import android.text.InputType
-import android.view.*
-import android.widget.*
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.activity.compose.setContent
+import androidx.core.content.ContextCompat
 import ir.nivora.app.data.*
+import ir.nivora.app.ui.*
 import ir.nivora.app.vpn.NivoraVpnService
-import java.net.InetSocketAddress
-import java.net.Socket
-import java.text.NumberFormat
-import java.util.Locale
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.util.concurrent.atomic.AtomicLong
 
-class MainActivity:Activity(){
- private val api=ApiClient(BuildConfig.API_BASE_URL);private val main=Handler(Looper.getMainLooper());private val session by lazy{getSharedPreferences("session",0)};private val vpn by lazy{getSharedPreferences("vpn",0)};private val money=NumberFormat.getNumberInstance(Locale.forLanguageTag("fa-IR"));private var selectedUrl:String?=null
- private val vpnReceiver=object:BroadcastReceiver(){override fun onReceive(context:Context?,intent:Intent?){if(session.getString("token",null)!=null)main.postDelayed({load()},2500)}}
- override fun onCreate(state:Bundle?){super.onCreate(state);registerReceiver(vpnReceiver,IntentFilter("ir.nivora.app.VPN_STATE"),RECEIVER_NOT_EXPORTED);if(vpn.getString("state","")=="connected"&&!NivoraVpnService.isCoreRunning())vpn.edit().putString("state","disconnected").apply();if(session.getString("token",null)==null)login() else load()}
- override fun onDestroy(){unregisterReceiver(vpnReceiver);super.onDestroy()}
- private fun root()=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(40,40,40,40);gravity=Gravity.CENTER_HORIZONTAL;layoutDirection=View.LAYOUT_DIRECTION_RTL;setBackgroundColor(Color.rgb(244,248,246))}
- private fun wide()=LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,8,0,8)}
- private fun input(h:String,pass:Boolean=false)=EditText(this).apply{hint=h;textSize=17f;if(pass)inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD}
- private fun text(s:String,size:Float=16f)=TextView(this).apply{text=s;textSize=size;setTextColor(Color.rgb(18,50,40));setPadding(4,8,4,8)}
- private fun button(s:String,fn:()->Unit)=Button(this).apply{text=s;setTextColor(Color.rgb(3,45,32));setBackgroundColor(Color.rgb(42,220,160));setOnClickListener{fn()}}
- private fun login(message:String=""){val b=root();b.addView(text("Nivora",30f));b.addView(text("ورود به حساب مشتری"));val p=input("شماره موبایل");val w=input("رمز عبور",true);val e=text(message).apply{setTextColor(Color.RED)};listOf(p,w,e).forEach{b.addView(it,wide())};b.addView(button("ورود"){bg({api.login(p.text.toString(),w.text.toString())},{session.edit().putString("token",it.token).apply();load()},{e.text=friendly(it)})},wide());b.addView(button("ساخت حساب جدید"){register()},wide());b.addView(button("بازیابی رمز عبور"){recovery(p.text.toString())},wide());setContentView(b)}
- private fun register(){val b=root();b.addView(text("ساخت حساب Nivora",28f));val n=input("نام و نام خانوادگی");val p=input("شماره موبایل");val w=input("رمز عبور (حداقل ۸ کاراکتر)",true);val e=text("").apply{setTextColor(Color.RED)};listOf(n,p,w,e).forEach{b.addView(it,wide())};b.addView(button("ثبت‌نام"){bg({api.register(n.text.toString(),p.text.toString(),w.text.toString())},{session.edit().putString("token",it.token).apply();load()},{e.text=friendly(it)})},wide());b.addView(button("بازگشت"){login()},wide());setContentView(b)}
- private fun recovery(initial:String){val p=input("شماره موبایل").apply{setText(initial)};AlertDialog.Builder(this).setTitle("بازیابی رمز عبور").setMessage("درخواست برای مدیریت ارسال می‌شود و بعد از احراز هویت رمز تازه دریافت می‌کنید.").setView(p).setPositiveButton("ثبت درخواست"){_,_->bg({api.requestPasswordReset(p.text.toString());true},{toast("درخواست بازیابی ثبت شد")},{toast(friendly(it))})}.setNegativeButton("انصراف",null).show()}
- private fun load(){val b=root();b.addView(ProgressBar(this));setContentView(b);val t=session.getString("token","")!!;bg({api.account(t) to api.plans()},{home(it.first,it.second)},{if(it.message=="UNAUTHORIZED"){session.edit().clear().apply();login("نشست ورود منقضی شده؛ دوباره وارد شوید.")}else loadError(friendly(it))})}
- private fun loadError(message:String){val b=root();b.addView(text("ارتباط موقتاً برقرار نشد",24f));b.addView(text(message),wide());b.addView(button("تلاش دوباره"){load()},wide());b.addView(button("خروج از حساب"){session.edit().clear().apply();login()},wide());setContentView(b)}
- private fun home(a:Account,plans:List<Plan>){val scroll=ScrollView(this);val b=root().apply{gravity=Gravity.TOP};val token=session.getString("token","")!!;b.addView(text("سلام ${a.name}",27f));b.addView(text("موجودی کیف پول: ${money.format(a.balanceToman)} تومان"),wide());b.addView(button("شارژ کیف پول"){topup(token)},wide());b.addView(text("اشتراک‌های من",23f));val active=a.subscriptions.filter{it.url!=null&&it.status=="active"};if(active.isEmpty())b.addView(text("هنوز اشتراک فعالی ندارید."))
-  active.forEachIndexed{i,s->if(selectedUrl==null)selectedUrl=s.url;val c=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(24,20,24,20);setBackgroundColor(Color.WHITE);addView(text("${s.planName}${s.locationName?.let{" · $it"}?:""}",20f));addView(text(if(s.startsOnFirstUse)"زمان: از اولین اتصال محاسبه می‌شود" else "زمان باقی‌مانده: ${s.remainingDays} روز"));addView(text("مصرف: ${gb(s.usedBytes)} از ${gb(s.totalBytes)} گیگابایت · ${s.usagePercent}٪"));addView(ProgressBar(this@MainActivity,null,android.R.attr.progressBarStyleHorizontal).apply{max=1000;progress=(s.usagePercent*10).toInt()});addView(button(if(selectedUrl==s.url)"اشتراک انتخاب‌شده" else "انتخاب برای اتصال"){selectedUrl=s.url;home(a,plans)},wide());addView(button("کپی لینک اشتراک"){copy(s.url!!);toast("لینک کپی شد")},wide());addView(button("تمدید همین اشتراک"){confirmRenew(token,s)},wide())};b.addView(c,wide())}
-  val state=vpn.getString("state","disconnected");b.addView(text("وضعیت اتصال: ${when(state){"connected"->"متصل";"error"->"خطا: ${vpn.getString("error","")}";else->"قطع"}}"));b.addView(button(if(state=="connected")"قطع اتصال" else "اتصال امن"){if(state=="connected")startService(Intent(this,NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP)) else prepareVpn()},wide());b.addView(button("تست پینگ سرور"){ping()},wide());b.addView(text("خرید اشتراک",23f));plans.forEach{p->val c=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(24,20,24,20);setBackgroundColor(Color.WHITE);addView(text("${p.name}\n${p.trafficGb} گیگ · ${p.durationDays} روز · ${p.deviceLimit} دستگاه\n${money.format(p.priceToman)} تومان"));addView(button("خرید و ساخت فوری"){AlertDialog.Builder(this@MainActivity).setTitle("تأیید خرید").setMessage("${money.format(p.priceToman)} تومان از کیف پول کم می‌شود.").setPositiveButton("خرید"){_,_->bg({api.purchase(token,p.id)},{toast("اشتراک ساخته شد");load()},{toast(friendly(it))})}.setNegativeButton("انصراف",null).show()},wide())};b.addView(c,wide())};b.addView(button("خروج"){session.edit().clear().apply();login()},wide());scroll.addView(b);setContentView(scroll)}
- private fun topup(token:String){bg({api.cards()},{cards->val amount=input("مبلغ به تومان").apply{inputType=2};val ref=input("شماره پیگیری واریز");val v=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(30,0,30,0);cards.forEach{addView(text("${it.number.chunked(4).joinToString("  ")}\n${it.holder}${it.bank?.let{b->" · $b"}?:""}"));addView(button("کپی شماره کارت"){copy(it.number)},wide())};addView(amount);addView(ref)};AlertDialog.Builder(this).setTitle("شارژ کیف پول").setView(v).setPositiveButton("ارسال برای تأیید"){_,_->bg({api.topup(token,amount.text.toString().toInt(),ref.text.toString())},{toast("درخواست شارژ ثبت شد")},{toast(friendly(it))})}.setNegativeButton("انصراف",null).show()},{toast(friendly(it))})}
- private fun confirmRenew(token:String,s:Subscription){AlertDialog.Builder(this).setTitle("تمدید ${s.planName}").setMessage("هزینه پلن از کیف پول کم و حجم و زمان به همین اشتراک افزوده می‌شود.").setPositiveButton("تمدید"){_,_->bg({api.renew(token,s.id)},{toast("تمدید انجام شد");load()},{toast(friendly(it))})}.setNegativeButton("انصراف",null).show()}
- private fun ping(){toast("در حال اندازه‌گیری…");bg({val start=System.nanoTime();Socket().use{it.connect(InetSocketAddress("edge.nivorali.com",8443),5000)};((System.nanoTime()-start)/1_000_000)},{toast("پینگ سرور: $it میلی‌ثانیه")},{toast("سرور پاسخ نداد")})}
- private fun prepareVpn(){if(selectedUrl==null){toast("ابتدا یک اشتراک فعال انتخاب کنید");return};val i=VpnService.prepare(this);if(i!=null)startActivityForResult(i,91)else startVpn()}
- override fun onActivityResult(r:Int,c:Int,d:Intent?){super.onActivityResult(r,c,d);if(r==91&&c==RESULT_OK)startVpn()}
- private fun startVpn(){startForegroundService(Intent(this,NivoraVpnService::class.java).putExtra(NivoraVpnService.EXTRA_URL,selectedUrl));toast("در حال برقراری اتصال…")}
- private fun gb(v:Long)=String.format(Locale.US,"%.1f",v/1073741824.0);private fun copy(v:String){(getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Nivora",v))};private fun toast(v:String)=Toast.makeText(this,v,Toast.LENGTH_LONG).show()
- private fun friendly(e:Throwable)=when(e.message){"INVALID_CREDENTIALS"->"شماره یا رمز عبور صحیح نیست";"PHONE_ALREADY_EXISTS"->"این شماره قبلاً ثبت شده";"WEAK_PASSWORD"->"رمز باید حداقل ۸ کاراکتر باشد";"INSUFFICIENT_BALANCE"->"موجودی کیف پول کافی نیست";"NO_CAPACITY"->"ظرفیت این پلن تکمیل است";else->e.message?:"خطا در ارتباط"}
- private fun <T> bg(work:()->T,ok:(T)->Unit,fail:(Throwable)->Unit)=Thread{runCatching(work).onSuccess{main.post{ok(it)}}.onFailure{main.post{fail(it)}}}.start()
+class MainActivity : ComponentActivity(), NivoraActions {
+    private val api = ApiClient(BuildConfig.API_BASE_URL)
+    private val handler = Handler(Looper.getMainLooper())
+    private val noticeIds = AtomicLong()
+    private lateinit var session: SecureSessionStore
+    private val selection by lazy { getSharedPreferences("selection", MODE_PRIVATE) }
+    private val vpnPreferences by lazy { getSharedPreferences("vpn", MODE_PRIVATE) }
+    private var state by mutableStateOf(NivoraUiState())
+    private var receiverRegistered = false
+
+    private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) startSelectedVpn()
+        else showNotice("برای اتصال باید اجازه VPN را تأیید کنید", true)
+    }
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    private val vpnReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val vpnState = vpnPreferences.getString("state", "disconnected") ?: "disconnected"
+            val error = vpnPreferences.getString("error", null)
+            state = state.copy(vpnState = vpnState, vpnError = friendlyVpnError(error))
+            if (vpnState == "connected") handler.postDelayed({ refresh() }, 3_500)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        session = SecureSessionStore(this)
+        registerVpnReceiver()
+        val storedState = vpnPreferences.getString("state", "disconnected") ?: "disconnected"
+        val correctedState = if (storedState in setOf("connected", "connecting") && !NivoraVpnService.isCoreRunning()) "disconnected" else storedState
+        if (correctedState != storedState) vpnPreferences.edit().putString("state", correctedState).remove("error").apply()
+        val signedIn = session.token() != null
+        state = state.copy(signedIn = signedIn, loading = signedIn, vpnState = correctedState, vpnError = friendlyVpnError(vpnPreferences.getString("error", null)))
+        setContent {
+            NivoraTheme {
+                Surface { NivoraApp(state, this@MainActivity) }
+            }
+        }
+        if (signedIn) loadDashboard(initial = true)
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        if (receiverRegistered) unregisterReceiver(vpnReceiver)
+        super.onDestroy()
+    }
+
+    override fun login(phone: String, password: String) = runAction(
+        work = { api.login(phone, password) },
+        success = {
+            session.save(it.token)
+            state = state.copy(signedIn = true, loading = true, loadError = null)
+            loadDashboard(initial = true)
+        }
+    )
+
+    override fun register(name: String, phone: String, password: String) = runAction(
+        work = { api.register(name, phone, password) },
+        success = {
+            session.save(it.token)
+            state = state.copy(signedIn = true, loading = true, loadError = null)
+            loadDashboard(initial = true)
+        }
+    )
+
+    override fun requestPasswordReset(phone: String) = runAction(
+        work = { api.requestPasswordReset(phone) },
+        success = { showNotice("درخواست بازیابی ثبت شد؛ پشتیبانی پس از بررسی با شما هماهنگ می‌کند") }
+    )
+
+    override fun refresh() = loadDashboard(initial = false)
+
+    override fun selectSubscription(subscription: Subscription) {
+        selection.edit().putString("subscription_id", subscription.id).apply()
+        state = state.copy(selectedSubscriptionId = subscription.id, pingMs = null)
+    }
+
+    override fun toggleVpn() {
+        if (state.vpnState == "connected" || state.vpnState == "connecting") {
+            startService(Intent(this, NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP))
+            return
+        }
+        val subscription = state.selectedSubscription
+        if (subscription?.url.isNullOrBlank()) {
+            showNotice("ابتدا یک اشتراک فعال انتخاب کنید", true)
+            return
+        }
+        if (!selection.getBoolean("vpn_disclosure_accepted", false)) {
+            state = state.copy(showVpnDisclosure = true)
+            return
+        }
+        selectSubscription(subscription!!)
+        val permissionIntent = VpnService.prepare(this)
+        if (permissionIntent != null) vpnPermission.launch(permissionIntent) else startSelectedVpn()
+    }
+
+    override fun acceptVpnDisclosure() {
+        selection.edit().putBoolean("vpn_disclosure_accepted", true).apply()
+        state = state.copy(showVpnDisclosure = false)
+        toggleVpn()
+    }
+
+    override fun dismissVpnDisclosure() {
+        state = state.copy(showVpnDisclosure = false)
+    }
+
+    override fun measurePing() {
+        val url = state.selectedSubscription?.url
+        if (url.isNullOrBlank()) {
+            showNotice("برای تست پینگ یک اشتراک فعال انتخاب کنید", true)
+            return
+        }
+        if (state.pingBusy) return
+        state = state.copy(pingBusy = true)
+        background(
+            work = {
+                val endpoint = NetworkTools.endpointFromSubscription(api.subscription(url))
+                    ?: throw ApiException("INVALID_SUBSCRIPTION", 422)
+                NetworkTools.measure(endpoint)
+            },
+            success = { ping -> state = state.copy(pingBusy = false, pingMs = ping); showNotice("تأخیر سرور: $ping میلی‌ثانیه") },
+            failure = { state = state.copy(pingBusy = false); showNotice("اندازه‌گیری پینگ انجام نشد", true) }
+        )
+    }
+
+    override fun purchase(plan: Plan, discountCode: String) = withToken { token ->
+        runAction(
+            work = { api.purchase(token, plan.id, discountCode) },
+            success = { result ->
+                val message = if (result.discountToman > 0) "اشتراک ساخته شد؛ ${result.discountToman} تومان تخفیف اعمال شد" else "اشتراک با موفقیت ساخته شد"
+                showNotice(message)
+                state = state.copy(discount = null)
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
+    override fun validateDiscount(code: String) = withToken { token ->
+        if (code.trim().length < 3) {
+            showNotice("کد تخفیف را کامل وارد کنید", true)
+            return@withToken
+        }
+        runAction(
+            work = { api.validateDiscount(token, code) },
+            success = { state = state.copy(discount = it); showNotice("کد تخفیف معتبر است") }
+        )
+    }
+
+    override fun clearDiscount() {
+        state = state.copy(discount = null)
+    }
+
+    override fun renew(subscription: Subscription) = withToken { token ->
+        runAction(
+            work = { api.renew(token, subscription.id) },
+            success = { showNotice("اشتراک با موفقیت تمدید شد"); loadDashboard(initial = false) }
+        )
+    }
+
+    override fun loadPaymentCards() {
+        if (state.paymentCards.isNotEmpty()) return
+        background(
+            work = api::cards,
+            success = { state = state.copy(paymentCards = it) },
+            failure = { showNotice(friendly(it), true) }
+        )
+    }
+
+    override fun submitTopup(amountToman: Int, reference: String) = withToken { token ->
+        runAction(
+            work = { api.topup(token, amountToman, reference) },
+            success = { showNotice("درخواست شارژ برای بررسی ارسال شد"); loadDashboard(initial = false) }
+        )
+    }
+
+    override fun createTicket(subject: String, body: String) = withToken { token ->
+        runAction(
+            work = { api.createTicket(token, subject, body) },
+            success = { showNotice("تیکت برای پشتیبانی ارسال شد"); loadDashboard(initial = false) }
+        )
+    }
+
+    override fun openTicket(ticket: SupportTicket) = withToken { token ->
+        if (state.ticketLoading) return@withToken
+        state = state.copy(ticketLoading = true)
+        background(
+            work = { api.ticket(token, ticket.id) },
+            success = { state = state.copy(ticketLoading = false, ticketConversation = it) },
+            failure = { state = state.copy(ticketLoading = false); showNotice(friendly(it), true) }
+        )
+    }
+
+    override fun replyTicket(body: String) = withToken { token ->
+        val ticket = state.ticketConversation ?: return@withToken
+        runAction(
+            work = { api.replyTicket(token, ticket.id, body); api.ticket(token, ticket.id) },
+            success = {
+                state = state.copy(ticketConversation = it)
+                showNotice("پاسخ شما ارسال شد")
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
+    override fun closeTicketConversation() {
+        state = state.copy(ticketConversation = null)
+    }
+
+    override fun markNotificationsRead() = withToken { token ->
+        val account = state.account ?: return@withToken
+        if (account.notifications.none { it.readAt == null }) return@withToken
+        state = state.copy(account = account.copy(notifications = account.notifications.map { it.copy(readAt = it.readAt ?: "read") }))
+        background(
+            work = { api.markNotificationsRead(token) },
+            success = { },
+            failure = { if ((it as? ApiException)?.code == "UNAUTHORIZED") logout() }
+        )
+    }
+
+    override fun copyText(value: String, message: String) {
+        if (value.isBlank()) return
+        val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Nivora", value))
+        showNotice(message)
+    }
+
+    override fun logout() {
+        startService(Intent(this, NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP))
+        session.clear()
+        selection.edit().clear().apply()
+        state = NivoraUiState(vpnState = "disconnected")
+    }
+
+    override fun consumeNotice() {
+        state = state.copy(notice = null)
+    }
+
+    private fun startSelectedVpn() {
+        val url = state.selectedSubscription?.url
+        if (url.isNullOrBlank()) return
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        state = state.copy(vpnState = "connecting", vpnError = null)
+        startForegroundService(
+            Intent(this, NivoraVpnService::class.java)
+                .putExtra(NivoraVpnService.EXTRA_URL, url)
+                .putExtra(NivoraVpnService.EXTRA_LABEL, state.selectedSubscription?.locationName ?: state.selectedSubscription?.planName)
+        )
+    }
+
+    private fun loadDashboard(initial: Boolean) {
+        val token = session.token() ?: run { logout(); return }
+        if (state.refreshing || (initial && state.loading && state.account != null)) return
+        state = state.copy(
+            loading = initial && state.account == null,
+            refreshing = !initial,
+            loadError = null
+        )
+        background(
+            work = {
+                val account = api.account(token)
+                val plans = api.plans()
+                val tickets = api.tickets(token)
+                Triple(account, plans, tickets)
+            },
+            success = { (account, plans, tickets) ->
+                val active = account.subscriptions.filter { it.status == "active" && it.url != null }
+                val storedId = selection.getString("subscription_id", null)
+                val selectedId = active.firstOrNull { it.id == storedId }?.id ?: active.firstOrNull()?.id
+                selectedId?.let { selection.edit().putString("subscription_id", it).apply() }
+                state = state.copy(
+                    signedIn = true,
+                    loading = false,
+                    refreshing = false,
+                    account = account,
+                    plans = plans,
+                    tickets = tickets,
+                    selectedSubscriptionId = selectedId,
+                    loadError = null
+                )
+            },
+            failure = { error ->
+                if ((error as? ApiException)?.code == "UNAUTHORIZED") {
+                    session.clear()
+                    state = NivoraUiState(vpnState = state.vpnState)
+                } else {
+                    state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
+                    if (state.account != null) showNotice(friendly(error), true)
+                }
+            }
+        )
+    }
+
+    private fun <T> runAction(work: () -> T, success: (T) -> Unit) {
+        if (state.actionBusy) return
+        state = state.copy(actionBusy = true)
+        background(
+            work,
+            success = { state = state.copy(actionBusy = false); success(it) },
+            failure = { state = state.copy(actionBusy = false); showNotice(friendly(it), true) }
+        )
+    }
+
+    private fun withToken(action: (String) -> Unit) {
+        val token = session.token()
+        if (token == null) logout() else action(token)
+    }
+
+    private fun showNotice(text: String, error: Boolean = false) {
+        state = state.copy(notice = UiNotice(noticeIds.incrementAndGet(), text, error))
+    }
+
+    private fun friendly(error: Throwable): String {
+        val code = (error as? ApiException)?.code ?: error.message.orEmpty()
+        return when (code) {
+            "INVALID_CREDENTIALS" -> "شماره موبایل یا رمز عبور صحیح نیست"
+            "PHONE_ALREADY_EXISTS" -> "این شماره موبایل قبلاً ثبت شده است"
+            "INVALID_ACCOUNT", "INVALID_PHONE" -> "اطلاعات واردشده معتبر نیست"
+            "WEAK_PASSWORD" -> "رمز عبور باید حداقل ۸ کاراکتر باشد"
+            "INSUFFICIENT_BALANCE" -> "موجودی کیف پول کافی نیست"
+            "NO_CAPACITY" -> "ظرفیت این پلن فعلاً تکمیل است"
+            "DISCOUNT_NOT_AVAILABLE" -> "کد تخفیف معتبر یا قابل استفاده نیست"
+            "PROVISION_FAILED" -> "ساخت اشتراک ناموفق بود؛ مبلغ خودکار به کیف پول برگشت"
+            "RENEW_FAILED" -> "تمدید انجام نشد؛ مبلغ خودکار به کیف پول برگشت"
+            "RATE_LIMITED" -> "درخواست‌ها زیاد بود؛ کمی بعد دوباره تلاش کنید"
+            "INVALID_TOPUP" -> "مبلغ یا شماره پیگیری واریز معتبر نیست"
+            "INVALID_TICKET" -> "موضوع و متن پیام را کامل وارد کنید"
+            "INVALID_SERVER_RESPONSE" -> "پاسخ سرور قابل خواندن نبود"
+            else -> when (error) {
+                is SocketTimeoutException -> "پاسخ سرور طول کشید؛ دوباره تلاش کنید"
+                is UnknownHostException, is ConnectException -> "اینترنت یا دسترسی به سرور برقرار نیست"
+                else -> "خطایی رخ داد؛ دوباره تلاش کنید"
+            }
+        }
+    }
+
+    private fun friendlyVpnError(error: String?): String? {
+        if (error.isNullOrBlank()) return null
+        return when {
+            error.contains("subscription", true) -> "دریافت اشتراک ممکن نشد"
+            error.contains("timeout", true) -> "سرور در زمان مناسب پاسخ نداد"
+            error.contains("empty", true) || error.contains("خالی") -> "اشتراک کانفیگ فعالی ندارد"
+            else -> "اتصال امن برقرار نشد؛ دوباره تلاش کنید"
+        }
+    }
+
+    private fun registerVpnReceiver() {
+        val filter = IntentFilter(NivoraVpnService.ACTION_STATE)
+        ContextCompat.registerReceiver(this, vpnReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        receiverRegistered = true
+    }
+
+    private fun <T> background(work: () -> T, success: (T) -> Unit, failure: (Throwable) -> Unit) {
+        Thread {
+            runCatching(work)
+                .onSuccess { handler.post { if (!isFinishing && !isDestroyed) success(it) } }
+                .onFailure { handler.post { if (!isFinishing && !isDestroyed) failure(it) } }
+        }.start()
+    }
 }
