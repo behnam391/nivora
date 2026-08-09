@@ -156,6 +156,19 @@ test('admin resets legacy reseller password and safely deletes only history-free
   r=await fetch(`${base}/api/admin/accounts/${b.id}`,{method:'DELETE',headers:admin});assert.equal(r.status,409);assert.equal((await r.json()).error,'ACCOUNT_HAS_HISTORY');
 });
 
+test('customer password recovery is private, rate-safe and completed by admin', async t => {
+  const {server,base}=await start();t.after(()=>server.close());
+  const admin={authorization:'Bearer test-token','content-type':'application/json'};
+  let r=await fetch(`${base}/api/customer/register`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'مشتری بازیابی',phone:'09121234567',password:'old-password-1'})});
+  assert.equal(r.status,201);
+  r=await fetch(`${base}/api/customer/password-reset-requests`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:'09121234567'})});assert.equal(r.status,202);assert.deepEqual(await r.json(),{accepted:true,message:'اگر حسابی با این شماره وجود داشته باشد، درخواست برای مدیر ارسال می‌شود.'});
+  r=await fetch(`${base}/api/customer/password-reset-requests`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:'09129998888'})});assert.equal(r.status,202);
+  r=await fetch(`${base}/api/admin/password-reset-requests`,{headers:admin});assert.equal(r.status,200);const requests=await r.json();assert.equal(requests.length,1);assert.equal(requests[0].phone,'09121234567');
+  r=await fetch(`${base}/api/admin/password-reset-requests/${requests[0].id}/resolve`,{method:'POST',headers:admin,body:JSON.stringify({password:'new-password-2'})});assert.equal(r.status,200);
+  r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:'09121234567',password:'old-password-1'})});assert.equal(r.status,401);
+  r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:'09121234567',password:'new-password-2'})});assert.equal(r.status,200);
+});
+
 test('admin manages locations, plan routing and safe deletion', async t => {
   const {server,base}=await start();t.after(()=>server.close());const admin={authorization:'Bearer test-token','content-type':'application/json'};
   let r=await fetch(`${base}/api/admin/plans`,{method:'POST',headers:admin,body:JSON.stringify({name:'پلن لوکیشن',priceIrr:100000,trafficGb:20,durationDays:30,deviceLimit:1})});const plan=await r.json();

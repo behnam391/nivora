@@ -84,6 +84,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/account.css'){const css=await readFile(resolve('public/account.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/account-extra.css'){const css=await readFile(resolve('public/account-extra.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/account.js'){const js=await readFile(resolve('public/account.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
+      if(req.method==='GET'&&path==='/account-recovery.js'){const js=await readFile(resolve('public/account-recovery.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/reseller.css'){const css=await readFile(resolve('public/reseller.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/reseller-extra.css'){const css=await readFile(resolve('public/reseller-extra.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/reseller.js'){const js=await readFile(resolve('public/reseller.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
@@ -116,6 +117,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/admin-topups.js'){const js=await readFile(resolve('public/admin-topups.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-topups.css'){const css=await readFile(resolve('public/admin-topups.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/admin-customers.js'){const js=await readFile(resolve('public/admin-customers.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
+      if(req.method==='GET'&&path==='/admin-password-resets.js'){const js=await readFile(resolve('public/admin-password-resets.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-growth.js'){const js=await readFile(resolve('public/admin-growth.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if (req.method === 'GET' && path === '/admin.js') {
         const js = await readFile(resolve('public/admin.js'));
@@ -145,6 +147,13 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       if(req.method==='POST'&&path==='/api/customer/login'){
         const b=await readJson(req),account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(b.phone);if(!account||!verifyPassword(b.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});const session=createSession(db,account.id);return json(res,200,{...session,account:{id:account.id,name:account.name,phone:account.phone}});
+      }
+      if(req.method==='POST'&&path==='/api/customer/password-reset-requests'){
+        const b=await readJson(req),phone=String(b.phone||'').trim();
+        if(!/^09\d{9}$/.test(phone))return json(res,400,{error:'INVALID_PHONE'});
+        const account=db.prepare("SELECT id FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(phone);
+        if(account){const pending=db.prepare("SELECT id FROM password_reset_requests WHERE account_id=? AND status='pending'").get(account.id);if(!pending){const id=randomUUID(),now=new Date().toISOString();db.prepare("INSERT INTO password_reset_requests(id,account_id,status,requested_at) VALUES(?,?,'pending',?)").run(id,account.id,now);audit(phone,'request','password_reset',id);}}
+        return json(res,202,{accepted:true,message:'اگر حسابی با این شماره وجود داشته باشد، درخواست برای مدیر ارسال می‌شود.'});
       }
       if(path.startsWith('/api/customer/')){
         const account=accountFromRequest(db,req);if(!account||account.role!=='customer')return json(res,401,{error:'UNAUTHORIZED'});
@@ -259,6 +268,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const rows=role?db.prepare(`${base} WHERE a.role=? ORDER BY a.created_at DESC`).all(role):db.prepare(`${base} ORDER BY a.created_at DESC`).all();
         return json(res,200,rows);
       }
+      if(req.method==='GET'&&path==='/api/admin/password-reset-requests'){
+        return json(res,200,db.prepare(`SELECT r.id,r.status,r.requested_at,r.resolved_at,a.id account_id,a.name,a.phone FROM password_reset_requests r JOIN accounts a ON a.id=r.account_id ORDER BY CASE r.status WHEN 'pending' THEN 0 ELSE 1 END,r.requested_at DESC LIMIT 200`).all());
+      }
+      const passwordResetMatch=path.match(/^\/api\/admin\/password-reset-requests\/([^/]+)\/(resolve|dismiss)$/);
+      if(req.method==='POST'&&passwordResetMatch){const request=db.prepare("SELECT r.*,a.phone FROM password_reset_requests r JOIN accounts a ON a.id=r.account_id WHERE r.id=? AND r.status='pending'").get(passwordResetMatch[1]);if(!request)return json(res,404,{error:'PASSWORD_RESET_NOT_FOUND'});const now=new Date().toISOString();if(passwordResetMatch[2]==='dismiss'){db.prepare("UPDATE password_reset_requests SET status='dismissed',resolved_at=?,resolved_by='admin' WHERE id=?").run(now,request.id);audit('admin','dismiss','password_reset',request.id);return json(res,200,{status:'dismissed'});}const b=await readJson(req);let password;try{password=hashPassword(b.password)}catch(e){return json(res,400,{error:e.message});}db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE accounts SET password_hash=?,password_salt=?,updated_at=? WHERE id=?').run(password.hash,password.salt,now,request.account_id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(request.account_id);db.prepare("UPDATE password_reset_requests SET status='resolved',resolved_at=?,resolved_by='admin' WHERE id=?").run(now,request.id);db.exec('COMMIT');audit('admin','resolve','password_reset',request.id,{accountId:request.account_id});return json(res,200,{status:'resolved'});}catch(e){db.exec('ROLLBACK');return json(res,500,{error:'PASSWORD_RESET_FAILED'});}}
       if (req.method === 'POST' && path === '/api/admin/accounts') {
         const b=await readJson(req);
         if(!b.name?.trim()||!['customer','reseller','staff'].includes(b.role)||!/^09\d{9}$/.test(b.phone||''))return json(res,400,{error:'INVALID_ACCOUNT'});

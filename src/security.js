@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 export function createRequestGuard({ now = () => Date.now() } = {}) {
   const buckets=new Map();
   const rules=[
-    {test:p=>p==='/api/customer/login'||p==='/api/customer/register'||p==='/api/reseller/login',limit:10,windowMs:10*60_000},
+    {test:p=>p==='/api/customer/login'||p==='/api/customer/register'||p==='/api/customer/password-reset-requests'||p==='/api/reseller/login',limit:10,windowMs:10*60_000},
     {test:p=>p==='/api/receipts',limit:30,windowMs:60*60_000},
     {test:p=>p.startsWith('/api/admin/'),limit:300,windowMs:60_000},
     {test:p=>p.startsWith('/api/'),limit:180,windowMs:60_000}
