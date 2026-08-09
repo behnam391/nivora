@@ -15,7 +15,8 @@ read -rp "Domain (example: app.example.com): " NIVORA_DOMAIN
 read -rp "3X-UI panel base URL: " PANEL_BASE
 read -rsp "3X-UI API token: " PANEL_TOKEN; echo
 read -rp "Inbound ID [1]: " INBOUND_ID; INBOUND_ID=${INBOUND_ID:-1}
-read -rp "Subscription base URL: " SUB_BASE
+read -rp "Subscription base URL (example: https://sub.example.com/sub/): " SUB_BASE
+[[ -n "$PANEL_BASE" && -n "$PANEL_TOKEN" && -n "$SUB_BASE" ]] || { echo "Panel URL, API token and subscription URL are required"; exit 1; }
 ADMIN_TOKEN=$(openssl rand -hex 32)
 apt-get update
 apt-get install -y ca-certificates curl git openssl caddy
