@@ -80,11 +80,10 @@ test('3X-UI provisioner creates client then builds the public subscription URL',
   const provision = createThreeXuiProvisioner({ baseUrl:'https://panel.test/secret', apiToken:'token', inboundId:7, subscriptionBaseUrl:'https://sub.test/nivo/', rejectUnauthorized:true }, transport);
   const result = await provision({ id:'abcdef12-1', phone:'09121234567', plan_name:'پایه', traffic_gb:30, duration_days:30, device_limit:1 });
   assert.equal(calls[0].url.pathname, '/secret/panel/api/clients/add');
-  assert.match(calls[1].url.pathname, /\/secret\/panel\/api\/clients\/get\/nivo-09121234567-abcdef12/);
-  assert.equal(result.subscriptionUrl, 'https://sub.test/nivo/sample-sub-id');
+  assert.match(result.subscriptionUrl, /^https:\/\/sub\.test\/nivo\/[0-9a-f-]{36}$/);
   await provision.renew({panelClientId:'nivo-client',addDays:30,addTrafficGb:25});
-  assert.equal(calls[2].url.pathname,'/secret/panel/api/clients/bulkAdjust');
-  assert.deepEqual(calls[2].body,{emails:['nivo-client'],addDays:30,addBytes:25*1024**3,flow:''});
+  assert.equal(calls[1].url.pathname,'/secret/panel/api/clients/bulkAdjust');
+  assert.deepEqual(calls[1].body,{emails:['nivo-client'],addDays:30,addBytes:25*1024**3,flow:''});
 });
 
 test('wallet ledger is atomic, auditable and never allows a negative balance', () => {

@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import { randomUUID } from 'node:crypto';
 
 const GB = 1024 ** 3;
 const DAY = 24 * 60 * 60 * 1000;
@@ -17,6 +18,7 @@ export function buildClientPayload(order, inboundId) {
       limitIp: Number(order.device_limit),
       enable: true,
       flow: 'xtls-rprx-vision'
+      ,subId: randomUUID()
     },
     inboundIds: [Number(order.panel_inbound_id || inboundId)]
   };
@@ -71,9 +73,17 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
 
   const provision = async order => {
     const payload = buildClientPayload(order, inboundId);
-    await call('POST', 'clients/add', payload);
-    const obj = await call('GET', `clients/get/${encodeURIComponent(payload.client.email)}`);
-    const client = obj?.client || obj;
+    const added = await call('POST', 'clients/add', payload);
+    let client = added?.client || added;
+    if (!client?.subId) client = payload.client;
+    if (!client?.subId) {
+      try {
+        const obj = await call('GET', `clients/get/${encodeURIComponent(payload.client.email)}`);
+        client = obj?.client || obj;
+      } catch (error) {
+        if (!client?.subId) throw error;
+      }
+    }
     if (!client?.subId) throw new Error('3X-UI did not return a subscription ID');
     return {
       panelClientId: payload.client.email,
