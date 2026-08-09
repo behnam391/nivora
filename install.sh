@@ -5,8 +5,7 @@ if ! command -v apt-get >/dev/null; then echo "Ubuntu/Debian is required"; exit 
 SOURCE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || true)
 if [[ ! -f "$SOURCE_DIR/package.json" ]]; then
   apt-get update && apt-get install -y ca-certificates git
-  REPO_URL=${NIVORA_REPO_URL:-https://github.com/OWNER/nivora.git}
-  [[ "$REPO_URL" != *"OWNER/nivora"* ]] || { echo "Set NIVORA_REPO_URL to the private repository clone URL"; exit 1; }
+  REPO_URL=${NIVORA_REPO_URL:-https://github.com/behnam391/nivora.git}
   TEMP_DIR=$(mktemp -d); trap 'rm -rf "$TEMP_DIR"' EXIT
   git clone --depth 1 "$REPO_URL" "$TEMP_DIR/nivora"
   bash "$TEMP_DIR/nivora/install.sh"; exit $?
