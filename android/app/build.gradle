@@ -8,8 +8,8 @@ android {
         applicationId 'ir.nivora.app'
         minSdk 26
         targetSdk 36
-        versionCode 4
-        versionName '0.4.0'
+        versionCode 12
+        versionName '0.4.9'
         def apiUrl = providers.gradleProperty('NIVORA_API_BASE_URL').getOrElse('https://b.nivorali.com')
         buildConfigField 'String', 'API_BASE_URL', '"' + apiUrl + '"'
     }

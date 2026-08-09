@@ -7,4 +7,5 @@
 .reference-marzban/
 android/.libxray-download/
 android/.libxray-source/
+android/.xray-core-source/
 android/app/libs/*.aar
