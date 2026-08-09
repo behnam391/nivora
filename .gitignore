@@ -5,3 +5,6 @@
 .reference-3x-ui/
 .reference-wizwiz/
 .reference-marzban/
+android/.libxray-download/
+android/.libxray-source/
+android/app/libs/*.aar

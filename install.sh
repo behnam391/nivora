@@ -47,9 +47,11 @@ chmod 600 "$INSTALL_DIR/.env"
 install -m 0644 "$INSTALL_DIR/deploy/nivora.service" /etc/systemd/system/nivora.service
 install -m 0644 "$INSTALL_DIR/deploy/nivora-backup.service" /etc/systemd/system/nivora-backup.service
 install -m 0644 "$INSTALL_DIR/deploy/nivora-backup.timer" /etc/systemd/system/nivora-backup.timer
+install -m 0644 "$INSTALL_DIR/deploy/nivora-panel-stats.service" /etc/systemd/system/nivora-panel-stats.service
+install -m 0644 "$INSTALL_DIR/deploy/nivora-panel-stats.timer" /etc/systemd/system/nivora-panel-stats.timer
 sed "s/vpn\.example\.com/$NIVORA_DOMAIN/g" "$INSTALL_DIR/deploy/Caddyfile" > /etc/caddy/Caddyfile
 systemctl daemon-reload
-systemctl enable --now nivora.service nivora-backup.timer caddy
+systemctl enable --now nivora.service nivora-backup.timer nivora-panel-stats.timer caddy
 ln -sf "$INSTALL_DIR/nivora.sh" /usr/local/bin/nivora
 chmod +x "$INSTALL_DIR/nivora.sh" /usr/local/bin/nivora
 echo "Installed: https://$NIVORA_DOMAIN"

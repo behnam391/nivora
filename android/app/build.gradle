@@ -8,8 +8,8 @@ android {
         applicationId 'ir.nivora.app'
         minSdk 26
         targetSdk 36
-        versionCode 3
-        versionName '0.3.0'
+        versionCode 4
+        versionName '0.4.0'
         def apiUrl = providers.gradleProperty('NIVORA_API_BASE_URL').getOrElse('https://b.nivorali.com')
         buildConfigField 'String', 'API_BASE_URL', '"' + apiUrl + '"'
     }
@@ -19,4 +19,4 @@ android {
     buildFeatures { buildConfig true }
 }
 
-dependencies { }
+dependencies { implementation files('libs/libXray-26.7.28.aar') }

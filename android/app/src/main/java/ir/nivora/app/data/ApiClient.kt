@@ -30,6 +30,10 @@ class ApiClient(private val baseUrl: String) {
     fun register(name: String, phone: String, password: String) = session(request("/api/customer/register", "POST", body = JSONObject().put("name", name).put("phone", phone).put("password", password)))
     fun requestPasswordReset(phone: String) { request("/api/customer/password-reset-requests", "POST", body = JSONObject().put("phone", phone)) }
     fun purchase(token: String, planId: String): String? = request("/api/customer/wallet/purchase", "POST", token, JSONObject().put("planId", planId)).optString("subscriptionUrl").takeIf { it.isNotBlank() }
+    fun renew(token:String, orderId:String) { request("/api/customer/orders/$orderId/renew", "POST", token, JSONObject()) }
+    fun topup(token:String, amount:Int, reference:String) { request("/api/customer/wallet/topups", "POST", token, JSONObject().put("amountToman",amount).put("receiptReference",reference)) }
+    fun subscription(url:String):String { val c=(URL(url).openConnection() as HttpURLConnection).apply{connectTimeout=12000;readTimeout=18000}; if(c.responseCode !in 200..299) throw IllegalStateException("SUBSCRIPTION_UNAVAILABLE"); return c.inputStream.bufferedReader().use{it.readText()} }
+    fun cards():List<PaymentCard>{val j=request("/api/store-config");val a=j.getJSONArray("cards");return buildList{for(i in 0 until a.length())a.getJSONObject(i).let{add(PaymentCard(it.getString("card_number"),it.getString("card_holder"),it.optString("bank_name").takeIf(String::isNotBlank)))}}}
 
     fun account(token: String): Account {
         val json = request("/api/customer/me", token = token)
@@ -37,7 +41,7 @@ class ApiClient(private val baseUrl: String) {
             val orders = json.getJSONArray("orders")
             for (i in 0 until orders.length()) {
                 val order = orders.getJSONObject(i)
-                add(Subscription(order.getString("id"), order.getString("plan_name"), order.optString("subscription_status", order.getString("status")), order.optString("subscription_url").takeIf { it.isNotBlank() }))
+                add(Subscription(order.getString("id"),order.getString("plan_name"),order.optString("subscription_status",order.getString("status")),order.optString("subscription_url").takeIf{it.isNotBlank()},order.optLong("usedBytes"),order.optLong("totalBytes"),order.optLong("remainingBytes"),order.optDouble("usagePercent"),order.optInt("remainingDays"),order.optLong("expiryTime").takeIf{!order.isNull("expiryTime")},order.optBoolean("startsOnFirstUse"),order.optString("location_name").takeIf{it.isNotBlank()}))
             }
         }
         return Account(json.getString("name"), json.getString("phone"), json.getInt("balanceToman"), subscriptions)

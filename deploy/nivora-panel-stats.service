@@ -1,0 +1,9 @@
+[Unit]
+Description=Nivora safe 3X-UI subscription statistics sync
+After=x-ui.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/nivora/scripts/sync-panel-stats.py
+User=root
+Group=nivora

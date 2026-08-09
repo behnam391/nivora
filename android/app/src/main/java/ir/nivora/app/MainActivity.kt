@@ -1,92 +1,42 @@
 package ir.nivora.app
 
-import android.app.Activity
-import android.app.AlertDialog
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Intent
+import android.app.*
+import android.content.*
 import android.graphics.Color
 import android.net.VpnService
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
+import android.os.*
 import android.text.InputType
-import android.view.Gravity
-import android.view.View
+import android.view.*
 import android.widget.*
 import ir.nivora.app.data.*
 import ir.nivora.app.vpn.NivoraVpnService
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.text.NumberFormat
 import java.util.Locale
 
-class MainActivity : Activity() {
-    private val api = ApiClient(BuildConfig.API_BASE_URL)
-    private val main = Handler(Looper.getMainLooper())
-    private val prefs by lazy { getSharedPreferences("session", 0) }
-    private val money = NumberFormat.getNumberInstance(Locale("fa", "IR"))
-
-    override fun onCreate(state: Bundle?) { super.onCreate(state); if (prefs.getString("token", null) == null) showLogin() else loadAccount() }
-    private fun root() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(42, 42, 42, 42); gravity = Gravity.CENTER_HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_RTL; setBackgroundColor(Color.rgb(245, 247, 246)) }
-    private fun input(hint: String, password: Boolean = false) = EditText(this).apply { this.hint = hint; textSize = 17f; if (password) inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
-    private fun button(label: String, action: () -> Unit) = Button(this).apply { text = label; setTextColor(Color.rgb(4, 45, 32)); setBackgroundColor(Color.rgb(32, 212, 154)); setOnClickListener { action() } }
-    private fun wide() = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 8, 0, 8) }
-    private fun title(value: String) = TextView(this).apply { text = value; textSize = 27f; setTextColor(Color.rgb(7, 75, 55)); setPadding(0, 18, 0, 18) }
-    private fun text(value: String) = TextView(this).apply { text = value; textSize = 16f }
-
-    private fun showLogin(message: String? = null) {
-        val box = root(); box.addView(title("Nivora")); box.addView(text("ورود به حساب مشتری"))
-        val phone = input("شماره موبایل"); val pass = input("رمز عبور", true); val error = text(message ?: "").apply { setTextColor(Color.RED) }
-        box.addView(phone, wide()); box.addView(pass, wide()); box.addView(error, wide())
-        box.addView(button("ورود") { error.text = "در حال ورود…"; background(work = { api.login(phone.text.toString(), pass.text.toString()) }, success = { prefs.edit().putString("token", it.token).apply(); loadAccount() }, failure = { error.text = friendly(it) }) }, wide())
-        box.addView(button("ساخت حساب جدید") { showRegister() }, wide())
-        box.addView(button("رمز عبور را فراموش کرده‌ام") { showRecovery(phone.text.toString()) }, wide())
-        setContentView(box)
-    }
-
-    private fun showRegister() {
-        val box = root(); box.addView(title("ثبت‌نام در Nivora")); val name = input("نام و نام خانوادگی"); val phone = input("شماره موبایل"); val pass = input("رمز عبور (حداقل ۸ کاراکتر)", true); val error = text("").apply { setTextColor(Color.RED) }
-        listOf(name, phone, pass, error).forEach { box.addView(it, wide()) }
-        box.addView(button("ثبت‌نام") { error.text = "در حال ساخت حساب…"; background(work = { api.register(name.text.toString(), phone.text.toString(), pass.text.toString()) }, success = { prefs.edit().putString("token", it.token).apply(); loadAccount() }, failure = { error.text = friendly(it) }) }, wide())
-        box.addView(button("بازگشت به ورود") { showLogin() }, wide()); setContentView(box)
-    }
-
-    private fun showRecovery(initialPhone: String) {
-        val phone = input("شماره موبایل").apply { setText(initialPhone) }
-        AlertDialog.Builder(this).setTitle("بازیابی رمز عبور").setMessage("درخواست برای مدیر ارسال می‌شود و پس از احراز هویت، رمز جدید دریافت می‌کنید.").setView(phone)
-            .setPositiveButton("ثبت درخواست") { _, _ -> background(work = { api.requestPasswordReset(phone.text.toString()); true }, success = { toast("درخواست بازیابی ثبت شد") }, failure = { toast(friendly(it)) }) }
-            .setNegativeButton("انصراف", null).show()
-    }
-
-    private fun loadAccount() {
-        val loading = root(); loading.addView(ProgressBar(this)); setContentView(loading); val token = prefs.getString("token", "")!!
-        background(work = { api.account(token) to api.plans() }, success = { showHome(it.first, it.second) }, failure = { prefs.edit().clear().apply(); showLogin(friendly(it)) })
-    }
-
-    private fun showHome(account: Account, plans: List<Plan>) {
-        val scroll = ScrollView(this); val box = root().apply { gravity = Gravity.TOP }; val token = prefs.getString("token", "")!!
-        box.addView(title("سلام ${account.name}")); box.addView(text("موجودی کیف پول: ${money.format(account.balanceToman)} تومان"), wide())
-        box.addView(button("اتصال امن") { prepareVpn() }, wide()); box.addView(title("اشتراک‌های من"))
-        if (account.subscriptions.isEmpty()) box.addView(text("هنوز اشتراکی ندارید.")) else account.subscriptions.forEach { subscription ->
-            val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24); setBackgroundColor(Color.WHITE); addView(text("${subscription.planName}\nوضعیت: ${subscription.status}")); if (subscription.url != null) addView(button("کپی لینک اشتراک") { copy(subscription.url); toast("لینک اشتراک کپی شد") }, wide()) }
-            box.addView(card, wide())
-        }
-        box.addView(title("خرید و ساخت اشتراک")); plans.forEach { plan ->
-            val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24); setBackgroundColor(Color.WHITE); addView(text("${plan.name}\n${plan.trafficGb} گیگ · ${plan.durationDays} روز · ${plan.deviceLimit} دستگاه\n${money.format(plan.priceToman)} تومان")); addView(button("خرید و ساخت فوری") { confirmPurchase(token, plan) }, wide()) }
-            box.addView(card, wide())
-        }
-        box.addView(button("خروج") { prefs.edit().clear().apply(); showLogin() }, wide()); scroll.addView(box); setContentView(scroll)
-    }
-
-    private fun confirmPurchase(token: String, plan: Plan) {
-        AlertDialog.Builder(this).setTitle("تأیید خرید ${plan.name}").setMessage("${money.format(plan.priceToman)} تومان از کیف پول کم و اشتراک فوراً ساخته می‌شود.")
-            .setPositiveButton("خرید") { _, _ -> background(work = { api.purchase(token, plan.id) }, success = { toast("اشتراک با موفقیت ساخته شد"); loadAccount() }, failure = { toast(friendly(it)) }) }.setNegativeButton("انصراف", null).show()
-    }
-
-    private fun friendly(error: Throwable) = when (error.message) { "INVALID_CREDENTIALS" -> "شماره موبایل یا رمز عبور صحیح نیست"; "PHONE_ALREADY_EXISTS" -> "این شماره قبلاً ثبت شده است"; "WEAK_PASSWORD" -> "رمز باید حداقل ۸ کاراکتر باشد"; "INSUFFICIENT_BALANCE" -> "موجودی کیف پول کافی نیست"; "NO_CAPACITY" -> "ظرفیت این پلن تکمیل است"; else -> error.message ?: "خطا در ارتباط" }
-    private fun <T> background(work: () -> T, success: (T) -> Unit, failure: (Throwable) -> Unit) = Thread { runCatching(work).onSuccess { main.post { success(it) } }.onFailure { main.post { failure(it) } } }.start()
-    private fun toast(value: String) = Toast.makeText(this, value, Toast.LENGTH_LONG).show()
-    private fun copy(value: String) { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Nivora subscription", value)) }
-    private fun prepareVpn() { val intent = VpnService.prepare(this); if (intent != null) startActivityForResult(intent, 91) else startVpn() }
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) { super.onActivityResult(requestCode, resultCode, data); if (requestCode == 91 && resultCode == RESULT_OK) startVpn() }
-    private fun startVpn() { startForegroundService(Intent(this, NivoraVpnService::class.java)); toast("پوسته VPN فعال شد؛ موتور Xray در نسخه بعد متصل می‌شود.") }
+class MainActivity:Activity(){
+ private val api=ApiClient(BuildConfig.API_BASE_URL);private val main=Handler(Looper.getMainLooper());private val session by lazy{getSharedPreferences("session",0)};private val vpn by lazy{getSharedPreferences("vpn",0)};private val money=NumberFormat.getNumberInstance(Locale("fa","IR"));private var selectedUrl:String?=null
+ override fun onCreate(state:Bundle?){super.onCreate(state);if(session.getString("token",null)==null)login() else load()}
+ private fun root()=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(40,40,40,40);gravity=Gravity.CENTER_HORIZONTAL;layoutDirection=View.LAYOUT_DIRECTION_RTL;setBackgroundColor(Color.rgb(244,248,246))}
+ private fun wide()=LinearLayout.LayoutParams(-1,-2).apply{setMargins(0,8,0,8)}
+ private fun input(h:String,pass:Boolean=false)=EditText(this).apply{hint=h;textSize=17f;if(pass)inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD}
+ private fun text(s:String,size:Float=16f)=TextView(this).apply{text=s;textSize=size;setTextColor(Color.rgb(18,50,40));setPadding(4,8,4,8)}
+ private fun button(s:String,fn:()->Unit)=Button(this).apply{text=s;setTextColor(Color.rgb(3,45,32));setBackgroundColor(Color.rgb(42,220,160));setOnClickListener{fn()}}
+ private fun login(message:String=""){val b=root();b.addView(text("Nivora",30f));b.addView(text("ورود به حساب مشتری"));val p=input("شماره موبایل");val w=input("رمز عبور",true);val e=text(message).apply{setTextColor(Color.RED)};listOf(p,w,e).forEach{b.addView(it,wide())};b.addView(button("ورود"){bg({api.login(p.text.toString(),w.text.toString())},{session.edit().putString("token",it.token).apply();load()},{e.text=friendly(it)})},wide());b.addView(button("ساخت حساب جدید"){register()},wide());b.addView(button("بازیابی رمز عبور"){recovery(p.text.toString())},wide());setContentView(b)}
+ private fun register(){val b=root();b.addView(text("ساخت حساب Nivora",28f));val n=input("نام و نام خانوادگی");val p=input("شماره موبایل");val w=input("رمز عبور (حداقل ۸ کاراکتر)",true);val e=text("").apply{setTextColor(Color.RED)};listOf(n,p,w,e).forEach{b.addView(it,wide())};b.addView(button("ثبت‌نام"){bg({api.register(n.text.toString(),p.text.toString(),w.text.toString())},{session.edit().putString("token",it.token).apply();load()},{e.text=friendly(it)})},wide());b.addView(button("بازگشت"){login()},wide());setContentView(b)}
+ private fun recovery(initial:String){val p=input("شماره موبایل").apply{setText(initial)};AlertDialog.Builder(this).setTitle("بازیابی رمز عبور").setMessage("درخواست برای مدیریت ارسال می‌شود و بعد از احراز هویت رمز تازه دریافت می‌کنید.").setView(p).setPositiveButton("ثبت درخواست"){_,_->bg({api.requestPasswordReset(p.text.toString());true},{toast("درخواست بازیابی ثبت شد")},{toast(friendly(it))})}.setNegativeButton("انصراف",null).show()}
+ private fun load(){val b=root();b.addView(ProgressBar(this));setContentView(b);val t=session.getString("token","")!!;bg({api.account(t) to api.plans()},{home(it.first,it.second)},{session.edit().clear().apply();login(friendly(it))})}
+ private fun home(a:Account,plans:List<Plan>){val scroll=ScrollView(this);val b=root().apply{gravity=Gravity.TOP};val token=session.getString("token","")!!;b.addView(text("سلام ${a.name}",27f));b.addView(text("موجودی کیف پول: ${money.format(a.balanceToman)} تومان"),wide());b.addView(button("شارژ کیف پول"){topup(token)},wide());b.addView(text("اشتراک‌های من",23f));val active=a.subscriptions.filter{it.url!=null&&it.status=="active"};if(active.isEmpty())b.addView(text("هنوز اشتراک فعالی ندارید."))
+  active.forEachIndexed{i,s->if(selectedUrl==null)selectedUrl=s.url;val c=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(24,20,24,20);setBackgroundColor(Color.WHITE);addView(text("${s.planName}${s.locationName?.let{" · $it"}?:""}",20f));addView(text(if(s.startsOnFirstUse)"زمان: از اولین اتصال محاسبه می‌شود" else "زمان باقی‌مانده: ${s.remainingDays} روز"));addView(text("مصرف: ${gb(s.usedBytes)} از ${gb(s.totalBytes)} گیگابایت · ${s.usagePercent}٪"));addView(ProgressBar(this@MainActivity,null,android.R.attr.progressBarStyleHorizontal).apply{max=1000;progress=(s.usagePercent*10).toInt()});addView(button(if(selectedUrl==s.url)"اشتراک انتخاب‌شده" else "انتخاب برای اتصال"){selectedUrl=s.url;home(a,plans)},wide());addView(button("کپی لینک اشتراک"){copy(s.url!!);toast("لینک کپی شد")},wide());addView(button("تمدید همین اشتراک"){confirmRenew(token,s)},wide())};b.addView(c,wide())}
+  val state=vpn.getString("state","disconnected");b.addView(text("وضعیت اتصال: ${when(state){"connected"->"متصل";"error"->"خطا: ${vpn.getString("error","")}";else->"قطع"}}"));b.addView(button(if(state=="connected")"قطع اتصال" else "اتصال امن"){if(state=="connected")stopService(Intent(this,NivoraVpnService::class.java)) else prepareVpn()},wide());b.addView(button("تست پینگ سرور"){ping()},wide());b.addView(text("خرید اشتراک",23f));plans.forEach{p->val c=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(24,20,24,20);setBackgroundColor(Color.WHITE);addView(text("${p.name}\n${p.trafficGb} گیگ · ${p.durationDays} روز · ${p.deviceLimit} دستگاه\n${money.format(p.priceToman)} تومان"));addView(button("خرید و ساخت فوری"){AlertDialog.Builder(this@MainActivity).setTitle("تأیید خرید").setMessage("${money.format(p.priceToman)} تومان از کیف پول کم می‌شود.").setPositiveButton("خرید"){_,_->bg({api.purchase(token,p.id)},{toast("اشتراک ساخته شد");load()},{toast(friendly(it))})}.setNegativeButton("انصراف",null).show()},wide())};b.addView(c,wide())};b.addView(button("خروج"){session.edit().clear().apply();login()},wide());scroll.addView(b);setContentView(scroll)}
+ private fun topup(token:String){bg({api.cards()},{cards->val amount=input("مبلغ به تومان").apply{inputType=2};val ref=input("شماره پیگیری واریز");val v=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(30,0,30,0);cards.forEach{addView(text("${it.number.chunked(4).joinToString("  ")}\n${it.holder}${it.bank?.let{b->" · $b"}?:""}"));addView(button("کپی شماره کارت"){copy(it.number)},wide())};addView(amount);addView(ref)};AlertDialog.Builder(this).setTitle("شارژ کیف پول").setView(v).setPositiveButton("ارسال برای تأیید"){_,_->bg({api.topup(token,amount.text.toString().toInt(),ref.text.toString())},{toast("درخواست شارژ ثبت شد")},{toast(friendly(it))})}.setNegativeButton("انصراف",null).show()},{toast(friendly(it))})}
+ private fun confirmRenew(token:String,s:Subscription){AlertDialog.Builder(this).setTitle("تمدید ${s.planName}").setMessage("هزینه پلن از کیف پول کم و حجم و زمان به همین اشتراک افزوده می‌شود.").setPositiveButton("تمدید"){_,_->bg({api.renew(token,s.id)},{toast("تمدید انجام شد");load()},{toast(friendly(it))})}.setNegativeButton("انصراف",null).show()}
+ private fun ping(){toast("در حال اندازه‌گیری…");bg({val start=System.nanoTime();Socket().use{it.connect(InetSocketAddress("edge.nivorali.com",8443),5000)};((System.nanoTime()-start)/1_000_000)},{toast("پینگ سرور: $it میلی‌ثانیه")},{toast("سرور پاسخ نداد")})}
+ private fun prepareVpn(){if(selectedUrl==null){toast("ابتدا یک اشتراک فعال انتخاب کنید");return};val i=VpnService.prepare(this);if(i!=null)startActivityForResult(i,91)else startVpn()}
+ override fun onActivityResult(r:Int,c:Int,d:Intent?){super.onActivityResult(r,c,d);if(r==91&&c==RESULT_OK)startVpn()}
+ private fun startVpn(){startForegroundService(Intent(this,NivoraVpnService::class.java).putExtra(NivoraVpnService.EXTRA_URL,selectedUrl));toast("در حال برقراری اتصال…")}
+ private fun gb(v:Long)=String.format(Locale.US,"%.1f",v/1073741824.0);private fun copy(v:String){(getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Nivora",v))};private fun toast(v:String)=Toast.makeText(this,v,Toast.LENGTH_LONG).show()
+ private fun friendly(e:Throwable)=when(e.message){"INVALID_CREDENTIALS"->"شماره یا رمز عبور صحیح نیست";"PHONE_ALREADY_EXISTS"->"این شماره قبلاً ثبت شده";"WEAK_PASSWORD"->"رمز باید حداقل ۸ کاراکتر باشد";"INSUFFICIENT_BALANCE"->"موجودی کیف پول کافی نیست";"NO_CAPACITY"->"ظرفیت این پلن تکمیل است";else->e.message?:"خطا در ارتباط"}
+ private fun <T> bg(work:()->T,ok:(T)->Unit,fail:(Throwable)->Unit)=Thread{runCatching(work).onSuccess{main.post{ok(it)}}.onFailure{main.post{fail(it)}}}.start()
 }
