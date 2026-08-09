@@ -1,0 +1,7 @@
+/data/
+.env
+/receipts/
+/backups/
+.reference-3x-ui/
+.reference-wizwiz/
+.reference-marzban/

@@ -1,0 +1,6 @@
+.bank-card{background:linear-gradient(135deg,#102d24,#1a5c46);color:#fff;border:0}
+.bank-card .price{color:#7aebc5;letter-spacing:2px;font-size:20px;direction:ltr;text-align:right}
+.bank-card .muted,.bank-card small{color:#a9c4bb}
+.bank-card footer{border-color:rgba(255,255,255,.15)}
+@media(max-width:950px){.nav[data-view=cards]:before{content:'▭'}}
+@media(max-width:620px){nav{grid-template-columns:repeat(4,1fr)}}

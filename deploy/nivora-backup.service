@@ -1,0 +1,14 @@
+[Unit]
+Description=Create verified Nivora SQLite backup
+
+[Service]
+Type=oneshot
+User=nivora
+Group=nivora
+WorkingDirectory=/opt/nivora
+EnvironmentFile=/opt/nivora/.env
+ExecStart=/usr/bin/node scripts/backup.js
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/nivora/data /opt/nivora/backups

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>مدیریت Nivora</title><link rel="stylesheet" href="/admin.css"><link rel="stylesheet" href="/admin-extra.css">
+</head>
+<body>
+  <section id="login" class="login-shell">
+    <form id="login-form" class="login-card">
+      <div class="brand-mark">N</div><p class="eyebrow">NIVORA CONTROL</p>
+      <h1>ورود به مدیریت</h1><p class="muted">توکن مدیریت را وارد کنید.</p>
+      <label>توکن مدیریت<input id="token" type="password" autocomplete="current-password" required></label>
+      <button class="primary wide" type="submit">ورود امن</button><p id="login-error" class="error"></p>
+    </form>
+  </section>
+
+  <div id="app" class="app hidden">
+    <aside>
+      <div class="brand"><div class="brand-mark small">N</div><div><b>Nivora</b><span>مرکز مدیریت</span></div></div>
+      <nav><button class="nav active" data-view="overview">نمای کلی</button><button class="nav" data-view="plans">پلن‌ها</button><button class="nav" data-view="cards">کارت‌های بانکی</button><button class="nav" data-view="orders">سفارش‌ها <i id="pending-badge">۰</i></button></nav>
+      <button id="logout" class="ghost logout">خروج</button>
+    </aside>
+    <main>
+      <header><div><p class="eyebrow">پنل فروش اشتراک</p><h1 id="page-title">نمای کلی</h1></div><div class="live"><span></span> سیستم فعال</div></header>
+
+      <section id="overview" class="view">
+        <div class="stats">
+          <article><span>پلن‌های فعال</span><strong id="stat-plans">—</strong></article>
+          <article><span>نیازمند بررسی</span><strong id="stat-pending">—</strong></article>
+          <article><span>تأییدشده</span><strong id="stat-approved">—</strong></article>
+          <article><span>مبلغ در انتظار</span><strong id="stat-value">—</strong><small>ریال</small></article>
+        </div>
+        <div class="panel"><div class="panel-head"><div><h2>سفارش‌های جدید</h2><p>آخرین پرداخت‌های نیازمند بررسی</p></div><button class="link" data-go="orders">مشاهده همه</button></div><div id="recent-orders"></div></div>
+      </section>
+
+      <section id="plans" class="view hidden">
+        <div class="panel-head standalone"><div><h2>پلن‌های فروش</h2><p>قیمت و ویژگی‌های پلن‌ها هر زمان قابل تغییر است.</p></div><button id="new-plan" class="primary">+ پلن جدید</button></div>
+        <div id="plans-grid" class="plans-grid"></div>
+      </section>
+
+      <section id="orders" class="view hidden">
+        <div class="panel-head standalone"><div><h2>سفارش‌ها</h2><p>رسیدها را بررسی و نتیجه را ثبت کنید.</p></div><select id="order-filter"><option value="all">همه وضعیت‌ها</option><option value="under_review">نیازمند بررسی</option><option value="approved">تأییدشده</option><option value="rejected">ردشده</option></select></div>
+        <div class="panel table-wrap"><table><thead><tr><th>مشتری</th><th>پلن</th><th>مبلغ</th><th>رسید</th><th>زمان</th><th>وضعیت</th><th></th></tr></thead><tbody id="orders-body"></tbody></table></div>
+      </section>
+      <section id="cards" class="view hidden">
+        <div class="panel-head standalone"><div><h2>کارت‌های بانکی</h2><p>کارت‌های فعال در صفحه خرید نمایش داده می‌شوند.</p></div><button id="new-card" class="primary">+ کارت جدید</button></div>
+        <div id="cards-grid" class="plans-grid"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="plan-dialog"><form id="plan-form"><div class="modal-head"><div><p class="eyebrow">PLAN EDITOR</p><h2 id="plan-dialog-title">پلن جدید</h2></div><button type="button" class="icon close-dialog">×</button></div><input id="plan-id" type="hidden">
+    <div class="form-grid"><label class="span-2">نام پلن<input id="plan-name" required></label><label class="span-2">توضیح<textarea id="plan-description" rows="2"></textarea></label><label>قیمت (ریال)<input id="plan-price" type="number" min="0" required></label><label>حجم (گیگابایت)<input id="plan-traffic" type="number" min="1" required></label><label>مدت (روز)<input id="plan-days" type="number" min="1" required></label><label>تعداد دستگاه<input id="plan-devices" type="number" min="1" required></label><label>ترتیب نمایش<input id="plan-sort" type="number" value="0"></label><label class="check"><input id="plan-active" type="checkbox" checked> فعال و قابل فروش</label></div>
+    <div class="modal-actions"><button type="button" class="ghost close-dialog">انصراف</button><button class="primary" type="submit">ذخیره پلن</button></div></form></dialog>
+
+  <dialog id="review-dialog"><form id="review-form"><div class="modal-head"><div><p class="eyebrow">RECEIPT REVIEW</p><h2>بررسی پرداخت</h2></div><button type="button" class="icon close-review">×</button></div><div id="review-summary"></div><label>یادداشت مدیر<textarea id="review-note" rows="3" placeholder="اختیاری"></textarea></label><div class="modal-actions split"><button type="button" id="reject-order" class="danger">رد پرداخت</button><button type="button" class="ghost close-review">انصراف</button><button type="submit" class="primary">تأیید پرداخت</button></div></form></dialog>
+  <dialog id="card-dialog"><form id="card-form"><div class="modal-head"><div><p class="eyebrow">PAYMENT CARD</p><h2 id="card-dialog-title">کارت جدید</h2></div><button type="button" class="icon close-card">×</button></div><input id="card-id" type="hidden"><div class="form-grid"><label class="span-2">شماره کارت<input id="card-number" inputmode="numeric" maxlength="19" required></label><label>نام صاحب کارت<input id="card-holder" required></label><label>نام بانک<input id="card-bank" placeholder="اختیاری"></label><label>ترتیب نمایش<input id="card-sort" type="number" value="0"></label><label class="check"><input id="card-active" type="checkbox" checked> فعال و قابل نمایش</label></div><div class="modal-actions"><button type="button" class="ghost close-card">انصراف</button><button class="primary" type="submit">ذخیره کارت</button></div></form></dialog>
+  <div id="toast"></div><script src="/admin.js" defer></script><script src="/admin-resellers.js" defer></script><script src="/admin-account-edit.js" defer></script><script src="/admin-locations.js" defer></script><script src="/admin-topups.js" defer></script><script src="/admin-customers.js" defer></script><script src="/admin-growth.js" defer></script>
+</body></html>
