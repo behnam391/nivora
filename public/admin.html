@@ -2,12 +2,12 @@
 <html lang="fa" dir="rtl">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>مدیریت Nivora</title><link rel="stylesheet" href="/admin.css"><link rel="stylesheet" href="/admin-extra.css">
+  <title>مدیریت Nivora</title><link rel="icon" href="/brand-mark.svg"><link rel="stylesheet" href="/admin.css"><link rel="stylesheet" href="/admin-extra.css"><link rel="stylesheet" href="/brand.css">
 </head>
 <body>
   <section id="login" class="login-shell">
     <form id="login-form" class="login-card">
-      <div class="brand-mark">N</div><p class="eyebrow">NIVORA CONTROL</p>
+      <div class="brand-mark"><img src="/brand-mark.svg" alt="Nivora"></div><p class="eyebrow">NIVORA CONTROL</p>
       <h1>ورود به مدیریت</h1><p class="muted">توکن مدیریت را وارد کنید.</p>
       <label>توکن مدیریت<input id="token" type="password" autocomplete="current-password" required></label>
       <button class="primary wide" type="submit">ورود امن</button><p id="login-error" class="error"></p>
@@ -16,7 +16,7 @@
 
   <div id="app" class="app hidden">
     <aside>
-      <div class="brand"><div class="brand-mark small">N</div><div><b>Nivora</b><span>مرکز مدیریت</span></div></div>
+      <div class="brand"><div class="brand-mark small"><img src="/brand-mark.svg" alt=""></div><div><b>Nivora</b><span>مرکز مدیریت</span></div></div>
       <nav><button class="nav active" data-view="overview">نمای کلی</button><button class="nav" data-view="plans">پلن‌ها</button><button class="nav" data-view="cards">کارت‌های بانکی</button><button class="nav" data-view="orders">سفارش‌ها <i id="pending-badge">۰</i></button></nav>
       <button id="logout" class="ghost logout">خروج</button>
     </aside>

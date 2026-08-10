@@ -122,6 +122,24 @@ test('reseller logs in and purchases a provisioned subscription from wallet', as
   r=await fetch(`${base}/api/reseller/orders/${orders[0].id}/renew`,{method:'POST',headers:auth,body:'{}'});assert.equal(r.status,201);const renewed=await r.json();assert.equal(renewed.balanceToman,40000);
 });
 
+test('reseller customer book scopes profiles, sales, renewals and profit to its owner', async t => {
+  const provisioner=async order=>({panelClientId:`book-${order.id}`,subscriptionUrl:`https://sub.test/${order.id}`});provisioner.renew=async()=>({adjusted:1});
+  const {server,base}=await start({provisioner});t.after(()=>server.close());const admin={authorization:'Bearer test-token','content-type':'application/json'};
+  let r=await fetch(`${base}/api/admin/plans`,{method:'POST',headers:admin,body:JSON.stringify({name:'دفترچه',priceIrr:100000,trafficGb:40,durationDays:30,deviceLimit:2})});const plan=await r.json();
+  r=await fetch(`${base}/api/admin/accounts`,{method:'POST',headers:admin,body:JSON.stringify({name:'همکار دفترچه',phone:'09120001111',password:'password-123',role:'reseller',defaultDiscountPercent:20})});const reseller=await r.json();
+  await fetch(`${base}/api/admin/accounts/${reseller.id}/wallet`,{method:'POST',headers:admin,body:JSON.stringify({amountToman:300000,note:'شارژ'})});
+  r=await fetch(`${base}/api/reseller/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:reseller.phone,password:'password-123'})});const login=await r.json(),auth={authorization:`Bearer ${login.token}`,'content-type':'application/json'};
+  r=await fetch(`${base}/api/reseller/customers`,{method:'POST',headers:auth,body:JSON.stringify({name:'مشتری دفترچه',phone:'09123330000',note:'مشتری ویژه'})});assert.equal(r.status,201);const customer=await r.json();
+  r=await fetch(`${base}/api/reseller/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:plan.id,customerId:customer.id,salePriceToman:130000})});assert.equal(r.status,201);
+  r=await fetch(`${base}/api/reseller/customers`,{headers:auth});let customers=await r.json();assert.equal(customers.length,1);assert.equal(customers[0].active_subscriptions,1);assert.equal(customers[0].revenue_toman,130000);assert.equal(customers[0].profit_toman,50000);
+  r=await fetch(`${base}/api/reseller/customers/${customer.id}`,{headers:auth});const profile=await r.json();assert.equal(profile.orders.length,1);assert.equal(profile.orders[0].reseller_sale_price_toman,130000);
+  r=await fetch(`${base}/api/reseller/orders/${profile.orders[0].id}/renew`,{method:'POST',headers:auth,body:JSON.stringify({salePriceToman:120000})});assert.equal(r.status,201);
+  r=await fetch(`${base}/api/reseller/me`,{headers:auth});const summary=await r.json();assert.equal(summary.customersCount,1);assert.equal(summary.salesCount,1);assert.equal(summary.totalRevenueToman,250000);assert.equal(summary.totalProfitToman,90000);
+  r=await fetch(`${base}/api/reseller/customers/${customer.id}`,{method:'PATCH',headers:auth,body:JSON.stringify({name:'مشتری ویرایش‌شده',phone:'09123330000',note:'پیگیری ماهانه'})});assert.equal(r.status,200);
+  r=await fetch(`${base}/api/reseller/customers/${customer.id}`,{method:'DELETE',headers:auth});assert.equal(r.status,200);
+  r=await fetch(`${base}/api/reseller/customers`,{headers:auth});customers=await r.json();assert.equal(customers.length,0);
+});
+
 test('failed reseller provisioning is refunded automatically', async t => {
   const {server,base}=await start({provisioner:async()=>{throw new Error('panel down')}});t.after(()=>server.close());const admin={authorization:'Bearer test-token','content-type':'application/json'};
   let r=await fetch(`${base}/api/admin/plans`,{method:'POST',headers:admin,body:JSON.stringify({name:'خطا',priceIrr:50000,trafficGb:10,durationDays:10,deviceLimit:1})});const plan=await r.json();

@@ -89,7 +89,50 @@ data class Account(
     val notifications: List<CustomerNotification>
 )
 
-data class Session(val token: String, val name: String)
+data class ResellerCustomer(
+    val id: String,
+    val name: String,
+    val phone: String,
+    val note: String,
+    val activeSubscriptions: Int,
+    val subscriptionCount: Int,
+    val revenueToman: Int,
+    val profitToman: Int
+)
+
+data class ResellerOrder(
+    val id: String,
+    val planId: String,
+    val customerId: String?,
+    val customerName: String,
+    val phone: String,
+    val planName: String,
+    val orderKind: String,
+    val status: String,
+    val subscriptionUrl: String?,
+    val locationName: String?,
+    val trafficGb: Int,
+    val durationDays: Int,
+    val remainingDays: Int,
+    val salePriceToman: Int,
+    val createdAt: String
+)
+
+data class ResellerAccount(
+    val name: String,
+    val phone: String,
+    val balanceToman: Int,
+    val customersCount: Int,
+    val salesCount: Int,
+    val activeSubscriptions: Int,
+    val totalRevenueToman: Int,
+    val totalProfitToman: Int,
+    val transactions: List<WalletTransaction>,
+    val customers: List<ResellerCustomer>,
+    val orders: List<ResellerOrder>
+)
+
+data class Session(val token: String, val name: String, val role: String)
 data class PaymentCard(val number: String, val holder: String, val bank: String?)
 data class PurchaseResult(val subscriptionUrl: String?, val discountToman: Int, val balanceToman: Int?)
 data class DiscountResult(val code: String, val percent: Int)

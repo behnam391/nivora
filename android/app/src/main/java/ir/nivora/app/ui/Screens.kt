@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.automirrored.rounded.Subject
+import androidx.compose.material.icons.automirrored.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -56,8 +57,9 @@ fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
     CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides LayoutDirection.Rtl) {
         when {
             !state.signedIn -> AuthScreen(state.actionBusy, actions)
-            state.loading && state.account == null -> FullScreenLoading()
-            state.loadError != null && state.account == null -> FullScreenError(state.loadError, actions::refresh, actions::logout)
+            state.loading && state.account == null && state.reseller == null -> FullScreenLoading()
+            state.loadError != null && state.account == null && state.reseller == null -> FullScreenError(state.loadError, actions::refresh, actions::logout)
+            state.role == "reseller" -> ResellerDashboard(state, actions, snackbar)
             else -> MainDashboard(state, actions, snackbar)
         }
     }
@@ -65,6 +67,7 @@ fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
 
 @Composable
 private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
+    var loginRole by rememberSaveable { mutableStateOf(LoginRole.CUSTOMER) }
     var registerMode by rememberSaveable { mutableStateOf(false) }
     var recoveryOpen by rememberSaveable { mutableStateOf(false) }
     var name by rememberSaveable { mutableStateOf("") }
@@ -81,7 +84,7 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
             else -> null
         }
         if (validation == null) {
-            if (registerMode) actions.register(name.trim(), phone, password) else actions.login(phone, password)
+            if (registerMode) actions.register(name.trim(), phone, password) else actions.login(phone, password, loginRole)
         }
     }
 
@@ -104,15 +107,26 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
                 elevation = CardDefaults.cardElevation(12.dp)
             ) {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
-                    Text(if (registerMode) "ساخت حساب جدید" else "خوش آمدید", style = MaterialTheme.typography.headlineMedium)
+                    Text(if (registerMode) "ساخت حساب جدید" else if (loginRole == LoginRole.RESELLER) "ورود همکار فروش" else "خوش آمدید", style = MaterialTheme.typography.headlineMedium)
                     Text(
-                        if (registerMode) "حساب Nivora را در چند ثانیه بسازید." else "برای مدیریت و اتصال اشتراک وارد شوید.",
+                        if (registerMode) "حساب Nivora را در چند ثانیه بسازید." else if (loginRole == LoginRole.RESELLER) "مشتریان، فروش‌ها و تمدیدها را مدیریت کنید." else "برای مدیریت و اتصال اشتراک وارد شوید.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium
                     )
+                    Text("نوع حساب", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp)).padding(4.dp)) {
+                        AuthTab("مشتری", loginRole == LoginRole.CUSTOMER) { loginRole = LoginRole.CUSTOMER; validation = null }
+                        AuthTab("همکار فروش", loginRole == LoginRole.RESELLER) { loginRole = LoginRole.RESELLER; registerMode = false; validation = null }
+                    }
+                    if (loginRole == LoginRole.CUSTOMER) Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp)).padding(4.dp)) {
                         AuthTab("ورود", !registerMode) { registerMode = false; validation = null }
                         AuthTab("ثبت‌نام", registerMode) { registerMode = true; validation = null }
+                    } else {
+                        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(14.dp)).padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Storefront, null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(9.dp))
+                            Text("حساب همکار توسط مدیریت ساخته و شارژ می‌شود.", style = MaterialTheme.typography.bodyMedium)
+                        }
                     }
                     if (registerMode) {
                         NivoraField(
@@ -158,10 +172,10 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
                         else {
                             Icon(if (registerMode) Icons.Rounded.PersonAdd else Icons.AutoMirrored.Rounded.Login, null)
                             Spacer(Modifier.width(8.dp))
-                            Text(if (registerMode) "ساخت حساب" else "ورود به Nivora")
+                            Text(if (registerMode) "ساخت حساب" else if (loginRole == LoginRole.RESELLER) "ورود به مرکز همکاری" else "ورود به Nivora")
                         }
                     }
-                    if (!registerMode) TextButton(onClick = { recoveryOpen = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    if (!registerMode && loginRole == LoginRole.CUSTOMER) TextButton(onClick = { recoveryOpen = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                         Text("رمز عبور را فراموش کرده‌اید؟")
                     }
                 }
@@ -325,6 +339,175 @@ private fun RowScope.NavigationItem(destination: AppDestination, selected: AppDe
         label = { Text(label) },
         colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer)
     )
+}
+
+@Composable
+private fun ResellerDashboard(state: NivoraUiState, actions: NivoraActions, snackbar: SnackbarHostState) {
+    val account = state.reseller ?: return
+    var destination by rememberSaveable { mutableStateOf(ResellerDestination.OVERVIEW) }
+    var addCustomerOpen by rememberSaveable { mutableStateOf(false) }
+    var detailCustomer by remember { mutableStateOf<ResellerCustomer?>(null) }
+    var preferredCustomer by remember { mutableStateOf<ResellerCustomer?>(null) }
+    var purchasePlan by remember { mutableStateOf<Plan?>(null) }
+    var renewOrder by remember { mutableStateOf<ResellerOrder?>(null) }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) },
+        bottomBar = {
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 10.dp) {
+                ResellerNavigationItem(ResellerDestination.OVERVIEW, destination, Icons.Rounded.Dashboard, "داشبورد") { destination = it }
+                ResellerNavigationItem(ResellerDestination.CUSTOMERS, destination, Icons.Rounded.Groups, "مشتریان") { destination = it }
+                ResellerNavigationItem(ResellerDestination.PLANS, destination, Icons.Rounded.AddShoppingCart, "فروش") { destination = it }
+                ResellerNavigationItem(ResellerDestination.WALLET, destination, Icons.Rounded.AccountBalanceWallet, "کیف پول") { destination = it }
+            }
+        }
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            when (destination) {
+                ResellerDestination.OVERVIEW -> ResellerOverviewScreen(account, state.refreshing, actions::refresh, actions::logout, onCustomers = { destination = ResellerDestination.CUSTOMERS }, onSale = { destination = ResellerDestination.PLANS }, onCustomer = { detailCustomer = it })
+                ResellerDestination.CUSTOMERS -> ResellerCustomersScreen(account.customers, onAdd = { addCustomerOpen = true }, onOpen = { detailCustomer = it }, onSale = { preferredCustomer = it; destination = ResellerDestination.PLANS })
+                ResellerDestination.PLANS -> ResellerPlansScreen(state.resellerPlans, account.balanceToman, preferredCustomer) { purchasePlan = it }
+                ResellerDestination.WALLET -> ResellerWalletScreen(account)
+            }
+            if (state.actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+        }
+    }
+
+    if (addCustomerOpen) ResellerCustomerDialog(state.actionBusy, onDismiss = { addCustomerOpen = false }) { name, phone, note ->
+        actions.createResellerCustomer(name, phone, note); addCustomerOpen = false
+    }
+    purchasePlan?.let { plan ->
+        ResellerPurchaseDialog(plan, account.customers, preferredCustomer, account.balanceToman, state.actionBusy, onDismiss = { purchasePlan = null; preferredCustomer = null }) { customer, salePrice ->
+            actions.resellerPurchase(plan, customer, salePrice); purchasePlan = null; preferredCustomer = null
+        }
+    }
+    detailCustomer?.let { customer ->
+        ResellerCustomerDetailDialog(customer, account.orders.filter { it.customerId == customer.id }, onDismiss = { detailCustomer = null }, onSale = { detailCustomer = null; preferredCustomer = customer; destination = ResellerDestination.PLANS }, onCopy = actions::copyText, onRenew = { detailCustomer = null; renewOrder = it })
+    }
+    renewOrder?.let { order ->
+        val cost = state.resellerPlans.firstOrNull { it.id == order.planId }?.priceToman ?: 0
+        ResellerRenewDialog(order, cost, state.actionBusy, onDismiss = { renewOrder = null }) { price -> actions.resellerRenew(order, price); renewOrder = null }
+    }
+}
+
+@Composable
+private fun RowScope.ResellerNavigationItem(destination: ResellerDestination, selected: ResellerDestination, icon: ImageVector, label: String, onClick: (ResellerDestination) -> Unit) {
+    NavigationBarItem(selected = selected == destination, onClick = { onClick(destination) }, icon = { Icon(icon, label) }, label = { Text(label) }, colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer))
+}
+
+@Composable
+private fun ResellerOverviewScreen(account: ResellerAccount, refreshing: Boolean, onRefresh: () -> Unit, onLogout: () -> Unit, onCustomers: () -> Unit, onSale: () -> Unit, onCustomer: (ResellerCustomer) -> Unit) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item { PartnerTopBar(account.name, refreshing, onRefresh, onLogout) }
+        item {
+            Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = NivoraInk), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(NivoraInk, Color(0xFF10513E)))).padding(22.dp)) {
+                    Text("موجودی قابل فروش", color = Color(0xFFB7CEC5), style = MaterialTheme.typography.bodyMedium)
+                    Text(toman(account.balanceToman), color = NivoraGreen, fontSize = 29.sp, fontWeight = FontWeight.Black)
+                    Spacer(Modifier.height(15.dp))
+                    Button(onClick = onSale, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = NivoraGreen, contentColor = NivoraInk)) { Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(6.dp)); Text("فروش اشتراک جدید") }
+                }
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PartnerStatCard("مشتریان", account.customersCount, "پرونده", Icons.Rounded.Groups, Modifier.weight(1f), onCustomers)
+                PartnerStatCard("اشتراک فعال", account.activeSubscriptions, "سرویس", Icons.Rounded.Verified, Modifier.weight(1f), onCustomers)
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PartnerMoneyCard("فروش ثبت‌شده", account.totalRevenueToman, Icons.Rounded.Payments, Modifier.weight(1f))
+                PartnerMoneyCard("سود ثبت‌شده", account.totalProfitToman, Icons.AutoMirrored.Rounded.TrendingUp, Modifier.weight(1f))
+            }
+        }
+        item { SectionHeader("آخرین مشتری‌ها", "دسترسی سریع به پرونده و اشتراک‌ها", "همه مشتریان", onCustomers) }
+        if (account.customers.isEmpty()) item { Card(border = CardDefaults.outlinedCardBorder()) { EmptyState(Icons.Rounded.GroupAdd, "دفترچه خالی است", "اولین مشتری را ثبت کنید و اشتراک او را بسازید.", "افزودن مشتری", onCustomers) } }
+        else items(account.customers.take(5), key = { it.id }) { customer -> ResellerCustomerCard(customer, { onCustomer(customer) }, onSale) }
+    }
+}
+
+@Composable
+private fun PartnerTopBar(name: String, refreshing: Boolean, onRefresh: () -> Unit, onLogout: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) { Text("سلام، ${name.substringBefore(' ')}", style = MaterialTheme.typography.headlineMedium); Text("مرکز همکاری و مدیریت فروش", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        IconButton(onClick = onRefresh, enabled = !refreshing) { if (refreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Icon(Icons.Rounded.Refresh, "تازه‌سازی") }
+        IconButton(onClick = onLogout) { Icon(Icons.AutoMirrored.Rounded.Logout, "خروج") }
+    }
+}
+
+@Composable
+private fun PartnerStatCard(label: String, value: Int, suffix: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
+    Card(modifier.clickable(onClick = onClick), border = CardDefaults.outlinedCardBorder(), shape = RoundedCornerShape(20.dp)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary); Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium); Text("${faNumber(value)} $suffix", style = MaterialTheme.typography.titleMedium) } }
+}
+
+@Composable
+private fun PartnerMoneyCard(label: String, value: Int, icon: ImageVector, modifier: Modifier) {
+    Card(modifier, border = CardDefaults.outlinedCardBorder(), shape = RoundedCornerShape(20.dp)) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) { Icon(icon, null, tint = MaterialTheme.colorScheme.primary); Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium); Text(toman(value), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1) } }
+}
+
+@Composable
+private fun ResellerCustomersScreen(customers: List<ResellerCustomer>, onAdd: () -> Unit, onOpen: (ResellerCustomer) -> Unit, onSale: (ResellerCustomer) -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val filtered = customers.filter { query.isBlank() || it.name.contains(query, true) || it.phone.contains(query) }
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("دفترچه مشتریان", style = MaterialTheme.typography.headlineLarge); Text("پرونده، فروش و تمدید هر مشتری", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(12.dp)); Button(onClick = onAdd, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.PersonAdd, null); Spacer(Modifier.width(6.dp)); Text("مشتری جدید") }; Spacer(Modifier.height(10.dp)); NivoraField(query, { query = it }, "جست‌وجوی نام یا موبایل", Icons.Rounded.Search) }
+        if (filtered.isEmpty()) item { EmptyState(Icons.Rounded.Groups, "مشتری پیدا نشد", "مشتری تازه ثبت کنید یا جست‌وجو را تغییر دهید.", "افزودن مشتری", onAdd) }
+        else items(filtered, key = { it.id }) { customer -> ResellerCustomerCard(customer, { onOpen(customer) }, { onSale(customer) }) }
+    }
+}
+
+@Composable
+private fun ResellerCustomerCard(customer: ResellerCustomer, onOpen: () -> Unit, onSale: () -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onOpen), shape = RoundedCornerShape(22.dp), border = CardDefaults.outlinedCardBorder()) {
+        Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(45.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(15.dp)), contentAlignment = Alignment.Center) { Text(customer.name.take(1), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black) }; Spacer(Modifier.width(11.dp)); Column(Modifier.weight(1f)) { Text(customer.name, style = MaterialTheme.typography.titleMedium); Text(customer.phone, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium) }; StatusPill("${faNumber(customer.activeSubscriptions)} فعال", NivoraGreenDark) }
+            if (customer.note.isNotBlank()) Text(customer.note, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { OutlinedButton(onClick = onOpen, modifier = Modifier.weight(1f)) { Text("پرونده") }; Button(onClick = onSale, modifier = Modifier.weight(1f)) { Icon(Icons.Rounded.Add, null, Modifier.size(18.dp)); Text(" فروش") } }
+        }
+    }
+}
+
+@Composable
+private fun ResellerPlansScreen(plans: List<Plan>, balance: Int, preferredCustomer: ResellerCustomer?, onBuy: (Plan) -> Unit) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
+        item { Text("فروش اشتراک", style = MaterialTheme.typography.headlineLarge); Text(preferredCustomer?.let { "مشتری انتخاب‌شده: ${it.name}" } ?: "پلن را انتخاب و مشتری را مشخص کنید.", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(10.dp)); Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(16.dp)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.AccountBalanceWallet, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("موجودی همکاری", Modifier.weight(1f)); Text(toman(balance), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } }
+        if (plans.isEmpty()) item { EmptyState(Icons.Rounded.Inventory2, "پلنی فعال نیست", "پس از فعال‌شدن پلن توسط مدیریت اینجا نمایش داده می‌شود.") }
+        else items(plans, key = { it.id }) { plan -> Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(23.dp), border = CardDefaults.outlinedCardBorder()) { Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Row { Column(Modifier.weight(1f)) { Text(plan.name, style = MaterialTheme.typography.titleLarge); Text(plan.description, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2) }; Column(horizontalAlignment = Alignment.End) { Text(toman(plan.priceToman), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black); Text("هزینه شما", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }; Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { InfoTile("حجم", "${faNumber(plan.trafficGb)} گیگ"); InfoTile("اعتبار", "${faNumber(plan.durationDays)} روز"); InfoTile("دستگاه", faNumber(plan.deviceLimit)) }; Button(onClick = { onBuy(plan) }, enabled = balance >= plan.priceToman, modifier = Modifier.fillMaxWidth()) { Text(if (balance >= plan.priceToman) "انتخاب مشتری و ساخت" else "موجودی ناکافی") } } } }
+    }
+}
+
+@Composable
+private fun ResellerWalletScreen(account: ResellerAccount) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("کیف پول همکاری", style = MaterialTheme.typography.headlineLarge); Text("ریز برداشت‌ها و بازگشت وجه", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(13.dp)); Card(colors = CardDefaults.cardColors(containerColor = NivoraInk), shape = RoundedCornerShape(25.dp)) { Column(Modifier.fillMaxWidth().padding(22.dp)) { Text("موجودی قابل فروش", color = Color(0xFFB6CCC4)); Text(toman(account.balanceToman), color = NivoraGreen, fontSize = 28.sp, fontWeight = FontWeight.Black) } } }
+        if (account.transactions.isEmpty()) item { EmptyState(Icons.AutoMirrored.Rounded.ReceiptLong, "تراکنشی نیست", "شارژها و خریدهای شما اینجا ثبت می‌شوند.") }
+        else items(account.transactions, key = { it.id }) { TransactionRow(it) }
+    }
+}
+
+@Composable
+private fun ResellerCustomerDialog(busy: Boolean, onDismiss: () -> Unit, onSubmit: (String, String, String) -> Unit) {
+    var name by rememberSaveable { mutableStateOf("") }; var phone by rememberSaveable { mutableStateOf("") }; var note by rememberSaveable { mutableStateOf("") }; var error by rememberSaveable { mutableStateOf<String?>(null) }
+    AppDialog(onDismiss) { DialogTitle(Icons.Rounded.PersonAdd, "مشتری جدید", "برای مشتری یک پرونده اختصاصی بسازید."); NivoraField(name, { name = it.take(80) }, "نام و نام خانوادگی", Icons.Rounded.PersonOutline); NivoraField(phone, { phone = it.filter(Char::isDigit).take(11) }, "شماره موبایل", Icons.Rounded.PhoneAndroid, KeyboardType.Phone); OutlinedTextField(note, { note = it.take(500) }, Modifier.fillMaxWidth(), label = { Text("یادداشت داخلی (اختیاری)") }, minLines = 2, shape = RoundedCornerShape(16.dp)); error?.let { Text(it, color = NivoraDanger) }; Button(onClick = { error = when { name.trim().length < 2 -> "نام مشتری را کامل وارد کنید"; !phone.matches(Regex("09\\d{9}")) -> "شماره موبایل معتبر نیست"; else -> null }; if (error == null) onSubmit(name.trim(), phone, note.trim()) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("ذخیره در دفترچه") }; TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("انصراف") } }
+}
+
+@Composable
+private fun ResellerPurchaseDialog(plan: Plan, customers: List<ResellerCustomer>, preferred: ResellerCustomer?, balance: Int, busy: Boolean, onDismiss: () -> Unit, onSubmit: (ResellerCustomer, Int) -> Unit) {
+    var selectedId by rememberSaveable(plan.id, preferred?.id) { mutableStateOf(preferred?.id ?: customers.firstOrNull()?.id.orEmpty()) }; var salePrice by rememberSaveable(plan.id) { mutableStateOf(plan.priceToman.toString()) }; val selected = customers.firstOrNull { it.id == selectedId }; val sale = salePrice.toIntOrNull() ?: 0; val profit = sale - plan.priceToman
+    AppDialog(onDismiss) { DialogTitle(Icons.Rounded.AddShoppingCart, "فروش ${plan.name}", "هزینه همکاری ${toman(plan.priceToman)} از کیف پول کسر می‌شود."); Text("انتخاب مشتری", style = MaterialTheme.typography.titleMedium); customers.forEach { customer -> Row(Modifier.fillMaxWidth().clickable { selectedId = customer.id }.background(if (selectedId == customer.id) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp)).padding(11.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selectedId == customer.id, { selectedId = customer.id }); Column { Text(customer.name, fontWeight = FontWeight.Bold); Text(customer.phone, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) } } }; OutlinedTextField(salePrice, { salePrice = it.filter(Char::isDigit).take(9) }, Modifier.fillMaxWidth(), label = { Text("مبلغ فروش به مشتری (تومان)") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), shape = RoundedCornerShape(16.dp)); PriceLine("سود این فروش", "${if (profit >= 0) "+" else ""}${toman(profit)}", if (profit >= 0) NivoraGreenDark else NivoraDanger, true); if (balance < plan.priceToman) Text("موجودی کیف پول کافی نیست.", color = NivoraDanger); Button(onClick = { selected?.let { onSubmit(it, sale) } }, enabled = !busy && selected != null && salePrice.isNotBlank() && balance >= plan.priceToman, modifier = Modifier.fillMaxWidth()) { Text("پرداخت و ساخت اشتراک") }; TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("انصراف") } }
+}
+
+@Composable
+private fun ResellerCustomerDetailDialog(customer: ResellerCustomer, orders: List<ResellerOrder>, onDismiss: () -> Unit, onSale: () -> Unit, onCopy: (String, String) -> Unit, onRenew: (ResellerOrder) -> Unit) {
+    AppDialog(onDismiss) { DialogTitle(Icons.Rounded.AccountCircle, customer.name, customer.phone); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { InfoTile("فعال", faNumber(customer.activeSubscriptions)); InfoTile("فروش", toman(customer.revenueToman)); InfoTile("سود", toman(customer.profitToman)) }; Button(onClick = onSale, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(6.dp)); Text("اشتراک جدید برای مشتری") }; Text("اشتراک‌ها و تمدیدها", style = MaterialTheme.typography.titleMedium); if (orders.isEmpty()) Text("هنوز اشتراکی ثبت نشده است.", color = MaterialTheme.colorScheme.onSurfaceVariant) else orders.forEach { order -> Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Row { Column(Modifier.weight(1f)) { Text(order.planName, fontWeight = FontWeight.Bold); Text(if (order.orderKind == "renewal") "تمدید · ${shortDate(order.createdAt)}" else "فروش اولیه · ${shortDate(order.createdAt)}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }; StatusPill(if (order.status == "active") "فعال" else order.status, if (order.status == "active") NivoraGreenDark else NivoraWarning) }; Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) { order.subscriptionUrl?.let { OutlinedButton(onClick = { onCopy(it, "لینک اشتراک کپی شد") }, modifier = Modifier.weight(1f)) { Text("کپی لینک") } }; if (order.orderKind == "purchase" && order.status == "active") Button(onClick = { onRenew(order) }, modifier = Modifier.weight(1f)) { Text("تمدید") } } } } }; TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("بستن") } }
+}
+
+@Composable
+private fun ResellerRenewDialog(order: ResellerOrder, cost: Int, busy: Boolean, onDismiss: () -> Unit, onSubmit: (Int) -> Unit) {
+    var salePrice by rememberSaveable(order.id) { mutableStateOf((order.salePriceToman.takeIf { it > 0 } ?: cost).toString()) }; val sale = salePrice.toIntOrNull() ?: 0; val profit = sale - cost
+    AppDialog(onDismiss) { DialogTitle(Icons.Rounded.Autorenew, "تمدید ${order.planName}", "${order.customerName} · هزینه شما ${toman(cost)}"); OutlinedTextField(salePrice, { salePrice = it.filter(Char::isDigit).take(9) }, Modifier.fillMaxWidth(), label = { Text("مبلغ تمدید برای مشتری") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), shape = RoundedCornerShape(16.dp)); PriceLine("سود این تمدید", "${if (profit >= 0) "+" else ""}${toman(profit)}", if (profit >= 0) NivoraGreenDark else NivoraDanger, true); Button(onClick = { onSubmit(sale) }, enabled = !busy && salePrice.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("تأیید و تمدید") }; TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("انصراف") } }
 }
 
 @Composable

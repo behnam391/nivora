@@ -60,7 +60,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
         val correctedState = if (storedState in setOf("connected", "connecting") && !NivoraVpnService.isCoreRunning()) "disconnected" else storedState
         if (correctedState != storedState) vpnPreferences.edit().putString("state", correctedState).remove("error").apply()
         val signedIn = session.token() != null
-        state = state.copy(signedIn = signedIn, loading = signedIn, vpnState = correctedState, vpnError = friendlyVpnError(vpnPreferences.getString("error", null)))
+        state = state.copy(signedIn = signedIn, loading = signedIn, role = session.role(), vpnState = correctedState, vpnError = friendlyVpnError(vpnPreferences.getString("error", null)))
         setContent {
             NivoraTheme {
                 Surface { NivoraApp(state, this@MainActivity) }
@@ -75,11 +75,11 @@ class MainActivity : ComponentActivity(), NivoraActions {
         super.onDestroy()
     }
 
-    override fun login(phone: String, password: String) = runAction(
-        work = { api.login(phone, password) },
+    override fun login(phone: String, password: String, role: LoginRole) = runAction(
+        work = { api.login(phone, password, if (role == LoginRole.RESELLER) "reseller" else "customer") },
         success = {
-            session.save(it.token)
-            state = state.copy(signedIn = true, loading = true, loadError = null)
+            session.save(it.token, it.role)
+            state = state.copy(signedIn = true, loading = true, role = it.role, account = null, reseller = null, loadError = null)
             loadDashboard(initial = true)
         }
     )
@@ -87,8 +87,8 @@ class MainActivity : ComponentActivity(), NivoraActions {
     override fun register(name: String, phone: String, password: String) = runAction(
         work = { api.register(name, phone, password) },
         success = {
-            session.save(it.token)
-            state = state.copy(signedIn = true, loading = true, loadError = null)
+            session.save(it.token, "customer")
+            state = state.copy(signedIn = true, loading = true, role = "customer", loadError = null)
             loadDashboard(initial = true)
         }
     )
@@ -247,6 +247,30 @@ class MainActivity : ComponentActivity(), NivoraActions {
         )
     }
 
+    override fun createResellerCustomer(name: String, phone: String, note: String) = withToken { token ->
+        runAction(
+            work = { api.createResellerCustomer(token, name, phone, note) },
+            success = { showNotice("مشتری به دفترچه اضافه شد"); loadDashboard(initial = false) }
+        )
+    }
+
+    override fun resellerPurchase(plan: Plan, customer: ResellerCustomer, salePriceToman: Int) = withToken { token ->
+        runAction(
+            work = { api.resellerPurchase(token, plan.id, customer.id, salePriceToman) },
+            success = { result ->
+                result.subscriptionUrl?.let { copyText(it, "اشتراک ساخته شد و لینک آن کپی شد") } ?: showNotice("اشتراک با موفقیت ساخته شد")
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
+    override fun resellerRenew(order: ResellerOrder, salePriceToman: Int) = withToken { token ->
+        runAction(
+            work = { api.resellerRenew(token, order.id, salePriceToman) },
+            success = { showNotice("اشتراک مشتری تمدید شد"); loadDashboard(initial = false) }
+        )
+    }
+
     override fun copyText(value: String, message: String) {
         if (value.isBlank()) return
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
@@ -281,20 +305,33 @@ class MainActivity : ComponentActivity(), NivoraActions {
 
     private fun loadDashboard(initial: Boolean) {
         val token = session.token() ?: run { logout(); return }
-        if (state.refreshing || (initial && state.loading && state.account != null)) return
+        if (state.refreshing || (initial && state.loading && (state.account != null || state.reseller != null))) return
         state = state.copy(
-            loading = initial && state.account == null,
+            loading = initial && state.account == null && state.reseller == null,
             refreshing = !initial,
             loadError = null
         )
         background(
             work = {
-                val account = api.account(token)
-                val plans = api.plans()
-                val tickets = api.tickets(token)
-                Triple(account, plans, tickets)
+                if (state.role == "reseller") {
+                    val reseller = api.resellerAccount(token)
+                    val resellerPlans = api.resellerPlans(token)
+                    DashboardPayload(reseller = reseller, resellerPlans = resellerPlans)
+                } else {
+                    val account = api.account(token)
+                    val plans = api.plans()
+                    val tickets = api.tickets(token)
+                    DashboardPayload(account = account, plans = plans, tickets = tickets)
+                }
             },
-            success = { (account, plans, tickets) ->
+            success = { payload ->
+                if (payload.reseller != null) {
+                    state = state.copy(signedIn = true, loading = false, refreshing = false, reseller = payload.reseller, resellerPlans = payload.resellerPlans, account = null, loadError = null)
+                    return@background
+                }
+                val account = payload.account ?: return@background
+                val plans = payload.plans
+                val tickets = payload.tickets
                 val active = account.subscriptions.filter { it.status == "active" && it.url != null }
                 val storedId = selection.getString("subscription_id", null)
                 val selectedId = active.firstOrNull { it.id == storedId }?.id ?: active.firstOrNull()?.id
@@ -316,7 +353,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
                     state = NivoraUiState(vpnState = state.vpnState)
                 } else {
                     state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
-                    if (state.account != null) showNotice(friendly(error), true)
+                    if (state.account != null || state.reseller != null) showNotice(friendly(error), true)
                 }
             }
         )
@@ -356,6 +393,9 @@ class MainActivity : ComponentActivity(), NivoraActions {
             "RATE_LIMITED" -> "درخواست‌ها زیاد بود؛ کمی بعد دوباره تلاش کنید"
             "INVALID_TOPUP" -> "مبلغ یا شماره پیگیری واریز معتبر نیست"
             "INVALID_TICKET" -> "موضوع و متن پیام را کامل وارد کنید"
+            "INVALID_CUSTOMER" -> "نام یا شماره موبایل مشتری معتبر نیست"
+            "CUSTOMER_ALREADY_EXISTS" -> "این شماره قبلاً در دفترچه ثبت شده است"
+            "CUSTOMER_NOT_FOUND" -> "پرونده مشتری پیدا نشد"
             "INVALID_SERVER_RESPONSE" -> "پاسخ سرور قابل خواندن نبود"
             else -> when (error) {
                 is SocketTimeoutException -> "پاسخ سرور طول کشید؛ دوباره تلاش کنید"
@@ -388,4 +428,12 @@ class MainActivity : ComponentActivity(), NivoraActions {
                 .onFailure { handler.post { if (!isFinishing && !isDestroyed) failure(it) } }
         }.start()
     }
+
+    private data class DashboardPayload(
+        val account: Account? = null,
+        val plans: List<Plan> = emptyList(),
+        val tickets: List<SupportTicket> = emptyList(),
+        val reseller: ResellerAccount? = null,
+        val resellerPlans: List<Plan> = emptyList()
+    )
 }

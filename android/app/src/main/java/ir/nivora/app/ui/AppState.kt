@@ -4,11 +4,16 @@ import ir.nivora.app.data.Account
 import ir.nivora.app.data.DiscountResult
 import ir.nivora.app.data.PaymentCard
 import ir.nivora.app.data.Plan
+import ir.nivora.app.data.ResellerAccount
+import ir.nivora.app.data.ResellerCustomer
+import ir.nivora.app.data.ResellerOrder
 import ir.nivora.app.data.Subscription
 import ir.nivora.app.data.SupportTicket
 import ir.nivora.app.data.TicketConversation
 
 enum class AppDestination { HOME, PLANS, WALLET, SUPPORT }
+enum class LoginRole { CUSTOMER, RESELLER }
+enum class ResellerDestination { OVERVIEW, CUSTOMERS, PLANS, WALLET }
 
 data class UiNotice(val id: Long, val text: String, val error: Boolean = false)
 
@@ -17,7 +22,10 @@ data class NivoraUiState(
     val loading: Boolean = false,
     val refreshing: Boolean = false,
     val actionBusy: Boolean = false,
+    val role: String = "customer",
     val account: Account? = null,
+    val reseller: ResellerAccount? = null,
+    val resellerPlans: List<Plan> = emptyList(),
     val plans: List<Plan> = emptyList(),
     val tickets: List<SupportTicket> = emptyList(),
     val ticketConversation: TicketConversation? = null,
@@ -41,7 +49,7 @@ data class NivoraUiState(
 }
 
 interface NivoraActions {
-    fun login(phone: String, password: String)
+    fun login(phone: String, password: String, role: LoginRole)
     fun register(name: String, phone: String, password: String)
     fun requestPasswordReset(phone: String)
     fun refresh()
@@ -61,6 +69,9 @@ interface NivoraActions {
     fun replyTicket(body: String)
     fun closeTicketConversation()
     fun markNotificationsRead()
+    fun createResellerCustomer(name: String, phone: String, note: String)
+    fun resellerPurchase(plan: Plan, customer: ResellerCustomer, salePriceToman: Int)
+    fun resellerRenew(order: ResellerOrder, salePriceToman: Int)
     fun copyText(value: String, message: String)
     fun logout()
     fun consumeNotice()

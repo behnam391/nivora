@@ -1,1 +1,92 @@
-<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>پنل همکاری Nivora</title><link rel="stylesheet" href="/reseller.css"></head><body><section id="login" class="login"><form id="login-form"><div class="logo">N</div><p>NIVORA PARTNERS</p><h1>ورود همکار</h1><label>شماره موبایل<input id="phone" inputmode="numeric" pattern="09[0-9]{9}" required></label><label>رمز عبور<input id="password" type="password" required></label><button>ورود به پنل</button><small id="login-error"></small></form></section><div id="app" class="hidden"><header><div><p>NIVORA PARTNERS</p><h1>سلام، <span id="name"></span></h1></div><button id="logout">خروج</button></header><main><section class="summary"><article><span>موجودی کیف پول</span><b id="balance">—</b><small>تومان</small></article><article><span>فروش‌های من</span><b id="sales">—</b><small>اشتراک</small></article><article><span>وضعیت</span><b class="online">فعال</b><small>آماده فروش</small></article></section><nav><button class="active" data-view="plans">فروش اشتراک</button><button data-view="orders">سفارش‌های من</button><button data-view="wallet">کیف پول</button></nav><section id="plans" class="view"><div class="title"><div><h2>پلن‌های همکاری</h2><p>قیمت ویژه شما از کیف پول کسر می‌شود.</p></div></div><div id="plans-grid" class="plans"></div></section><section id="orders" class="view hidden"><div class="title"><h2>سفارش‌های من</h2></div><div id="orders-list" class="panel"></div></section><section id="wallet" class="view hidden"><div class="title"><h2>ریز کیف پول</h2></div><div id="ledger" class="panel"></div></section></main></div><dialog id="buy-dialog"><form id="buy-form"><button type="button" class="close">×</button><p>ساخت اشتراک</p><h2 id="buy-plan"></h2><div id="buy-details" class="selected"></div><label>نام مشتری<input id="customer-name" required></label><label>شماره موبایل مشتری<input id="customer-phone" inputmode="numeric" pattern="09[0-9]{9}" required></label><div class="warning">مبلغ بلافاصله از کیف پول کسر می‌شود. اگر ساخت اشتراک ناموفق باشد، مبلغ خودکار بازمی‌گردد.</div><button id="buy-submit" class="primary">تأیید و ساخت اشتراک</button><div id="buy-result"></div></form></dialog><div id="toast"></div><script src="/reseller.js" defer></script></body></html>
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#071c16">
+  <title>پنل همکاری Nivora | مرکز فروش</title>
+  <link rel="icon" href="/brand-mark.svg">
+  <link rel="stylesheet" href="/reseller.css">
+</head>
+<body>
+  <section id="login" class="login-shell">
+    <form id="login-form" class="login-card">
+      <div class="brand-lockup"><img src="/brand-mark.svg" alt=""><div><strong>NIVORA</strong><span>PARTNER CENTER</span></div></div>
+      <div class="login-copy"><span class="eyebrow">مرکز فروش همکاران</span><h1>کسب‌وکارت را مدیریت کن</h1><p>مشتری، فروش، تمدید و سود؛ همه در یک پنل.</p></div>
+      <label>شماره موبایل<input id="phone" inputmode="numeric" autocomplete="username" pattern="09[0-9]{9}" placeholder="09123456789" required></label>
+      <label>رمز عبور<input id="password" type="password" autocomplete="current-password" required></label>
+      <button class="primary wide" type="submit">ورود به مرکز همکاری</button>
+      <small id="login-error" class="form-error"></small>
+    </form>
+  </section>
+
+  <div id="app" class="app hidden">
+    <aside>
+      <div class="brand-lockup side-brand"><img src="/brand-mark.svg" alt=""><div><strong>NIVORA</strong><span>مرکز همکاری</span></div></div>
+      <nav>
+        <button class="nav active" data-view="overview"><i>⌂</i><span>نمای کلی</span></button>
+        <button class="nav" data-view="customers"><i>♙</i><span>دفترچه مشتریان</span><b id="customers-badge">۰</b></button>
+        <button class="nav" data-view="plans"><i>＋</i><span>فروش اشتراک</span></button>
+        <button class="nav" data-view="orders"><i>↻</i><span>فروش‌ها و تمدیدها</span></button>
+        <button class="nav" data-view="wallet"><i>◈</i><span>کیف پول</span></button>
+      </nav>
+      <div class="partner-card"><span>حساب همکاری</span><b id="side-name">—</b><small id="side-phone">—</small></div>
+      <button id="logout" class="logout">خروج امن</button>
+    </aside>
+
+    <main>
+      <header>
+        <div><span class="eyebrow">NIVORA PARTNERS</span><h1>سلام، <span id="name"></span></h1><p id="today">مرکز مدیریت فروش شما آماده است.</p></div>
+        <div class="header-actions"><button id="refresh" class="icon-button" title="تازه‌سازی">↻</button><button class="primary" data-action="quick-sale">＋ فروش جدید</button></div>
+      </header>
+
+      <section class="summary">
+        <article class="balance-card"><span>موجودی قابل فروش</span><b id="balance">—</b><small>تومان</small><em>کیف پول همکاری</em></article>
+        <article><span>مشتریان من</span><b id="customer-count">—</b><small>پرونده فعال</small><em>دفترچه اختصاصی</em></article>
+        <article><span>اشتراک‌های فعال</span><b id="active-sales">—</b><small>سرویس فعال</small><em id="sales-caption">۰ فروش کل</em></article>
+        <article><span>سود ثبت‌شده</span><b id="profit">—</b><small>تومان</small><em id="revenue-caption">از ۰ تومان فروش</em></article>
+      </section>
+
+      <section id="overview" class="view">
+        <div class="overview-grid">
+          <article class="panel"><div class="panel-head"><div><span class="eyebrow">مشتریان</span><h2>آخرین مشتری‌ها</h2></div><button class="link" data-go="customers">مشاهده همه</button></div><div id="recent-customers"></div></article>
+          <article class="panel"><div class="panel-head"><div><span class="eyebrow">فعالیت فروش</span><h2>آخرین عملیات</h2></div><button class="link" data-go="orders">گزارش کامل</button></div><div id="recent-orders"></div></article>
+        </div>
+      </section>
+
+      <section id="customers" class="view hidden">
+        <div class="section-head"><div><span class="eyebrow">CRM شخصی</span><h2>دفترچه مشتریان</h2><p>پرونده، اشتراک‌ها و تمدید هر مشتری را یکجا ببینید.</p></div><button id="new-customer" class="primary">＋ مشتری جدید</button></div>
+        <div class="toolbar"><label class="search"><span>⌕</span><input id="customer-search" placeholder="جست‌وجو با نام یا موبایل"></label><span id="customer-result-count"></span></div>
+        <div id="customer-list" class="customer-list"></div>
+      </section>
+
+      <section id="plans" class="view hidden">
+        <div class="section-head"><div><span class="eyebrow">فروش فوری</span><h2>ساخت اشتراک جدید</h2><p>پلن را انتخاب کنید؛ هزینه همکاری از کیف پول کسر می‌شود.</p></div></div>
+        <div id="plans-grid" class="plans-grid"></div>
+      </section>
+
+      <section id="orders" class="view hidden">
+        <div class="section-head"><div><span class="eyebrow">تاریخچه</span><h2>فروش‌ها و تمدیدها</h2><p>وضعیت همه سرویس‌های ساخته‌شده برای مشتریان.</p></div></div>
+        <div class="toolbar"><label class="search"><span>⌕</span><input id="order-search" placeholder="جست‌وجوی مشتری یا پلن"></label><select id="order-filter"><option value="all">همه عملیات</option><option value="purchase">فروش اولیه</option><option value="renewal">تمدید</option></select></div>
+        <div id="orders-list" class="panel"></div>
+      </section>
+
+      <section id="wallet" class="view hidden">
+        <div class="section-head"><div><span class="eyebrow">حساب مالی</span><h2>کیف پول همکاری</h2><p>تمام برداشت‌ها، بازگشت‌ها و شارژهای حساب.</p></div></div>
+        <div id="wallet-hero" class="wallet-hero"></div><div id="ledger" class="panel ledger"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="customer-dialog"><form id="customer-form" method="dialog"><button type="button" class="close" data-close="customer-dialog">×</button><span class="eyebrow">دفترچه مشتریان</span><h2 id="customer-dialog-title">مشتری جدید</h2><input id="customer-id" type="hidden"><label>نام و نام خانوادگی<input id="customer-name" maxlength="80" required></label><label>شماره موبایل<input id="customer-phone" inputmode="numeric" pattern="09[0-9]{9}" maxlength="11" required></label><label>یادداشت داخلی<textarea id="customer-note" rows="3" maxlength="500" placeholder="مثلاً نحوه آشنایی یا توضیح پیگیری"></textarea></label><p id="customer-error" class="form-error"></p><button class="primary wide" type="submit">ذخیره در دفترچه</button></form></dialog>
+
+  <dialog id="profile-dialog" class="large-dialog"><div class="dialog-body"><button type="button" class="close" data-close="profile-dialog">×</button><div id="profile-content"></div></div></dialog>
+
+  <dialog id="buy-dialog"><form id="buy-form"><button type="button" class="close" data-close="buy-dialog">×</button><span class="eyebrow">ساخت فوری سرویس</span><h2 id="buy-plan">اشتراک جدید</h2><div id="buy-details" class="selected"></div><label>انتخاب مشتری<select id="buy-customer" required></select></label><button type="button" id="buy-new-customer" class="text-button">＋ افزودن مشتری تازه</button><label>مبلغ فروش به مشتری (تومان)<input id="sale-price" type="number" min="0" required></label><div id="profit-preview" class="profit-preview"></div><div class="warning">هزینه همکاری بلافاصله از کیف پول کسر می‌شود؛ در صورت خطای ساخت، مبلغ خودکار بازمی‌گردد.</div><p id="buy-error" class="form-error"></p><button id="buy-submit" class="primary wide">پرداخت و ساخت اشتراک</button><div id="buy-result"></div></form></dialog>
+
+  <dialog id="renew-dialog"><form id="renew-form"><button type="button" class="close" data-close="renew-dialog">×</button><span class="eyebrow">تمدید اشتراک</span><h2 id="renew-title">تمدید سرویس</h2><div id="renew-details" class="selected"></div><label>مبلغ تمدید برای مشتری (تومان)<input id="renew-sale-price" type="number" min="0" required></label><div id="renew-profit-preview" class="profit-preview"></div><p id="renew-error" class="form-error"></p><button id="renew-submit" class="primary wide">تأیید و تمدید</button></form></dialog>
+
+  <div id="toast" role="status"></div>
+  <script src="/reseller.js" defer></script>
+</body>
+</html>

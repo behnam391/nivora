@@ -38,6 +38,25 @@ function validPlan(body) {
     body.priceIrr >= 0 && body.trafficGb > 0 && body.durationDays > 0 && body.deviceLimit > 0;
 }
 
+const resellerCustomerFromBody = body => ({
+  name: String(body.name || body.customerName || '').trim(),
+  phone: String(body.phone || '').trim(),
+  note: String(body.note || '').trim().slice(0, 500)
+});
+
+function createOrRestoreResellerCustomer(db, resellerId, body, now = new Date().toISOString()) {
+  const customer = resellerCustomerFromBody(body);
+  if (customer.name.length < 2 || !/^09\d{9}$/.test(customer.phone)) throw new Error('INVALID_CUSTOMER');
+  const existing = db.prepare('SELECT * FROM reseller_customers WHERE reseller_id=? AND phone=?').get(resellerId,customer.phone);
+  if (existing) {
+    db.prepare("UPDATE reseller_customers SET name=?,note=CASE WHEN ?<>'' THEN ? ELSE note END,status='active',updated_at=? WHERE id=?").run(customer.name,customer.note,customer.note,now,existing.id);
+    return db.prepare('SELECT * FROM reseller_customers WHERE id=?').get(existing.id);
+  }
+  const id=randomUUID();
+  db.prepare("INSERT INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at) VALUES(?,?,?,?,?,'active',?,?)").run(id,resellerId,customer.name,customer.phone,customer.note,now,now);
+  return db.prepare('SELECT * FROM reseller_customers WHERE id=?').get(id);
+}
+
 export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', provisioner = null } = {}) {
   const isAdmin = req => req.headers.authorization === `Bearer ${adminToken}`;
   const audit = (actor, action, type, id, details = null) => db.prepare(
@@ -87,8 +106,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/account.js'){const js=await readFile(resolve('public/account.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/account-recovery.js'){const js=await readFile(resolve('public/account-recovery.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/reseller.css'){const css=await readFile(resolve('public/reseller.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
-      if(req.method==='GET'&&path==='/reseller-extra.css'){const css=await readFile(resolve('public/reseller-extra.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/reseller.js'){const js=await readFile(resolve('public/reseller.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
+      if(req.method==='GET'&&path==='/brand-mark.svg'){const svg=await readFile(resolve('public/brand-mark.svg'));res.writeHead(200,{'content-type':'image/svg+xml; charset=utf-8','cache-control':'public, max-age=86400'});return res.end(svg);}
+      if(req.method==='GET'&&path==='/brand.css'){const css=await readFile(resolve('public/brand.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8','cache-control':'public, max-age=3600'});return res.end(css);}
       if (req.method === 'GET' && path === '/admin.css') {
         const css = await readFile(resolve('public/admin.css'));
         res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' }); return res.end(css);
@@ -189,34 +209,79 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       if(path.startsWith('/api/reseller/')){
         const account=accountFromRequest(db,req);if(!account||account.role!=='reseller')return json(res,401,{error:'UNAUTHORIZED'});
-        if(req.method==='GET'&&path==='/api/reseller/me'){const wallet=getWalletStatement(db,account.id,10);return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions});}
+        if(req.method==='GET'&&path==='/api/reseller/me'){
+          const wallet=getWalletStatement(db,account.id,25),summary=db.prepare(`SELECT
+            (SELECT COUNT(*) FROM reseller_customers WHERE reseller_id=? AND status='active') customers_count,
+            (SELECT COUNT(*) FROM orders WHERE reseller_id=? AND order_kind='purchase') sales_count,
+            (SELECT COUNT(*) FROM orders o JOIN subscriptions s ON s.order_id=o.id WHERE o.reseller_id=? AND o.order_kind='purchase' AND s.status='active') active_subscriptions,
+            (SELECT COALESCE(SUM(reseller_sale_price_toman),0) FROM orders WHERE reseller_id=? AND status='approved') total_revenue_toman,
+            (SELECT COALESCE(SUM(CAST(amount_transferred_irr/10 AS INTEGER)),0) FROM orders WHERE reseller_id=? AND status='approved') total_cost_toman`).get(account.id,account.id,account.id,account.id,account.id);
+          return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,customersCount:summary.customers_count,salesCount:summary.sales_count,activeSubscriptions:summary.active_subscriptions,totalRevenueToman:summary.total_revenue_toman,totalProfitToman:summary.total_revenue_toman-summary.total_cost_toman});
+        }
         if(req.method==='GET'&&path==='/api/reseller/plans'){
           const rows=db.prepare(`SELECT p.id,p.name,p.description,p.traffic_gb,p.duration_days,p.device_limit,CAST(p.price_irr/10 AS INTEGER) retail_price_toman,r.price_toman,
             GROUP_CONCAT(l.name,'، ') locations FROM plans p LEFT JOIN reseller_plan_prices r ON r.plan_id=p.id AND r.reseller_id=? AND r.active=1 LEFT JOIN plan_locations pl ON pl.plan_id=p.id LEFT JOIN service_locations l ON l.id=pl.location_id AND l.active=1 WHERE p.active=1 GROUP BY p.id ORDER BY p.sort_order`).all(account.id);
           return json(res,200,rows.map(p=>({...p,price_toman:p.price_toman??Math.round(p.retail_price_toman*(100-account.default_discount_percent)/100)})));
         }
-        if(req.method==='GET'&&path==='/api/reseller/orders'){return json(res,200,db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.customer_name,o.phone,o.status,o.created_at,p.name plan_name,s.status subscription_status,s.subscription_url,s.provision_error,l.name location_name FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? ORDER BY o.created_at DESC LIMIT 200`).all(account.id));}
+        if(req.method==='GET'&&path==='/api/reseller/customers'){
+          const q=String(url.searchParams.get('q')||'').trim(),like=`%${q}%`;
+          const rows=db.prepare(`SELECT rc.id,rc.name,rc.phone,rc.note,rc.created_at,rc.updated_at,
+            COUNT(DISTINCT CASE WHEN o.order_kind='purchase' THEN o.id END) subscription_count,
+            COUNT(DISTINCT CASE WHEN o.order_kind='purchase' AND s.status='active' THEN o.id END) active_subscriptions,
+            COUNT(DISTINCT o.id) order_count,MAX(o.created_at) last_order_at,
+            COALESCE(SUM(CASE WHEN o.status='approved' THEN o.reseller_sale_price_toman ELSE 0 END),0) revenue_toman,
+            COALESCE(SUM(CASE WHEN o.status='approved' THEN CAST(o.amount_transferred_irr/10 AS INTEGER) ELSE 0 END),0) cost_toman
+            FROM reseller_customers rc LEFT JOIN orders o ON o.reseller_customer_id=rc.id LEFT JOIN subscriptions s ON s.order_id=o.id
+            WHERE rc.reseller_id=? AND rc.status='active' AND (?='' OR rc.name LIKE ? OR rc.phone LIKE ?)
+            GROUP BY rc.id ORDER BY COALESCE(MAX(o.created_at),rc.updated_at) DESC LIMIT 500`).all(account.id,q,like,like);
+          return json(res,200,rows.map(row=>({...row,profit_toman:row.revenue_toman-row.cost_toman})));
+        }
+        if(req.method==='POST'&&path==='/api/reseller/customers'){
+          const body=await readJson(req),customer=resellerCustomerFromBody(body);if(customer.name.length<2||!/^09\d{9}$/.test(customer.phone))return json(res,400,{error:'INVALID_CUSTOMER'});
+          if(db.prepare('SELECT id FROM reseller_customers WHERE reseller_id=? AND phone=?').get(account.id,customer.phone))return json(res,409,{error:'CUSTOMER_ALREADY_EXISTS'});
+          const id=randomUUID(),now=new Date().toISOString();db.prepare("INSERT INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at) VALUES(?,?,?,?,?,'active',?,?)").run(id,account.id,customer.name,customer.phone,customer.note,now,now);audit(account.id,'create','reseller_customer',id);return json(res,201,{id,...customer,created_at:now,updated_at:now});
+        }
+        const resellerCustomerMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)$/);
+        if(resellerCustomerMatch&&req.method==='GET'){
+          const customer=db.prepare("SELECT * FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(resellerCustomerMatch[1],account.id);if(!customer)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});
+          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,s.panel_client_id,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? AND o.reseller_customer_id=? ORDER BY o.created_at DESC LIMIT 200`).all(account.id,customer.id);
+          return json(res,200,{...customer,orders:rows.map(row=>enrichSubscription(row,panelStats))});
+        }
+        if(resellerCustomerMatch&&req.method==='PATCH'){
+          const current=db.prepare("SELECT * FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(resellerCustomerMatch[1],account.id);if(!current)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});const body=await readJson(req),customer=resellerCustomerFromBody(body);if(customer.name.length<2||!/^09\d{9}$/.test(customer.phone))return json(res,400,{error:'INVALID_CUSTOMER'});
+          const duplicate=db.prepare('SELECT id FROM reseller_customers WHERE reseller_id=? AND phone=? AND id<>?').get(account.id,customer.phone,current.id);if(duplicate)return json(res,409,{error:'CUSTOMER_ALREADY_EXISTS'});const now=new Date().toISOString();db.prepare('UPDATE reseller_customers SET name=?,phone=?,note=?,updated_at=? WHERE id=?').run(customer.name,customer.phone,customer.note,now,current.id);db.prepare('UPDATE orders SET customer_name=?,phone=? WHERE reseller_customer_id=?').run(customer.name,customer.phone,current.id);audit(account.id,'update','reseller_customer',current.id);return json(res,200,{id:current.id,...customer,updated_at:now});
+        }
+        if(resellerCustomerMatch&&req.method==='DELETE'){
+          const current=db.prepare("SELECT id FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(resellerCustomerMatch[1],account.id);if(!current)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});db.prepare("UPDATE reseller_customers SET status='archived',updated_at=? WHERE id=?").run(new Date().toISOString(),current.id);audit(account.id,'archive','reseller_customer',current.id);return json(res,200,{archived:true});
+        }
+        if(req.method==='GET'&&path==='/api/reseller/orders'){
+          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.reseller_customer_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,s.panel_client_id,s.provision_error,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? ORDER BY o.created_at DESC LIMIT 300`).all(account.id);return json(res,200,rows.map(row=>enrichSubscription(row,panelStats)));
+        }
         const renewMatch=path.match(/^\/api\/reseller\/orders\/([^/]+)\/renew$/);
         if(req.method==='POST'&&renewMatch){
+          const body=await readJson(req);
           const original=db.prepare(`SELECT o.*,p.name plan_name,p.price_irr,p.traffic_gb,p.duration_days,p.device_limit,s.panel_client_id,s.subscription_url FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id WHERE o.id=? AND o.reseller_id=? AND o.order_kind='purchase' AND s.status='active'`).get(renewMatch[1],account.id);
           if(!original)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
           const override=db.prepare('SELECT price_toman FROM reseller_plan_prices WHERE reseller_id=? AND plan_id=? AND active=1').get(account.id,original.plan_id),price=override?.price_toman??Math.round((original.price_irr/10)*(100-account.default_discount_percent)/100);
-          const id=randomUUID(),now=new Date().toISOString();try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`reseller-renew:${id}`,actor:account.id,note:`تمدید ${original.plan_name} برای ${original.phone}`});}catch(e){return json(res,400,{error:e.message});}
-          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,reseller_id,location_id,order_kind,parent_order_id) VALUES(?,?,?,?,'approved',?,?,?,?,?,'renewal',?)`).run(id,original.customer_name,original.phone,original.plan_id,price*10,now,randomUUID().replace(/-/g,''),account.id,original.location_id,original.id);
+          const salePrice=Number.isInteger(body.salePriceToman)&&body.salePriceToman>=0?body.salePriceToman:(original.reseller_sale_price_toman??Math.round(original.price_irr/10)),id=randomUUID(),now=new Date().toISOString();try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`reseller-renew:${id}`,actor:account.id,note:`تمدید ${original.plan_name} برای ${original.phone}`});}catch(e){return json(res,400,{error:e.message});}
+          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,reseller_id,location_id,order_kind,parent_order_id,reseller_customer_id,reseller_sale_price_toman) VALUES(?,?,?,?,'approved',?,?,?,?,?,'renewal',?,?,?)`).run(id,original.customer_name,original.phone,original.plan_id,price*10,now,randomUUID().replace(/-/g,''),account.id,original.location_id,original.id,original.reseller_customer_id,salePrice);
           const sid=randomUUID();db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?)`).run(sid,id,original.panel_client_id,original.subscription_url,now);
           try{if(!provisioner?.renew)throw new Error('RENEW_NOT_SUPPORTED');await provisioner.renew({panelClientId:original.panel_client_id,addDays:original.duration_days,addTrafficGb:original.traffic_gb});db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(),sid);return json(res,201,{orderId:id,status:'active',subscriptionUrl:original.subscription_url,balanceToman:getWalletStatement(db,account.id,1).balanceToman});}
           catch(e){db.prepare("UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?").run(String(e.message||e),sid);postWalletTransaction(db,{accountId:account.id,amountToman:price,type:'refund',reference:`reseller-renew-refund:${id}`,actor:'system',note:`بازپرداخت تمدید ناموفق ${id}`});return json(res,502,{error:'RENEW_FAILED',refunded:true});}
         }
         if(req.method==='POST'&&path==='/api/reseller/purchase'){
           const b=await readJson(req),plan=db.prepare(`SELECT p.*,r.price_toman reseller_price FROM plans p LEFT JOIN reseller_plan_prices r ON r.plan_id=p.id AND r.reseller_id=? AND r.active=1 WHERE p.id=? AND p.active=1`).get(account.id,b.planId);
-          if(!plan||!b.customerName?.trim()||!/^09\d{9}$/.test(b.phone||''))return json(res,400,{error:'INVALID_PURCHASE'});
+          if(!plan)return json(res,400,{error:'INVALID_PURCHASE'});let customer;
+          if(b.customerId)customer=db.prepare("SELECT * FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(b.customerId,account.id);
+          else try{customer=createOrRestoreResellerCustomer(db,account.id,b);}catch{return json(res,400,{error:'INVALID_CUSTOMER'});}
+          if(!customer)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});
           const location=selectLocationForPlan(db,plan.id);if(!location)return json(res,409,{error:'NO_CAPACITY'});
-          const price=plan.reseller_price??Math.round((plan.price_irr/10)*(100-account.default_discount_percent)/100),id=randomUUID(),trackingToken=randomUUID().replace(/-/g,''),now=new Date().toISOString();
-          try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`reseller-order:${id}`,actor:account.id,note:`خرید ${plan.name} برای ${b.phone}`});}catch(e){return json(res,400,{error:e.message});}
-          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,reseller_id,location_id) VALUES(?,?,?,?,'approved',?,?,?,?,?)`).run(id,b.customerName.trim(),b.phone,plan.id,price*10,now,trackingToken,account.id,location.id);
+          const price=plan.reseller_price??Math.round((plan.price_irr/10)*(100-account.default_discount_percent)/100),salePrice=Number.isInteger(b.salePriceToman)&&b.salePriceToman>=0?b.salePriceToman:Math.round(plan.price_irr/10),id=randomUUID(),trackingToken=randomUUID().replace(/-/g,''),now=new Date().toISOString();
+          try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`reseller-order:${id}`,actor:account.id,note:`خرید ${plan.name} برای ${customer.phone}`});}catch(e){return json(res,400,{error:e.message});}
+          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,reseller_id,location_id,reseller_customer_id,reseller_sale_price_toman) VALUES(?,?,?,?,'approved',?,?,?,?,?,?,?)`).run(id,customer.name,customer.phone,plan.id,price*10,now,trackingToken,account.id,location.id,customer.id,salePrice);
           const subscriptionId=randomUUID();db.prepare(`INSERT INTO subscriptions(id,order_id,status,created_at) VALUES(?,?,'pending_provision',?)`).run(subscriptionId,id,now);
-          const order={id,phone:b.phone,plan_name:plan.name,traffic_gb:plan.traffic_gb,duration_days:plan.duration_days,device_limit:plan.device_limit,panel_inbound_id:location.panel_inbound_id,location_name:location.name};
-          try{if(!provisioner)throw new Error('PROVISIONER_NOT_CONFIGURED');const result=await provisioner(order);db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,activated_at=? WHERE id=?`).run(result.panelClientId,result.subscriptionUrl,new Date().toISOString(),subscriptionId);return json(res,201,{orderId:id,status:'active',subscriptionUrl:result.subscriptionUrl,balanceToman:getWalletStatement(db,account.id,1).balanceToman});}
+          const order={id,phone:customer.phone,plan_name:plan.name,traffic_gb:plan.traffic_gb,duration_days:plan.duration_days,device_limit:plan.device_limit,panel_inbound_id:location.panel_inbound_id,location_name:location.name};
+          try{if(!provisioner)throw new Error('PROVISIONER_NOT_CONFIGURED');const result=await provisioner(order);db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,activated_at=? WHERE id=?`).run(result.panelClientId,result.subscriptionUrl,new Date().toISOString(),subscriptionId);return json(res,201,{orderId:id,customerId:customer.id,status:'active',subscriptionUrl:result.subscriptionUrl,balanceToman:getWalletStatement(db,account.id,1).balanceToman});}
           catch(e){db.prepare(`UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?`).run(String(e.message||e),subscriptionId);postWalletTransaction(db,{accountId:account.id,amountToman:price,type:'refund',reference:`reseller-refund:${id}`,actor:'system',note:`بازپرداخت خرید ناموفق ${id}`});return json(res,502,{error:'PROVISION_FAILED',refunded:true});}
         }
       }

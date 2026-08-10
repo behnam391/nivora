@@ -4,6 +4,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -19,6 +20,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -56,27 +58,43 @@ fun countryFlag(code: String?): String {
 @Composable
 fun NivoraLogo(modifier: Modifier = Modifier, compact: Boolean = false, onDark: Boolean = false) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(
-            modifier = Modifier
-                .size(if (compact) 38.dp else 54.dp)
-                .shadow(14.dp, RoundedCornerShape(if (compact) 13.dp else 18.dp), ambientColor = NivoraGreen.copy(.35f))
-                .background(
-                    Brush.linearGradient(listOf(NivoraGreen, Color(0xFF6DE9C1))),
-                    RoundedCornerShape(if (compact) 13.dp else 18.dp)
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Rounded.Shield,
-                contentDescription = null,
-                tint = NivoraInk,
-                modifier = Modifier.size(if (compact) 23.dp else 32.dp)
-            )
-        }
+        NivoraMark(Modifier.size(if (compact) 40.dp else 57.dp))
         Column {
             Text("NIVORA", color = if (onDark) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = if (compact) 19.sp else 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
             if (!compact) Text("اینترنت امن، ساده و سریع", style = MaterialTheme.typography.bodyMedium, color = if (onDark) Color(0xFFB9D0C8) else MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+@Composable
+fun NivoraMark(modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val mark = Path().apply {
+            moveTo(.17f * w, .82f * h)
+            lineTo(.17f * w, .29f * h)
+            cubicTo(.17f * w, .20f * h, .27f * w, .16f * h, .34f * w, .24f * h)
+            lineTo(.72f * w, .70f * h)
+            lineTo(.72f * w, .28f * h)
+            cubicTo(.72f * w, .20f * h, .78f * w, .15f * h, .86f * w, .15f * h)
+            lineTo(.89f * w, .15f * h)
+            lineTo(.89f * w, .73f * h)
+            cubicTo(.89f * w, .84f * h, .77f * w, .89f * h, .70f * w, .80f * h)
+            lineTo(.34f * w, .37f * h)
+            lineTo(.34f * w, .72f * h)
+            cubicTo(.34f * w, .79f * h, .29f * w, .84f * h, .22f * w, .84f * h)
+            close()
+        }
+        drawPath(mark, brush = Brush.linearGradient(listOf(Color(0xFF7CF2CD), NivoraGreen, Color(0xFF07976D))))
+        val highlight = Path().apply {
+            moveTo(.34f * w, .37f * h)
+            lineTo(.45f * w, .50f * h)
+            lineTo(.45f * w, .72f * h)
+            cubicTo(.45f * w, .78f * h, .40f * w, .82f * h, .34f * w, .83f * h)
+            close()
+        }
+        drawPath(highlight, Color(0xFFCEFFF0).copy(alpha = .55f))
     }
 }
 

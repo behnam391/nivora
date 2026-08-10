@@ -8,7 +8,9 @@
 android/.libxray-download/
 android/.libxray-source/
 android/.xray-core-source/
+android/.kotlin/
 android/app/libs/*.aar
 *.jks
 *.keystore
 android/signing.properties
+.tmp/

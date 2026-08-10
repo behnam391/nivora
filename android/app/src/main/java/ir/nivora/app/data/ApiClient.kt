@@ -52,8 +52,8 @@ class ApiClient(private val baseUrl: String) {
         return runCatching { JSONObject(raw) }.getOrElse { throw ApiException("INVALID_SERVER_RESPONSE", 502) }
     }
 
-    fun login(phone: String, password: String) = session(
-        request("/api/customer/login", "POST", body = JSONObject().put("phone", phone).put("password", password))
+    fun login(phone: String, password: String, role: String) = session(
+        request(if (role == "reseller") "/api/reseller/login" else "/api/customer/login", "POST", body = JSONObject().put("phone", phone).put("password", password)), role
     )
 
     fun register(name: String, phone: String, password: String) = session(
@@ -61,8 +61,57 @@ class ApiClient(private val baseUrl: String) {
             "/api/customer/register",
             "POST",
             body = JSONObject().put("name", name).put("phone", phone).put("password", password)
-        )
+        ), "customer"
     )
+
+    fun resellerAccount(token: String): ResellerAccount {
+        val me = request("/api/reseller/me", token = token)
+        val customersRaw = rawRequest("/api/reseller/customers", token = token).body
+        val ordersRaw = rawRequest("/api/reseller/orders", token = token).body
+        val customers = JSONArray(customersRaw).objects().map {
+            ResellerCustomer(
+                it.getString("id"), it.getString("name"), it.getString("phone"),
+                it.optString("note"), it.optInt("active_subscriptions"), it.optInt("subscription_count"),
+                it.optInt("revenue_toman"), it.optInt("profit_toman")
+            )
+        }
+        val orders = JSONArray(ordersRaw).objects().map(::resellerOrder)
+        val transactions = me.array("transactions").objects().map {
+            WalletTransaction(
+                it.getString("id"), it.getInt("amount_toman"), it.getInt("balance_after_toman"),
+                it.getString("type"), it.optString("note").takeIf(String::isNotBlank), it.getString("created_at")
+            )
+        }
+        return ResellerAccount(
+            me.getString("name"), me.getString("phone"), me.getInt("balanceToman"),
+            me.optInt("customersCount"), me.optInt("salesCount"), me.optInt("activeSubscriptions"),
+            me.optInt("totalRevenueToman"), me.optInt("totalProfitToman"), transactions, customers, orders
+        )
+    }
+
+    fun resellerPlans(token: String): List<Plan> {
+        val raw = rawRequest("/api/reseller/plans", token = token).body
+        return JSONArray(raw).objects().map {
+            Plan(
+                it.getString("id"), it.getString("name"), it.optString("description"),
+                it.getInt("price_toman"), it.getInt("traffic_gb"), it.getInt("duration_days"),
+                it.getInt("device_limit"), it.optString("locations").split('،').map(String::trim).filter(String::isNotBlank)
+            )
+        }
+    }
+
+    fun createResellerCustomer(token: String, name: String, phone: String, note: String) {
+        request("/api/reseller/customers", "POST", token, JSONObject().put("name", name).put("phone", phone).put("note", note))
+    }
+
+    fun resellerPurchase(token: String, planId: String, customerId: String, salePriceToman: Int): PurchaseResult {
+        val json = request("/api/reseller/purchase", "POST", token, JSONObject().put("planId", planId).put("customerId", customerId).put("salePriceToman", salePriceToman))
+        return PurchaseResult(json.optString("subscriptionUrl").takeIf(String::isNotBlank), 0, json.optInt("balanceToman"))
+    }
+
+    fun resellerRenew(token: String, orderId: String, salePriceToman: Int) {
+        request("/api/reseller/orders/$orderId/renew", "POST", token, JSONObject().put("salePriceToman", salePriceToman))
+    }
 
     fun requestPasswordReset(phone: String) {
         request("/api/customer/password-reset-requests", "POST", body = JSONObject().put("phone", phone))
@@ -245,9 +294,18 @@ class ApiClient(private val baseUrl: String) {
         request("/api/customer/notifications/read", "POST", token, JSONObject())
     }
 
-    private fun session(json: JSONObject) = Session(
+    private fun resellerOrder(json: JSONObject) = ResellerOrder(
+        json.getString("id"), json.getString("plan_id"), json.optString("reseller_customer_id").takeIf(String::isNotBlank),
+        json.optString("customer_name"), json.optString("phone"), json.getString("plan_name"),
+        json.optString("order_kind", "purchase"), json.optString("subscription_status", json.optString("status")),
+        json.optString("subscription_url").takeIf(String::isNotBlank), json.optString("location_name").takeIf(String::isNotBlank),
+        json.optInt("traffic_gb"), json.optInt("duration_days"), json.optInt("remainingDays"),
+        json.optInt("reseller_sale_price_toman"), json.getString("created_at")
+    )
+
+    private fun session(json: JSONObject, role: String) = Session(
         json.getString("token"),
-        json.getJSONObject("account").getString("name")
+        json.getJSONObject("account").getString("name"), role
     )
 
     private fun JSONObject.array(key: String) = optJSONArray(key) ?: JSONArray()

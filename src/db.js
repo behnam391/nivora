@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
@@ -99,6 +100,17 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       updated_at TEXT NOT NULL,
       PRIMARY KEY(reseller_id,plan_id)
     );
+    CREATE TABLE IF NOT EXISTS reseller_customers (
+      id TEXT PRIMARY KEY,
+      reseller_id TEXT NOT NULL REFERENCES accounts(id),
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','archived')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(reseller_id,phone)
+    );
     CREATE TABLE IF NOT EXISTS service_locations (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -194,6 +206,8 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!orderColumns.includes('location_id')) db.exec('ALTER TABLE orders ADD COLUMN location_id TEXT REFERENCES service_locations(id)');
   if (!orderColumns.includes('order_kind')) db.exec("ALTER TABLE orders ADD COLUMN order_kind TEXT NOT NULL DEFAULT 'purchase'");
   if (!orderColumns.includes('parent_order_id')) db.exec('ALTER TABLE orders ADD COLUMN parent_order_id TEXT REFERENCES orders(id)');
+  if (!orderColumns.includes('reseller_customer_id')) db.exec('ALTER TABLE orders ADD COLUMN reseller_customer_id TEXT REFERENCES reseller_customers(id)');
+  if (!orderColumns.includes('reseller_sale_price_toman')) db.exec('ALTER TABLE orders ADD COLUMN reseller_sale_price_toman INTEGER');
   const accountColumns = db.prepare('PRAGMA table_info(accounts)').all().map(c => c.name);
   if (!accountColumns.includes('password_hash')) db.exec('ALTER TABLE accounts ADD COLUMN password_hash TEXT');
   if (!accountColumns.includes('password_salt')) db.exec('ALTER TABLE accounts ADD COLUMN password_salt TEXT');
@@ -202,5 +216,11 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   db.exec('CREATE INDEX IF NOT EXISTS idx_tickets_account ON support_tickets(account_id,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_account ON notifications(account_id,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_resets_status ON password_reset_requests(status,requested_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_customers_owner ON reseller_customers(reseller_id,status,updated_at DESC)');
+  const legacyCustomers = db.prepare(`SELECT reseller_id,phone,MAX(customer_name) name,MIN(created_at) created_at,MAX(created_at) updated_at FROM orders WHERE reseller_id IS NOT NULL AND phone IS NOT NULL GROUP BY reseller_id,phone`).all();
+  const insertLegacyCustomer = db.prepare(`INSERT OR IGNORE INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at) VALUES(?,?,?,?,?,'active',?,?)`);
+  for (const customer of legacyCustomers) insertLegacyCustomer.run(randomUUID(),customer.reseller_id,customer.name,customer.phone,'',customer.created_at,customer.updated_at);
+  db.exec(`UPDATE orders SET reseller_customer_id=(SELECT rc.id FROM reseller_customers rc WHERE rc.reseller_id=orders.reseller_id AND rc.phone=orders.phone) WHERE reseller_id IS NOT NULL AND reseller_customer_id IS NULL`);
+  db.exec(`UPDATE orders SET reseller_sale_price_toman=(SELECT CAST(p.price_irr/10 AS INTEGER) FROM plans p WHERE p.id=orders.plan_id) WHERE reseller_id IS NOT NULL AND reseller_sale_price_toman IS NULL`);
   return db;
 }

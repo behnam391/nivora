@@ -28,13 +28,15 @@ class SecureSessionStore(private val context: Context) {
         }
     }
 
-    fun save(token: String) {
+    fun save(token: String, role: String = "customer") {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
         val payload = cipher.iv + encrypted
-        preferences.edit().putString("token", Base64.encodeToString(payload, Base64.NO_WRAP)).apply()
+        preferences.edit().putString("token", Base64.encodeToString(payload, Base64.NO_WRAP)).putString("role", role).apply()
     }
+
+    fun role(): String = preferences.getString("role", "customer") ?: "customer"
 
     fun clear() {
         preferences.edit().clear().apply()
