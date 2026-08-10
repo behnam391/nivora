@@ -129,6 +129,21 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       location_id TEXT NOT NULL REFERENCES service_locations(id),
       PRIMARY KEY(plan_id,location_id)
     );
+    CREATE TABLE IF NOT EXISTS location_endpoints (
+      id TEXT PRIMARY KEY,
+      location_id TEXT NOT NULL REFERENCES service_locations(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      host TEXT NOT NULL,
+      port INTEGER NOT NULL DEFAULT 443 CHECK(port BETWEEN 1 AND 65535),
+      priority INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      health_status TEXT NOT NULL DEFAULT 'unknown' CHECK(health_status IN ('unknown','online','offline')),
+      last_latency_ms INTEGER,
+      last_checked_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(location_id,host,port)
+    );
     CREATE TABLE IF NOT EXISTS account_sessions (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -208,6 +223,9 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!orderColumns.includes('parent_order_id')) db.exec('ALTER TABLE orders ADD COLUMN parent_order_id TEXT REFERENCES orders(id)');
   if (!orderColumns.includes('reseller_customer_id')) db.exec('ALTER TABLE orders ADD COLUMN reseller_customer_id TEXT REFERENCES reseller_customers(id)');
   if (!orderColumns.includes('reseller_sale_price_toman')) db.exec('ALTER TABLE orders ADD COLUMN reseller_sale_price_toman INTEGER');
+  const subscriptionColumns = db.prepare('PRAGMA table_info(subscriptions)').all().map(c => c.name);
+  if (!subscriptionColumns.includes('upstream_subscription_url')) db.exec('ALTER TABLE subscriptions ADD COLUMN upstream_subscription_url TEXT');
+  if (!subscriptionColumns.includes('access_token')) db.exec('ALTER TABLE subscriptions ADD COLUMN access_token TEXT');
   const accountColumns = db.prepare('PRAGMA table_info(accounts)').all().map(c => c.name);
   if (!accountColumns.includes('password_hash')) db.exec('ALTER TABLE accounts ADD COLUMN password_hash TEXT');
   if (!accountColumns.includes('password_salt')) db.exec('ALTER TABLE accounts ADD COLUMN password_salt TEXT');
@@ -217,6 +235,12 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_account ON notifications(account_id,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_resets_status ON password_reset_requests(status,requested_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_customers_owner ON reseller_customers(reseller_id,status,updated_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_location_endpoints_location ON location_endpoints(location_id,active,priority)');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token) WHERE access_token IS NOT NULL');
+  db.exec('UPDATE subscriptions SET upstream_subscription_url=subscription_url WHERE upstream_subscription_url IS NULL AND subscription_url IS NOT NULL');
+  const subscriptionsWithoutToken = db.prepare("SELECT s.id FROM subscriptions s JOIN orders o ON o.id=s.order_id WHERE s.access_token IS NULL AND o.order_kind='purchase'").all();
+  const addSubscriptionToken = db.prepare('UPDATE subscriptions SET access_token=? WHERE id=?');
+  for (const subscription of subscriptionsWithoutToken) addSubscriptionToken.run(randomUUID().replace(/-/g,''),subscription.id);
   const legacyCustomers = db.prepare(`SELECT reseller_id,phone,MAX(customer_name) name,MIN(created_at) created_at,MAX(created_at) updated_at FROM orders WHERE reseller_id IS NOT NULL AND phone IS NOT NULL GROUP BY reseller_id,phone`).all();
   const insertLegacyCustomer = db.prepare(`INSERT OR IGNORE INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at) VALUES(?,?,?,?,?,'active',?,?)`);
   for (const customer of legacyCustomers) insertLegacyCustomer.run(randomUUID(),customer.reseller_id,customer.name,customer.phone,'',customer.created_at,customer.updated_at);

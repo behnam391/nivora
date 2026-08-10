@@ -7,6 +7,7 @@ import { accountFromRequest, createSession, hashPassword, verifyPassword } from 
 import { selectLocationForPlan } from './capacity.js';
 import { createRequestGuard } from './security.js';
 import { enrichSubscription, readPanelStats } from './subscription-stats.js';
+import { buildMultiEndpointSubscription, fetchSubscriptionText, measureTcpEndpoint } from './multi-endpoint.js';
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -56,6 +57,36 @@ function createOrRestoreResellerCustomer(db, resellerId, body, now = new Date().
   db.prepare("INSERT INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at) VALUES(?,?,?,?,?,'active',?,?)").run(id,resellerId,customer.name,customer.phone,customer.note,now,now);
   return db.prepare('SELECT * FROM reseller_customers WHERE id=?').get(id);
 }
+
+const subscriptionToken = () => randomUUID().replace(/-/g, '');
+
+function publicOrigin(req) {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/$/, '');
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '127.0.0.1:8787').split(',')[0].trim();
+  const proto = String(req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http')).split(',')[0].trim();
+  return `${proto}://${host}`;
+}
+
+const publicSubscriptionUrl = (req, token, fallback = null) => token ? `${publicOrigin(req)}/sub/${token}` : fallback;
+const exposeSubscription = (req, row) => row && ({
+  ...row,
+  subscription_url: publicSubscriptionUrl(req, row.subscription_access_token || row.access_token, row.subscription_url)
+});
+
+function endpointFromBody(body, current = {}) {
+  return {
+    label: String(body.label ?? current.label ?? '').trim().slice(0, 60),
+    host: String(body.host ?? current.host ?? '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, ''),
+    port: Number(body.port ?? current.port ?? 443),
+    priority: Number(body.priority ?? current.priority ?? 0),
+    active: body.active ?? Boolean(current.active ?? true)
+  };
+}
+
+const validEndpoint = endpoint => endpoint.label.length >= 2 && endpoint.host.length <= 253 &&
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(endpoint.host) &&
+  Number.isInteger(endpoint.port) && endpoint.port >= 1 && endpoint.port <= 65535 &&
+  Number.isInteger(endpoint.priority) && endpoint.priority >= 0 && endpoint.priority <= 10_000;
 
 export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', provisioner = null } = {}) {
   const isAdmin = req => req.headers.authorization === `Bearer ${adminToken}`;
@@ -146,6 +177,30 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       if (req.method === 'GET' && path === '/health') {db.prepare('SELECT 1 ok').get();return json(res, 200, { ok:true,service:'nivora',uptimeSeconds:Math.floor(process.uptime()),database:'ok',time:new Date().toISOString() });}
 
+      const publicSubscriptionMatch = path.match(/^\/sub\/([a-f0-9]{32})$/i);
+      if (req.method === 'GET' && publicSubscriptionMatch) {
+        const subscription = db.prepare(`SELECT s.upstream_subscription_url,s.subscription_url,o.location_id
+          FROM subscriptions s JOIN orders o ON o.id=s.order_id
+          WHERE s.access_token=? AND s.status='active'`).get(publicSubscriptionMatch[1]);
+        if (!subscription) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_FOUND'); }
+        const upstream = subscription.upstream_subscription_url || subscription.subscription_url;
+        if (!upstream) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_READY'); }
+        const endpoints = subscription.location_id ? db.prepare(`SELECT label,host,port,priority,active FROM location_endpoints WHERE location_id=? AND active=1 ORDER BY priority,created_at`).all(subscription.location_id) : [];
+        try {
+          const raw = await fetchSubscriptionText(upstream, { rejectUnauthorized: process.env.PANEL_TLS_REJECT_UNAUTHORIZED !== 'false' });
+          const rendered = buildMultiEndpointSubscription(raw, endpoints.map(endpoint => ({...endpoint,active:Boolean(endpoint.active)})));
+          res.writeHead(200, {
+            'content-type':'text/plain; charset=utf-8',
+            'cache-control':'private, no-store',
+            'x-nivora-routes':String(endpoints.length)
+          });
+          return res.end(rendered);
+        } catch (error) {
+          res.writeHead(502, {'content-type':'text/plain; charset=utf-8','cache-control':'no-store'});
+          return res.end('SUBSCRIPTION_UPSTREAM_UNAVAILABLE');
+        }
+      }
+
       if (req.method === 'GET' && path === '/api/plans') {
         const rows = db.prepare(`SELECT p.*,GROUP_CONCAT(l.id||'~'||l.name||'~'||l.country_code||'~'||l.city,'|') locations FROM plans p
           LEFT JOIN plan_locations pl ON pl.plan_id=p.id LEFT JOIN service_locations l ON l.id=pl.location_id AND l.active=1
@@ -180,8 +235,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const account=accountFromRequest(db,req);if(!account||account.role!=='customer')return json(res,401,{error:'UNAUTHORIZED'});
         if(req.method==='GET'&&path==='/api/customer/me'){
           const wallet=getWalletStatement(db,account.id,25),panelStats=await readPanelStats();
-          const rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.status,o.created_at,o.tracking_token,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,s.panel_client_id,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.order_kind='purchase' ORDER BY o.created_at DESC LIMIT 100`).all(account.id);
-          const orders=rows.map(row=>enrichSubscription(row,panelStats));
+          const rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.status,o.created_at,o.tracking_token,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,s.access_token subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.city,(SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=o.location_id AND e.active=1) route_count FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.order_kind='purchase' ORDER BY o.created_at DESC LIMIT 100`).all(account.id);
+          const orders=rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats));
           const topups=db.prepare('SELECT id,amount_toman,receipt_reference,receipt_image_url,status,review_note,created_at,reviewed_at FROM wallet_topups WHERE account_id=? ORDER BY created_at DESC LIMIT 50').all(account.id),notifications=db.prepare('SELECT id,title,body,read_at,created_at FROM notifications WHERE account_id=? ORDER BY created_at DESC LIMIT 30').all(account.id);
           return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,orders,topups,notifications});
         }
@@ -194,12 +249,12 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if(req.method==='POST'&&path==='/api/customer/wallet/purchase'){
           const b=await readJson(req),plan=db.prepare('SELECT * FROM plans WHERE id=? AND active=1').get(b.planId);if(!plan)return json(res,404,{error:'PLAN_NOT_FOUND'});const location=selectLocationForPlan(db,plan.id);if(!location)return json(res,409,{error:'NO_CAPACITY'});
           const basePrice=Math.round(plan.price_irr/10),code=String(b.discountCode||'').trim().toUpperCase();let discount=null;if(code){discount=db.prepare(`SELECT d.*,(SELECT COUNT(*) FROM discount_redemptions WHERE discount_id=d.id) used,(SELECT COUNT(*) FROM discount_redemptions WHERE discount_id=d.id AND account_id=?) customer_used FROM discount_codes d WHERE d.code=? AND d.active=1`).get(account.id,code);if(!discount||(discount.expires_at&&discount.expires_at<=new Date().toISOString())||(discount.max_uses&&discount.used>=discount.max_uses)||discount.customer_used>=discount.per_customer_limit)return json(res,400,{error:'DISCOUNT_NOT_AVAILABLE'});}const discountToman=discount?Math.floor(basePrice*discount.percent/100):0,price=basePrice-discountToman,id=randomUUID(),token=randomUUID().replace(/-/g,''),now=new Date().toISOString();try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`customer-order:${id}`,actor:account.id,note:`خرید ${plan.name}`});}catch(e){return json(res,400,{error:e.message});}
-          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,account_id,location_id) VALUES(?,?,?,?,'approved',?,?,?,?,?)`).run(id,account.name,account.phone,plan.id,price*10,now,token,account.id,location.id);if(discount)db.prepare('INSERT INTO discount_redemptions(id,discount_id,account_id,order_id,discount_toman,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),discount.id,account.id,id,discountToman,now);const sid=randomUUID();db.prepare(`INSERT INTO subscriptions(id,order_id,status,created_at) VALUES(?,?,'pending_provision',?)`).run(sid,id,now);
-          const order={id,phone:account.phone,plan_name:plan.name,traffic_gb:plan.traffic_gb,duration_days:plan.duration_days,device_limit:plan.device_limit,panel_inbound_id:location.panel_inbound_id,location_name:location.name};try{if(!provisioner)throw new Error('PROVISIONER_NOT_CONFIGURED');const result=await provisioner(order);db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,activated_at=? WHERE id=?`).run(result.panelClientId,result.subscriptionUrl,new Date().toISOString(),sid);notify(account.id,'اشتراک فعال شد',`پلن ${plan.name} با موفقیت ساخته شد.`);return json(res,201,{id,trackingToken:token,status:'active',subscriptionUrl:result.subscriptionUrl,balanceToman:getWalletStatement(db,account.id,1).balanceToman,discountToman});}catch(e){db.prepare(`UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?`).run(String(e.message||e),sid);postWalletTransaction(db,{accountId:account.id,amountToman:price,type:'refund',reference:`customer-refund:${id}`,actor:'system',note:'بازپرداخت خرید ناموفق'});if(discount)db.prepare('DELETE FROM discount_redemptions WHERE order_id=?').run(id);notify(account.id,'بازپرداخت انجام شد','ساخت اشتراک ناموفق بود و مبلغ به کیف پول برگشت.');return json(res,502,{error:'PROVISION_FAILED',refunded:true});}
+          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,account_id,location_id) VALUES(?,?,?,?,'approved',?,?,?,?,?)`).run(id,account.name,account.phone,plan.id,price*10,now,token,account.id,location.id);if(discount)db.prepare('INSERT INTO discount_redemptions(id,discount_id,account_id,order_id,discount_toman,created_at) VALUES(?,?,?,?,?,?)').run(randomUUID(),discount.id,account.id,id,discountToman,now);const sid=randomUUID(),accessToken=subscriptionToken();db.prepare(`INSERT INTO subscriptions(id,order_id,status,access_token,created_at) VALUES(?,?,'pending_provision',?,?)`).run(sid,id,accessToken,now);
+          const order={id,phone:account.phone,plan_name:plan.name,traffic_gb:plan.traffic_gb,duration_days:plan.duration_days,device_limit:plan.device_limit,panel_inbound_id:location.panel_inbound_id,location_name:location.name};try{if(!provisioner)throw new Error('PROVISIONER_NOT_CONFIGURED');const result=await provisioner(order);db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,upstream_subscription_url=?,activated_at=? WHERE id=?`).run(result.panelClientId,result.subscriptionUrl,result.subscriptionUrl,new Date().toISOString(),sid);notify(account.id,'اشتراک فعال شد',`پلن ${plan.name} با موفقیت ساخته شد.`);return json(res,201,{id,trackingToken:token,status:'active',subscriptionUrl:publicSubscriptionUrl(req,accessToken,result.subscriptionUrl),balanceToman:getWalletStatement(db,account.id,1).balanceToman,discountToman});}catch(e){db.prepare(`UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?`).run(String(e.message||e),sid);postWalletTransaction(db,{accountId:account.id,amountToman:price,type:'refund',reference:`customer-refund:${id}`,actor:'system',note:'بازپرداخت خرید ناموفق'});if(discount)db.prepare('DELETE FROM discount_redemptions WHERE order_id=?').run(id);notify(account.id,'بازپرداخت انجام شد','ساخت اشتراک ناموفق بود و مبلغ به کیف پول برگشت.');return json(res,502,{error:'PROVISION_FAILED',refunded:true});}
         }
         const walletRenew=path.match(/^\/api\/customer\/orders\/([^/]+)\/renew$/);if(req.method==='POST'&&walletRenew){
-          const original=db.prepare(`SELECT o.*,p.name plan_name,p.price_irr,p.traffic_gb,p.duration_days,s.panel_client_id,s.subscription_url FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id WHERE o.id=? AND o.account_id=? AND o.order_kind='purchase' AND s.status='active'`).get(walletRenew[1],account.id);if(!original)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});const price=Math.round(original.price_irr/10),id=randomUUID(),now=new Date().toISOString();try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`customer-renew:${id}`,actor:account.id,note:`تمدید ${original.plan_name}`});}catch(e){return json(res,400,{error:e.message});}
-          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,account_id,location_id,order_kind,parent_order_id) VALUES(?,?,?,?,'approved',?,?,?,?,?,'renewal',?)`).run(id,account.name,account.phone,original.plan_id,price*10,now,randomUUID().replace(/-/g,''),account.id,original.location_id,original.id);const sid=randomUUID();db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?)`).run(sid,id,original.panel_client_id,original.subscription_url,now);try{if(!provisioner?.renew)throw new Error('RENEW_NOT_SUPPORTED');await provisioner.renew({panelClientId:original.panel_client_id,addDays:original.duration_days,addTrafficGb:original.traffic_gb});db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(),sid);return json(res,201,{id,status:'active',subscriptionUrl:original.subscription_url,balanceToman:getWalletStatement(db,account.id,1).balanceToman});}catch(e){db.prepare("UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?").run(String(e.message||e),sid);postWalletTransaction(db,{accountId:account.id,amountToman:price,type:'refund',reference:`customer-renew-refund:${id}`,actor:'system',note:'بازپرداخت تمدید ناموفق'});return json(res,502,{error:'RENEW_FAILED',refunded:true});}
+          const original=db.prepare(`SELECT o.*,p.name plan_name,p.price_irr,p.traffic_gb,p.duration_days,s.panel_client_id,s.subscription_url,s.upstream_subscription_url,s.access_token subscription_access_token FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id WHERE o.id=? AND o.account_id=? AND o.order_kind='purchase' AND s.status='active'`).get(walletRenew[1],account.id);if(!original)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});const price=Math.round(original.price_irr/10),id=randomUUID(),now=new Date().toISOString();try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`customer-renew:${id}`,actor:account.id,note:`تمدید ${original.plan_name}`});}catch(e){return json(res,400,{error:e.message});}
+          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,account_id,location_id,order_kind,parent_order_id) VALUES(?,?,?,?,'approved',?,?,?,?,?,'renewal',?)`).run(id,account.name,account.phone,original.plan_id,price*10,now,randomUUID().replace(/-/g,''),account.id,original.location_id,original.id);const sid=randomUUID();db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,upstream_subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?,?)`).run(sid,id,original.panel_client_id,original.subscription_url,original.upstream_subscription_url||original.subscription_url,now);try{if(!provisioner?.renew)throw new Error('RENEW_NOT_SUPPORTED');await provisioner.renew({panelClientId:original.panel_client_id,addDays:original.duration_days,addTrafficGb:original.traffic_gb});db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(),sid);return json(res,201,{id,status:'active',subscriptionUrl:publicSubscriptionUrl(req,original.subscription_access_token,original.subscription_url),balanceToman:getWalletStatement(db,account.id,1).balanceToman});}catch(e){db.prepare("UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?").run(String(e.message||e),sid);postWalletTransaction(db,{accountId:account.id,amountToman:price,type:'refund',reference:`customer-renew-refund:${id}`,actor:'system',note:'بازپرداخت تمدید ناموفق'});return json(res,502,{error:'RENEW_FAILED',refunded:true});}
         }
       }
       if(req.method==='POST'&&path==='/api/reseller/login'){
@@ -244,8 +299,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const resellerCustomerMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)$/);
         if(resellerCustomerMatch&&req.method==='GET'){
           const customer=db.prepare("SELECT * FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(resellerCustomerMatch[1],account.id);if(!customer)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});
-          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,s.panel_client_id,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? AND o.reseller_customer_id=? ORDER BY o.created_at DESC LIMIT 200`).all(account.id,customer.id);
-          return json(res,200,{...customer,orders:rows.map(row=>enrichSubscription(row,panelStats))});
+          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? AND o.reseller_customer_id=? ORDER BY o.created_at DESC LIMIT 200`).all(account.id,customer.id);
+          return json(res,200,{...customer,orders:rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats))});
         }
         if(resellerCustomerMatch&&req.method==='PATCH'){
           const current=db.prepare("SELECT * FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(resellerCustomerMatch[1],account.id);if(!current)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});const body=await readJson(req),customer=resellerCustomerFromBody(body);if(customer.name.length<2||!/^09\d{9}$/.test(customer.phone))return json(res,400,{error:'INVALID_CUSTOMER'});
@@ -255,18 +310,18 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const current=db.prepare("SELECT id FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(resellerCustomerMatch[1],account.id);if(!current)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});db.prepare("UPDATE reseller_customers SET status='archived',updated_at=? WHERE id=?").run(new Date().toISOString(),current.id);audit(account.id,'archive','reseller_customer',current.id);return json(res,200,{archived:true});
         }
         if(req.method==='GET'&&path==='/api/reseller/orders'){
-          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.reseller_customer_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,s.panel_client_id,s.provision_error,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? ORDER BY o.created_at DESC LIMIT 300`).all(account.id);return json(res,200,rows.map(row=>enrichSubscription(row,panelStats)));
+          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.reseller_customer_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.panel_client_id,s.provision_error,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? ORDER BY o.created_at DESC LIMIT 300`).all(account.id);return json(res,200,rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats)));
         }
         const renewMatch=path.match(/^\/api\/reseller\/orders\/([^/]+)\/renew$/);
         if(req.method==='POST'&&renewMatch){
           const body=await readJson(req);
-          const original=db.prepare(`SELECT o.*,p.name plan_name,p.price_irr,p.traffic_gb,p.duration_days,p.device_limit,s.panel_client_id,s.subscription_url FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id WHERE o.id=? AND o.reseller_id=? AND o.order_kind='purchase' AND s.status='active'`).get(renewMatch[1],account.id);
+          const original=db.prepare(`SELECT o.*,p.name plan_name,p.price_irr,p.traffic_gb,p.duration_days,p.device_limit,s.panel_client_id,s.subscription_url,s.upstream_subscription_url,s.access_token subscription_access_token FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id WHERE o.id=? AND o.reseller_id=? AND o.order_kind='purchase' AND s.status='active'`).get(renewMatch[1],account.id);
           if(!original)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
           const override=db.prepare('SELECT price_toman FROM reseller_plan_prices WHERE reseller_id=? AND plan_id=? AND active=1').get(account.id,original.plan_id),price=override?.price_toman??Math.round((original.price_irr/10)*(100-account.default_discount_percent)/100);
           const salePrice=Number.isInteger(body.salePriceToman)&&body.salePriceToman>=0?body.salePriceToman:(original.reseller_sale_price_toman??Math.round(original.price_irr/10)),id=randomUUID(),now=new Date().toISOString();try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`reseller-renew:${id}`,actor:account.id,note:`تمدید ${original.plan_name} برای ${original.phone}`});}catch(e){return json(res,400,{error:e.message});}
           db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,reseller_id,location_id,order_kind,parent_order_id,reseller_customer_id,reseller_sale_price_toman) VALUES(?,?,?,?,'approved',?,?,?,?,?,'renewal',?,?,?)`).run(id,original.customer_name,original.phone,original.plan_id,price*10,now,randomUUID().replace(/-/g,''),account.id,original.location_id,original.id,original.reseller_customer_id,salePrice);
-          const sid=randomUUID();db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?)`).run(sid,id,original.panel_client_id,original.subscription_url,now);
-          try{if(!provisioner?.renew)throw new Error('RENEW_NOT_SUPPORTED');await provisioner.renew({panelClientId:original.panel_client_id,addDays:original.duration_days,addTrafficGb:original.traffic_gb});db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(),sid);return json(res,201,{orderId:id,status:'active',subscriptionUrl:original.subscription_url,balanceToman:getWalletStatement(db,account.id,1).balanceToman});}
+          const sid=randomUUID();db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,upstream_subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?,?)`).run(sid,id,original.panel_client_id,original.subscription_url,original.upstream_subscription_url||original.subscription_url,now);
+          try{if(!provisioner?.renew)throw new Error('RENEW_NOT_SUPPORTED');await provisioner.renew({panelClientId:original.panel_client_id,addDays:original.duration_days,addTrafficGb:original.traffic_gb});db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(),sid);return json(res,201,{orderId:id,status:'active',subscriptionUrl:publicSubscriptionUrl(req,original.subscription_access_token,original.subscription_url),balanceToman:getWalletStatement(db,account.id,1).balanceToman});}
           catch(e){db.prepare("UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?").run(String(e.message||e),sid);postWalletTransaction(db,{accountId:account.id,amountToman:price,type:'refund',reference:`reseller-renew-refund:${id}`,actor:'system',note:`بازپرداخت تمدید ناموفق ${id}`});return json(res,502,{error:'RENEW_FAILED',refunded:true});}
         }
         if(req.method==='POST'&&path==='/api/reseller/purchase'){
@@ -279,9 +334,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const price=plan.reseller_price??Math.round((plan.price_irr/10)*(100-account.default_discount_percent)/100),salePrice=Number.isInteger(b.salePriceToman)&&b.salePriceToman>=0?b.salePriceToman:Math.round(plan.price_irr/10),id=randomUUID(),trackingToken=randomUUID().replace(/-/g,''),now=new Date().toISOString();
           try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`reseller-order:${id}`,actor:account.id,note:`خرید ${plan.name} برای ${customer.phone}`});}catch(e){return json(res,400,{error:e.message});}
           db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,reseller_id,location_id,reseller_customer_id,reseller_sale_price_toman) VALUES(?,?,?,?,'approved',?,?,?,?,?,?,?)`).run(id,customer.name,customer.phone,plan.id,price*10,now,trackingToken,account.id,location.id,customer.id,salePrice);
-          const subscriptionId=randomUUID();db.prepare(`INSERT INTO subscriptions(id,order_id,status,created_at) VALUES(?,?,'pending_provision',?)`).run(subscriptionId,id,now);
+          const subscriptionId=randomUUID(),accessToken=subscriptionToken();db.prepare(`INSERT INTO subscriptions(id,order_id,status,access_token,created_at) VALUES(?,?,'pending_provision',?,?)`).run(subscriptionId,id,accessToken,now);
           const order={id,phone:customer.phone,plan_name:plan.name,traffic_gb:plan.traffic_gb,duration_days:plan.duration_days,device_limit:plan.device_limit,panel_inbound_id:location.panel_inbound_id,location_name:location.name};
-          try{if(!provisioner)throw new Error('PROVISIONER_NOT_CONFIGURED');const result=await provisioner(order);db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,activated_at=? WHERE id=?`).run(result.panelClientId,result.subscriptionUrl,new Date().toISOString(),subscriptionId);return json(res,201,{orderId:id,customerId:customer.id,status:'active',subscriptionUrl:result.subscriptionUrl,balanceToman:getWalletStatement(db,account.id,1).balanceToman});}
+          try{if(!provisioner)throw new Error('PROVISIONER_NOT_CONFIGURED');const result=await provisioner(order);db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,upstream_subscription_url=?,activated_at=? WHERE id=?`).run(result.panelClientId,result.subscriptionUrl,result.subscriptionUrl,new Date().toISOString(),subscriptionId);return json(res,201,{orderId:id,customerId:customer.id,status:'active',subscriptionUrl:publicSubscriptionUrl(req,accessToken,result.subscriptionUrl),balanceToman:getWalletStatement(db,account.id,1).balanceToman});}
           catch(e){db.prepare(`UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?`).run(String(e.message||e),subscriptionId);postWalletTransaction(db,{accountId:account.id,amountToman:price,type:'refund',reference:`reseller-refund:${id}`,actor:'system',note:`بازپرداخت خرید ناموفق ${id}`});return json(res,502,{error:'PROVISION_FAILED',refunded:true});}
         }
       }
@@ -321,12 +376,23 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         })));
       }
       if(req.method==='GET'&&path==='/api/admin/locations'){
-        const rows=db.prepare(`SELECT l.*,COUNT(DISTINCT pl.plan_id) plan_count FROM service_locations l LEFT JOIN plan_locations pl ON pl.location_id=l.id GROUP BY l.id ORDER BY l.active DESC,l.name`).all();return json(res,200,rows);
+        const rows=db.prepare(`SELECT l.*,COUNT(DISTINCT pl.plan_id) plan_count,
+          (SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=l.id) endpoint_count,
+          (SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=l.id AND e.active=1 AND e.health_status='online') online_endpoint_count
+          FROM service_locations l LEFT JOIN plan_locations pl ON pl.location_id=l.id GROUP BY l.id ORDER BY l.active DESC,l.name`).all();return json(res,200,rows);
       }
       if(req.method==='POST'&&path==='/api/admin/locations'){
         const b=await readJson(req),country=String(b.countryCode||'').trim().toUpperCase();if(!b.name?.trim()||!/^[A-Z]{2}$/.test(country))return json(res,400,{error:'INVALID_LOCATION'});
         const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO service_locations(id,name,country_code,city,provider,panel_type,panel_inbound_id,capacity,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(id,b.name.trim(),country,b.city?.trim()||'',b.provider?.trim()||'',b.panelType||'3x-ui',b.panelInboundId||null,Math.max(Number(b.capacity)||0,0),b.active===false?0:1,now,now);audit('admin','create','location',id,{name:b.name,country});return json(res,201,{id});
       }
+      const locationEndpoints=path.match(/^\/api\/admin\/locations\/([^/]+)\/endpoints$/);
+      if(req.method==='GET'&&locationEndpoints){const location=db.prepare('SELECT id FROM service_locations WHERE id=?').get(locationEndpoints[1]);if(!location)return json(res,404,{error:'LOCATION_NOT_FOUND'});const rows=db.prepare('SELECT * FROM location_endpoints WHERE location_id=? ORDER BY priority,created_at').all(location.id);return json(res,200,rows.map(endpoint=>({...endpoint,active:Boolean(endpoint.active),dnsMode:'dns-only'})));}
+      if(req.method==='POST'&&locationEndpoints){const location=db.prepare('SELECT id FROM service_locations WHERE id=?').get(locationEndpoints[1]);if(!location)return json(res,404,{error:'LOCATION_NOT_FOUND'});const endpoint=endpointFromBody(await readJson(req));if(!validEndpoint(endpoint))return json(res,400,{error:'INVALID_ENDPOINT'});const id=randomUUID(),now=new Date().toISOString();try{db.prepare(`INSERT INTO location_endpoints(id,location_id,label,host,port,priority,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`).run(id,location.id,endpoint.label,endpoint.host,endpoint.port,endpoint.priority,endpoint.active?1:0,now,now);}catch{return json(res,409,{error:'ENDPOINT_ALREADY_EXISTS'});}audit('admin','create','location_endpoint',id,{locationId:location.id,host:endpoint.host,port:endpoint.port});return json(res,201,{id,...endpoint,dnsMode:'dns-only'});}
+      const endpointTest=path.match(/^\/api\/admin\/location-endpoints\/([^/]+)\/test$/);
+      if(req.method==='POST'&&endpointTest){const endpoint=db.prepare('SELECT * FROM location_endpoints WHERE id=?').get(endpointTest[1]);if(!endpoint)return json(res,404,{error:'ENDPOINT_NOT_FOUND'});const checkedAt=new Date().toISOString();try{const latencyMs=await measureTcpEndpoint(endpoint.host,endpoint.port);db.prepare("UPDATE location_endpoints SET health_status='online',last_latency_ms=?,last_checked_at=?,updated_at=? WHERE id=?").run(latencyMs,checkedAt,checkedAt,endpoint.id);return json(res,200,{status:'online',latencyMs,checkedAt});}catch{db.prepare("UPDATE location_endpoints SET health_status='offline',last_latency_ms=NULL,last_checked_at=?,updated_at=? WHERE id=?").run(checkedAt,checkedAt,endpoint.id);return json(res,200,{status:'offline',latencyMs:null,checkedAt});}}
+      const endpointMatch=path.match(/^\/api\/admin\/location-endpoints\/([^/]+)$/);
+      if(req.method==='PATCH'&&endpointMatch){const old=db.prepare('SELECT * FROM location_endpoints WHERE id=?').get(endpointMatch[1]);if(!old)return json(res,404,{error:'ENDPOINT_NOT_FOUND'});const endpoint=endpointFromBody(await readJson(req),old);if(!validEndpoint(endpoint))return json(res,400,{error:'INVALID_ENDPOINT'});try{db.prepare("UPDATE location_endpoints SET label=?,host=?,port=?,priority=?,active=?,health_status='unknown',last_latency_ms=NULL,last_checked_at=NULL,updated_at=? WHERE id=?").run(endpoint.label,endpoint.host,endpoint.port,endpoint.priority,endpoint.active?1:0,new Date().toISOString(),old.id);}catch{return json(res,409,{error:'ENDPOINT_ALREADY_EXISTS'});}audit('admin','update','location_endpoint',old.id,{host:endpoint.host,port:endpoint.port});return json(res,200,{id:old.id,...endpoint,dnsMode:'dns-only'});}
+      if(req.method==='DELETE'&&endpointMatch){const endpoint=db.prepare('SELECT * FROM location_endpoints WHERE id=?').get(endpointMatch[1]);if(!endpoint)return json(res,404,{error:'ENDPOINT_NOT_FOUND'});db.prepare('DELETE FROM location_endpoints WHERE id=?').run(endpoint.id);audit('admin','delete','location_endpoint',endpoint.id,{host:endpoint.host});return json(res,200,{deleted:true});}
       const locationMatch=path.match(/^\/api\/admin\/locations\/([^/]+)$/);
       if(req.method==='PATCH'&&locationMatch){const old=db.prepare('SELECT * FROM service_locations WHERE id=?').get(locationMatch[1]);if(!old)return json(res,404,{error:'LOCATION_NOT_FOUND'});const b=await readJson(req),name=String(b.name??old.name).trim(),country=String(b.countryCode??old.country_code).trim().toUpperCase();if(!name||!/^[A-Z]{2}$/.test(country))return json(res,400,{error:'INVALID_LOCATION'});db.prepare(`UPDATE service_locations SET name=?,country_code=?,city=?,provider=?,panel_type=?,panel_inbound_id=?,capacity=?,active=?,updated_at=? WHERE id=?`).run(name,country,b.city??old.city,b.provider??old.provider,b.panelType??old.panel_type,b.panelInboundId??old.panel_inbound_id,Math.max(Number(b.capacity??old.capacity),0),(b.active??Boolean(old.active))?1:0,new Date().toISOString(),locationMatch[1]);return json(res,200,{id:locationMatch[1]});}
       if(req.method==='DELETE'&&locationMatch){const count=db.prepare('SELECT COUNT(*) count FROM plan_locations WHERE location_id=?').get(locationMatch[1]).count;if(count)return json(res,409,{error:'LOCATION_IN_USE'});db.prepare('DELETE FROM service_locations WHERE id=?').run(locationMatch[1]);return json(res,200,{deleted:true});}
@@ -454,11 +520,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
       const statusMatch = path.match(/^\/api\/orders\/([^/]+)$/);
       if (req.method === 'GET' && statusMatch) {
-        const row = db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.customer_name,o.phone,o.status,o.created_at,o.review_note,p.name plan_name,CAST(p.price_irr/10 AS INTEGER) price_toman,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url
+        const row = db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.customer_name,o.phone,o.status,o.created_at,o.review_note,p.name plan_name,CAST(p.price_irr/10 AS INTEGER) price_toman,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token
           FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id
           WHERE o.id=? AND o.tracking_token=?`).get(statusMatch[1], url.searchParams.get('token'));
         if (!row) return json(res, 404, { error:'ORDER_NOT_FOUND' });
-        return json(res, 200, row);
+        return json(res, 200, exposeSubscription(req,row));
       }
       const customerRenewMatch=path.match(/^\/api\/orders\/([^/]+)\/renew$/);
       if(req.method==='POST'&&customerRenewMatch){
@@ -469,9 +535,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
 
       if (req.method === 'GET' && path === '/api/admin/orders') {
-        const rows = db.prepare(`SELECT o.*,CAST(o.amount_transferred_irr/10 AS INTEGER) amount_transferred_irr,p.name plan_name,CAST(p.price_irr/10 AS INTEGER) price_irr,s.status subscription_status,s.subscription_url,s.provision_error,l.name location_name
+        const rows = db.prepare(`SELECT o.*,CAST(o.amount_transferred_irr/10 AS INTEGER) amount_transferred_irr,p.name plan_name,CAST(p.price_irr/10 AS INTEGER) price_irr,s.status subscription_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.provision_error,l.name location_name
           FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id ORDER BY o.created_at DESC`).all();
-        return json(res, 200, rows);
+        return json(res, 200, rows.map(row=>exposeSubscription(req,row)));
       }
 
       const reviewMatch = path.match(/^\/api\/admin\/orders\/([^/]+)\/(approve|reject)$/);
@@ -486,28 +552,28 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if (action === 'reject') { audit('admin', 'reject', 'order', id, b); return json(res, 200, { id, status: 'rejected' }); }
         const subscriptionId = randomUUID();
         if(order.order_kind==='renewal'){
-          const parent=db.prepare(`SELECT s.panel_client_id,s.subscription_url FROM subscriptions s WHERE s.order_id=? AND s.status='active'`).get(order.parent_order_id);
+          const parent=db.prepare(`SELECT s.panel_client_id,s.subscription_url,s.upstream_subscription_url,s.access_token subscription_access_token FROM subscriptions s WHERE s.order_id=? AND s.status='active'`).get(order.parent_order_id);
           if(!parent||!provisioner?.renew){db.prepare("UPDATE orders SET status='under_review',review_note='Renewal target unavailable',reviewed_at=NULL WHERE id=?").run(id);return json(res,409,{error:'RENEW_TARGET_UNAVAILABLE'});}
-          db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?)`).run(subscriptionId,id,parent.panel_client_id,parent.subscription_url,now);
+          db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,upstream_subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?,?)`).run(subscriptionId,id,parent.panel_client_id,parent.subscription_url,parent.upstream_subscription_url||parent.subscription_url,now);
           audit('admin','approve','renewal_order',id,b);
-          try{await provisioner.renew({panelClientId:parent.panel_client_id,addDays:order.duration_days,addTrafficGb:order.traffic_gb});db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(),subscriptionId);return json(res,200,db.prepare('SELECT * FROM subscriptions WHERE id=?').get(subscriptionId));}
+          try{await provisioner.renew({panelClientId:parent.panel_client_id,addDays:order.duration_days,addTrafficGb:order.traffic_gb});db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(),subscriptionId);return json(res,200,{...db.prepare('SELECT * FROM subscriptions WHERE id=?').get(subscriptionId),subscription_url:publicSubscriptionUrl(req,parent.subscription_access_token,parent.subscription_url)});}
           catch(e){db.prepare("UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?").run(String(e.message||e),subscriptionId);return json(res,502,{error:'RENEW_FAILED'});}
         }
         const location=order.location_id?db.prepare('SELECT * FROM service_locations WHERE id=? AND active=1').get(order.location_id):selectLocationForPlan(db,order.plan_id);
         if(!location){db.prepare("UPDATE orders SET status='under_review',review_note='No server capacity',reviewed_at=NULL WHERE id=?").run(id);return json(res,409,{error:'NO_CAPACITY'});}
         db.prepare('UPDATE orders SET location_id=? WHERE id=?').run(location.id,id);order.location_id=location.id;order.location_name=location.name;order.panel_inbound_id=location.panel_inbound_id;
-        db.prepare(`INSERT INTO subscriptions(id,order_id,status,created_at) VALUES(?,?,'pending_provision',?)`).run(subscriptionId, id, now);
+        const accessToken=subscriptionToken();db.prepare(`INSERT INTO subscriptions(id,order_id,status,access_token,created_at) VALUES(?,?,'pending_provision',?,?)`).run(subscriptionId,id,accessToken,now);
         audit('admin', 'approve', 'order', id, b);
         if (provisioner) {
           try {
             const result = await provisioner(order);
-            db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,activated_at=? WHERE id=?`)
-              .run(result.panelClientId, result.subscriptionUrl, new Date().toISOString(), subscriptionId);
+            db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,upstream_subscription_url=?,activated_at=? WHERE id=?`)
+              .run(result.panelClientId,result.subscriptionUrl,result.subscriptionUrl,new Date().toISOString(),subscriptionId);
           } catch (e) {
             db.prepare(`UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?`).run(String(e.message || e), subscriptionId);
           }
         }
-        return json(res, 200, db.prepare('SELECT * FROM subscriptions WHERE id=?').get(subscriptionId));
+        return json(res,200,exposeSubscription(req,db.prepare('SELECT * FROM subscriptions WHERE id=?').get(subscriptionId)));
       }
 
       return json(res, 404, { error: 'NOT_FOUND' });

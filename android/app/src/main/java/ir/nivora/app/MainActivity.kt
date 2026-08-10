@@ -144,9 +144,9 @@ class MainActivity : ComponentActivity(), NivoraActions {
         state = state.copy(pingBusy = true)
         background(
             work = {
-                val endpoint = NetworkTools.endpointFromSubscription(api.subscription(url))
+                val endpoints = NetworkTools.endpointsFromSubscription(api.subscription(url))
+                NetworkTools.fastest(endpoints)?.latencyMs
                     ?: throw ApiException("INVALID_SUBSCRIPTION", 422)
-                NetworkTools.measure(endpoint)
             },
             success = { ping -> state = state.copy(pingBusy = false, pingMs = ping); showNotice("تأخیر سرور: $ping میلی‌ثانیه") },
             failure = { state = state.copy(pingBusy = false); showNotice("اندازه‌گیری پینگ انجام نشد", true) }

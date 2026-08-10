@@ -22,4 +22,17 @@ class NetworkToolsTest {
     fun ignoresInvalidSubscription() {
         assertEquals(null, NetworkTools.endpointFromSubscription("not-a-subscription"))
     }
+
+    @Test
+    fun readsAllUniqueRoutesFromMultiEndpointSubscription() {
+        val raw = """
+            vless://id@edge1.nivorali.com:443?security=reality#Route-1
+            vless://id@edge2.nivorali.com:8443?security=reality#Route-2
+            vless://id@edge1.nivorali.com:443?security=reality#Duplicate
+        """.trimIndent()
+        assertEquals(
+            listOf(ServiceEndpoint("edge1.nivorali.com", 443), ServiceEndpoint("edge2.nivorali.com", 8443)),
+            NetworkTools.endpointsFromSubscription(raw)
+        )
+    }
 }

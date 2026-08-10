@@ -201,6 +201,7 @@ class ApiClient(private val baseUrl: String) {
                 locationName = order.optString("location_name").takeIf(String::isNotBlank),
                 countryCode = order.optString("country_code").takeIf(String::isNotBlank),
                 city = order.optString("city").takeIf(String::isNotBlank),
+                routeCount = order.optInt("route_count"),
                 trafficGb = order.optInt("traffic_gb"),
                 durationDays = order.optInt("duration_days"),
                 deviceLimit = order.optInt("device_limit")

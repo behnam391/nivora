@@ -9,6 +9,8 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import ir.nivora.app.MainActivity
 import ir.nivora.app.R
+import ir.nivora.app.data.NetworkTools
+import ir.nivora.app.data.ServiceEndpoint
 import libXray.DialerController
 import libXray.LibXray
 import org.json.JSONArray
@@ -107,7 +109,7 @@ class NivoraVpnService : VpnService(), DialerController {
         val outbounds = config.getJSONArray("outbounds")
         if (outbounds.length() == 0) throw IllegalStateException("SUBSCRIPTION_EMPTY")
         sanitizeOutbounds(outbounds)
-        outbounds.getJSONObject(0).put("tag", "proxy")
+        val smartRoute = configureSmartRouting(config, outbounds)
         config.put("log", JSONObject().put("loglevel", "warning"))
         config.put("env", JSONObject().put("xray.tun.fd", "0"))
         config.put(
@@ -120,17 +122,9 @@ class NivoraVpnService : VpnService(), DialerController {
                     .put("sniffing", JSONObject().put("enabled", true).put("destOverride", JSONArray(listOf("http", "tls", "quic"))))
             )
         )
-        config.put(
-            "routing",
-            JSONObject()
-                .put("domainStrategy", "IPIfNonMatch")
-                .put(
-                    "rules",
-                    JSONArray().put(
-                        JSONObject().put("type", "field").put("inboundTag", JSONArray().put("tun-in")).put("outboundTag", "proxy")
-                    )
-                )
-        )
+        val routing = JSONObject().put("domainStrategy", "IPIfNonMatch").put("rules", JSONArray().put(smartRoute.rule))
+        smartRoute.balancers?.let { routing.put("balancers", it) }
+        config.put("routing", routing)
 
         ensureCurrent(runId)
         val builder = Builder()
@@ -168,6 +162,58 @@ class NivoraVpnService : VpnService(), DialerController {
                 "minClientVer", "maxClientVer", "maxTimeDiff"
             ).forEach { reality?.remove(it) }
         }
+    }
+
+    private data class SmartRoute(val rule: JSONObject, val balancers: JSONArray? = null)
+
+    private fun configureSmartRouting(config: JSONObject, outbounds: JSONArray): SmartRoute {
+        val candidates = buildList {
+            for (index in 0 until outbounds.length()) {
+                endpointFromOutbound(outbounds.getJSONObject(index))?.let { add(index to it) }
+            }
+        }
+        val fastest = NetworkTools.fastest(candidates.map { it.second }, timeoutMs = 2_800)
+        val selectedIndex = fastest?.let { result -> candidates.firstOrNull { it.second == result.endpoint }?.first }
+            ?: candidates.firstOrNull()?.first ?: 0
+        if (candidates.size < 2) {
+            outbounds.getJSONObject(selectedIndex).put("tag", "proxy")
+            return SmartRoute(JSONObject().put("type", "field").put("inboundTag", JSONArray().put("tun-in")).put("outboundTag", "proxy"))
+        }
+        candidates.forEach { (index, _) -> outbounds.getJSONObject(index).put("tag", "proxy-route-$index") }
+        val fallbackTag = "proxy-route-$selectedIndex"
+        config.put(
+            "observatory",
+            JSONObject()
+                .put("subjectSelector", JSONArray().put("proxy-route-"))
+                .put("probeUrl", "https://www.gstatic.com/generate_204")
+                .put("probeInterval", "30s")
+                .put("enableConcurrency", true)
+        )
+        val balancers = JSONArray().put(
+            JSONObject()
+                .put("tag", "smart-route")
+                .put("selector", JSONArray().put("proxy-route-"))
+                .put("fallbackTag", fallbackTag)
+                .put("strategy", JSONObject().put("type", "leastPing"))
+        )
+        return SmartRoute(
+            JSONObject().put("type", "field").put("inboundTag", JSONArray().put("tun-in")).put("balancerTag", "smart-route"),
+            balancers
+        )
+    }
+
+    private fun endpointFromOutbound(outbound: JSONObject): ServiceEndpoint? {
+        val settings = outbound.optJSONObject("settings") ?: return null
+        val candidates = listOf("vnext", "servers")
+        for (key in candidates) {
+            val array = settings.optJSONArray(key) ?: continue
+            if (array.length() == 0) continue
+            val server = array.optJSONObject(0) ?: continue
+            val host = server.optString("address").ifBlank { server.optString("server") }
+            val port = server.optInt("port")
+            if (host.isNotBlank() && port in 1..65535) return ServiceEndpoint(host, port)
+        }
+        return null
     }
 
     private fun ensureCurrent(runId: Int) {

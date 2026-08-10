@@ -26,6 +26,7 @@ data class Subscription(
     val locationName: String?,
     val countryCode: String?,
     val city: String?,
+    val routeCount: Int,
     val trafficGb: Int,
     val durationDays: Int,
     val deviceLimit: Int

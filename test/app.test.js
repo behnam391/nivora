@@ -117,7 +117,7 @@ test('reseller logs in and purchases a provisioned subscription from wallet', as
   r=await fetch(`${base}/api/admin/accounts`,{method:'POST',headers:admin,body:JSON.stringify({name:'همکار',phone:'09122222222',password:'password-123',role:'reseller',defaultDiscountPercent:20})});const reseller=await r.json();
   await fetch(`${base}/api/admin/accounts/${reseller.id}/wallet`,{method:'POST',headers:admin,body:JSON.stringify({amountToman:200000,note:'شارژ'})});
   r=await fetch(`${base}/api/reseller/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:'09122222222',password:'password-123'})});assert.equal(r.status,200);const login=await r.json(),auth={authorization:`Bearer ${login.token}`,'content-type':'application/json'};
-  r=await fetch(`${base}/api/reseller/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:plan.id,customerName:'مشتری',phone:'09123333333'})});assert.equal(r.status,201);const purchase=await r.json();assert.match(purchase.subscriptionUrl,/sub\.test/);assert.equal(purchase.balanceToman,120000);
+  r=await fetch(`${base}/api/reseller/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:plan.id,customerName:'مشتری',phone:'09123333333'})});assert.equal(r.status,201);const purchase=await r.json();assert.match(purchase.subscriptionUrl,/\/sub\/[a-f0-9]{32}$/);assert.equal(purchase.balanceToman,120000);
   r=await fetch(`${base}/api/reseller/orders`,{headers:auth});const orders=await r.json();
   r=await fetch(`${base}/api/reseller/orders/${orders[0].id}/renew`,{method:'POST',headers:auth,body:'{}'});assert.equal(r.status,201);const renewed=await r.json();assert.equal(renewed.balanceToman,40000);
 });

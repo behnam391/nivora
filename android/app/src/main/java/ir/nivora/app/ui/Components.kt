@@ -263,6 +263,7 @@ fun SubscriptionCard(
                 Column(Modifier.weight(1f)) {
                     Text(subscription.planName, style = MaterialTheme.typography.titleMedium)
                     Text(subscription.locationName ?: "انتخاب خودکار", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+                    if (subscription.routeCount > 1) Text("${faNumber(subscription.routeCount)} مسیر هوشمند", color = NivoraGreenDark, style = MaterialTheme.typography.labelMedium)
                 }
                 if (selected) StatusPill("انتخاب‌شده", NivoraGreenDark)
             }
