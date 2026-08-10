@@ -35,4 +35,13 @@ class NetworkToolsTest {
             NetworkTools.endpointsFromSubscription(raw)
         )
     }
+
+    @Test
+    fun readsCloudflareCleanIpWithTlsSni() {
+        val raw = "vless://id@104.16.0.1:443?security=tls&type=ws&sni=edge.nivorali.com&host=edge.nivorali.com#Cloudflare"
+        assertEquals(
+            ServiceEndpoint("104.16.0.1", 443, "edge.nivorali.com", true),
+            NetworkTools.endpointFromSubscription(raw)
+        )
+    }
 }

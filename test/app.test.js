@@ -69,6 +69,7 @@ test('3X-UI payload uses binary gigabytes and starts expiry after first use', ()
   assert.equal(payload.client.limitIp, 2);
   assert.equal(payload.client.flow, 'xtls-rprx-vision');
   assert.deepEqual(payload.inboundIds, [1]);
+  assert.deepEqual(buildClientPayload({ id:'87654321-abcd', phone:'09121234567', plan_name:'CDN', traffic_gb:10, duration_days:30, device_limit:1, panel_inbound_id:4, panel_cdn_inbound_id:9 }, 1).inboundIds, [4,9]);
 });
 
 test('3X-UI provisioner creates client then builds the public subscription URL', async () => {

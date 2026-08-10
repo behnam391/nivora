@@ -211,7 +211,11 @@ class NivoraVpnService : VpnService(), DialerController {
             val server = array.optJSONObject(0) ?: continue
             val host = server.optString("address").ifBlank { server.optString("server") }
             val port = server.optInt("port")
-            if (host.isNotBlank() && port in 1..65535) return ServiceEndpoint(host, port)
+            val stream = outbound.optJSONObject("streamSettings")
+            val security = stream?.optString("security").orEmpty()
+            val tls = stream?.optJSONObject("tlsSettings")
+            val serverName = tls?.optString("serverName").orEmpty().ifBlank { tls?.optString("server_name").orEmpty() }.ifBlank { null }
+            if (host.isNotBlank() && port in 1..65535) return ServiceEndpoint(host, port, serverName, security.equals("tls", true))
         }
         return null
     }

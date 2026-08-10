@@ -119,6 +119,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       provider TEXT NOT NULL DEFAULT '',
       panel_type TEXT NOT NULL DEFAULT '3x-ui',
       panel_inbound_id INTEGER,
+      panel_cdn_inbound_id INTEGER,
       capacity INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
@@ -135,6 +136,9 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       label TEXT NOT NULL,
       host TEXT NOT NULL,
       port INTEGER NOT NULL DEFAULT 443 CHECK(port BETWEEN 1 AND 65535),
+      mode TEXT NOT NULL DEFAULT 'direct' CHECK(mode IN ('direct','cloudflare')),
+      server_name TEXT,
+      source_url TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       health_status TEXT NOT NULL DEFAULT 'unknown' CHECK(health_status IN ('unknown','online','offline')),
@@ -226,6 +230,12 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   const subscriptionColumns = db.prepare('PRAGMA table_info(subscriptions)').all().map(c => c.name);
   if (!subscriptionColumns.includes('upstream_subscription_url')) db.exec('ALTER TABLE subscriptions ADD COLUMN upstream_subscription_url TEXT');
   if (!subscriptionColumns.includes('access_token')) db.exec('ALTER TABLE subscriptions ADD COLUMN access_token TEXT');
+  const locationColumns = db.prepare('PRAGMA table_info(service_locations)').all().map(c => c.name);
+  if (!locationColumns.includes('panel_cdn_inbound_id')) db.exec('ALTER TABLE service_locations ADD COLUMN panel_cdn_inbound_id INTEGER');
+  const endpointColumns = db.prepare('PRAGMA table_info(location_endpoints)').all().map(c => c.name);
+  if (!endpointColumns.includes('mode')) db.exec("ALTER TABLE location_endpoints ADD COLUMN mode TEXT NOT NULL DEFAULT 'direct' CHECK(mode IN ('direct','cloudflare'))");
+  if (!endpointColumns.includes('server_name')) db.exec('ALTER TABLE location_endpoints ADD COLUMN server_name TEXT');
+  if (!endpointColumns.includes('source_url')) db.exec('ALTER TABLE location_endpoints ADD COLUMN source_url TEXT');
   const accountColumns = db.prepare('PRAGMA table_info(accounts)').all().map(c => c.name);
   if (!accountColumns.includes('password_hash')) db.exec('ALTER TABLE accounts ADD COLUMN password_hash TEXT');
   if (!accountColumns.includes('password_salt')) db.exec('ALTER TABLE accounts ADD COLUMN password_salt TEXT');

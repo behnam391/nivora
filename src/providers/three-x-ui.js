@@ -8,6 +8,8 @@ const DAY = 24 * 60 * 60 * 1000;
 export function buildClientPayload(order, inboundId) {
   const safePhone = String(order.phone).replace(/\D/g, '');
   const suffix = String(order.id).replace(/-/g, '').slice(0, 8);
+  const inboundIds = [order.panel_inbound_id || inboundId, order.panel_cdn_inbound_id]
+    .map(Number).filter(Number.isInteger).filter(value => value > 0);
   return {
     client: {
       email: `nivo-${safePhone}-${suffix}`,
@@ -20,7 +22,7 @@ export function buildClientPayload(order, inboundId) {
       flow: 'xtls-rprx-vision'
       ,subId: randomUUID()
     },
-    inboundIds: [Number(order.panel_inbound_id || inboundId)]
+    inboundIds: [...new Set(inboundIds)]
   };
 }
 
