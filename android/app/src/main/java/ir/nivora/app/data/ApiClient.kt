@@ -115,6 +115,7 @@ class ApiClient(private val baseUrl: String) {
     fun resellerRenew(token: String, orderId: String, salePriceToman: Int) {
         request("/api/reseller/orders/$orderId/renew", "POST", token, JSONObject().put("salePriceToman", salePriceToman))
     }
+    fun controlResellerSubscription(token:String,orderId:String,action:String,reason:String){request("/api/reseller/orders/$orderId/$action","POST",token,JSONObject().put("reason",reason).put("confirm",action=="delete"))}
 
     fun requestPasswordReset(phone: String): ResetChallenge { val j=request("/api/customer/password-reset/request", "POST", body=JSONObject().put("phone",phone)); return ResetChallenge(j.optString("resetId"),j.optString("debugCode").takeIf(String::isNotBlank)) }
     fun confirmPasswordReset(phone:String, resetId:String, code:String, newPassword:String) { request("/api/customer/password-reset/confirm","POST",body=JSONObject().put("phone",phone).put("resetId",resetId).put("code",code).put("newPassword",newPassword)) }

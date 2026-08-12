@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
     private val vpnPreferences by lazy { getSharedPreferences("vpn", MODE_PRIVATE) }
     private var state by mutableStateOf(NivoraUiState())
     private var receiverRegistered = false
+    private val notificationPoll=object:Runnable{override fun run(){if(session.token()!=null)loadDashboard(false);handler.postDelayed(this,60_000)}}
 
     private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) startSelectedVpn()
@@ -71,6 +72,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
         }
         if (signedIn) loadDashboard(initial = true)
         if(signedIn&&Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        handler.postDelayed(notificationPoll,60_000)
     }
 
     override fun onDestroy() {
@@ -277,6 +279,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
             success = { showNotice("اشتراک مشتری تمدید شد"); loadDashboard(initial = false) }
         )
     }
+    override fun controlResellerSubscription(order:ResellerOrder,action:String,reason:String)=withToken{token->runAction(work={api.controlResellerSubscription(token,order.id,action,reason)},success={showNotice(if(action=="suspend")"اشتراک تعلیق شد" else if(action=="resume")"اشتراک فعال شد" else "اشتراک حذف شد");loadDashboard(false)})}
 
     override fun copyText(value: String, message: String) {
         if (value.isBlank()) return
@@ -389,7 +392,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
 
     private fun showNewNotifications(items:List<CustomerNotification>){
         val fresh=items.filter{it.readAt==null};if(fresh.isEmpty())return
-        val manager=getSystemService(NotificationManager::class.java);val channel="nivora_alerts"
+        val manager=getSystemService(NotificationManager::class.java);val channel="nivora_alerts_v2"
         if(Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(NotificationChannel(channel,"اعلان‌های نیورا",NotificationManager.IMPORTANCE_HIGH).apply{enableVibration(true);setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI,null)})
         fresh.take(3).forEach{n->manager.notify(n.id.hashCode(),Notification.Builder(this,channel).setSmallIcon(R.drawable.ic_nivora_notification).setContentTitle(n.title).setContentText(n.body).setAutoCancel(true).build())}
     }

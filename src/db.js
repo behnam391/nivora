@@ -239,6 +239,10 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   const subscriptionColumns = db.prepare('PRAGMA table_info(subscriptions)').all().map(c => c.name);
   if (!subscriptionColumns.includes('upstream_subscription_url')) db.exec('ALTER TABLE subscriptions ADD COLUMN upstream_subscription_url TEXT');
   if (!subscriptionColumns.includes('access_token')) db.exec('ALTER TABLE subscriptions ADD COLUMN access_token TEXT');
+  if (!subscriptionColumns.includes('suspension_reason')) db.exec('ALTER TABLE subscriptions ADD COLUMN suspension_reason TEXT');
+  if (!subscriptionColumns.includes('suspended_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN suspended_at TEXT');
+  if (!subscriptionColumns.includes('deleted_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN deleted_at TEXT');
+  if (!subscriptionColumns.includes('control_status')) db.exec("ALTER TABLE subscriptions ADD COLUMN control_status TEXT NOT NULL DEFAULT 'active'");
   const locationColumns = db.prepare('PRAGMA table_info(service_locations)').all().map(c => c.name);
   if (!locationColumns.includes('panel_cdn_inbound_id')) db.exec('ALTER TABLE service_locations ADD COLUMN panel_cdn_inbound_id INTEGER');
   const endpointColumns = db.prepare('PRAGMA table_info(location_endpoints)').all().map(c => c.name);
@@ -258,6 +262,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_resets_status ON password_reset_requests(status,requested_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_reset_codes_account ON password_reset_codes(account_id,created_at DESC)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_reseller_customers_account ON reseller_customers(account_id) WHERE account_id IS NOT NULL');
+  db.exec(`CREATE TABLE IF NOT EXISTS telegram_recovery_sessions (chat_id TEXT PRIMARY KEY,account_id TEXT REFERENCES accounts(id),verified_phone TEXT,state TEXT NOT NULL DEFAULT 'waiting_contact',expires_at TEXT NOT NULL,created_at TEXT NOT NULL)`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_customers_owner ON reseller_customers(reseller_id,status,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_location_endpoints_location ON location_endpoints(location_id,active,priority)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token) WHERE access_token IS NOT NULL');

@@ -74,6 +74,7 @@ interface NivoraActions {
     fun resetResellerCustomerPassword(customer:ResellerCustomer,password:String)
     fun resellerPurchase(plan: Plan, customer: ResellerCustomer, salePriceToman: Int)
     fun resellerRenew(order: ResellerOrder, salePriceToman: Int)
+    fun controlResellerSubscription(order:ResellerOrder,action:String,reason:String)
     fun copyText(value: String, message: String)
     fun logout()
     fun consumeNotice()

@@ -13,6 +13,7 @@ import { extractReceiptFields } from './receipt-ocr.js';
 import net from 'node:net';
 import { createHash, randomInt } from 'node:crypto';
 import { sendSms } from './sms.js';
+import { createTelegramRecovery } from './telegram-bot.js';
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -105,6 +106,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   const notify = (accountId,title,body) => db.prepare('INSERT INTO notifications(id,account_id,title,body,created_at) VALUES(?,?,?,?,?)').run(randomUUID(),accountId,title,body,new Date().toISOString());
   const normalizePhone = value => String(value || '').replace(/[\s\-()]/g, '').replace(/^\+98/, '0').replace(/^0098/, '0');
   const codeHash = code => createHash('sha256').update(String(code)).digest('hex');
+  const telegramRecovery=createTelegramRecovery(db);
   const guard=createRequestGuard();
   const autoReviewConfig = loadAutoReviewConfig();
   const subscriptionRow = id => db.prepare('SELECT * FROM subscriptions WHERE id=?').get(id);
@@ -161,6 +163,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     try {
       const url = new URL(req.url, 'http://localhost');
       const path = url.pathname;
+      if(req.method==='POST'&&path==='/api/telegram/webhook')return telegramRecovery(req,res,readJson,json);
       const guarded=guard(req,res,path);if(guarded.blocked)return json(res,429,{error:'RATE_LIMITED',requestId:guarded.requestId});
       res.once('finish',()=>{if(process.env.NODE_ENV==='production')console.log(JSON.stringify({time:new Date().toISOString(),requestId:guarded.requestId,method:req.method,path,status:res.statusCode,durationMs:Date.now()-guarded.started}));});
       if (req.method === 'GET' && path === '/') {
@@ -311,7 +314,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const account=accountFromRequest(db,req);if(!account||account.role!=='customer')return json(res,401,{error:'UNAUTHORIZED'});
         if(req.method==='GET'&&path==='/api/customer/me'){
           const wallet=getWalletStatement(db,account.id,25),panelStats=await readPanelStats();
-          const rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.status,o.created_at,o.tracking_token,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,s.access_token subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.city,(SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=o.location_id AND e.active=1) route_count FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.order_kind='purchase' ORDER BY o.created_at DESC LIMIT 100`).all(account.id);
+          const rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.status,o.created_at,o.tracking_token,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.control_status,s.subscription_url,s.access_token subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.city,(SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=o.location_id AND e.active=1) route_count FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.order_kind='purchase' ORDER BY o.created_at DESC LIMIT 100`).all(account.id);
           const orders=rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats));
           const topups=db.prepare('SELECT id,amount_toman,receipt_reference,receipt_image_url,status,review_note,created_at,reviewed_at FROM wallet_topups WHERE account_id=? ORDER BY created_at DESC LIMIT 50').all(account.id),notifications=db.prepare('SELECT id,title,body,read_at,created_at FROM notifications WHERE account_id=? ORDER BY created_at DESC LIMIT 30').all(account.id);
           return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,orders,topups,notifications});
@@ -383,7 +386,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const resellerCustomerMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)$/);
         if(resellerCustomerMatch&&req.method==='GET'){
           const customer=db.prepare("SELECT * FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(resellerCustomerMatch[1],account.id);if(!customer)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});
-          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? AND o.reseller_customer_id=? ORDER BY o.created_at DESC LIMIT 200`).all(account.id,customer.id);
+          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.control_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? AND o.reseller_customer_id=? ORDER BY o.created_at DESC LIMIT 200`).all(account.id,customer.id);
           return json(res,200,{...customer,orders:rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats))});
         }
         if(resellerCustomerMatch&&req.method==='PATCH'){
@@ -394,7 +397,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const current=db.prepare("SELECT id FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(resellerCustomerMatch[1],account.id);if(!current)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});db.prepare("UPDATE reseller_customers SET status='archived',updated_at=? WHERE id=?").run(new Date().toISOString(),current.id);audit(account.id,'archive','reseller_customer',current.id);return json(res,200,{archived:true});
         }
         if(req.method==='GET'&&path==='/api/reseller/orders'){
-          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.reseller_customer_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.panel_client_id,s.provision_error,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? ORDER BY o.created_at DESC LIMIT 300`).all(account.id);return json(res,200,rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats)));
+          const panelStats=await readPanelStats(),rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.reseller_customer_id,o.customer_name,o.phone,o.status,o.created_at,o.amount_transferred_irr,o.reseller_sale_price_toman,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.control_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.panel_client_id,s.provision_error,l.name location_name,l.country_code,l.city FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.reseller_id=? ORDER BY o.created_at DESC LIMIT 300`).all(account.id);return json(res,200,rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats)));
         }
         const renewMatch=path.match(/^\/api\/reseller\/orders\/([^/]+)\/renew$/);
         if(req.method==='POST'&&renewMatch){
@@ -407,6 +410,12 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const sid=randomUUID();db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,upstream_subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?,?)`).run(sid,id,original.panel_client_id,original.subscription_url,original.upstream_subscription_url||original.subscription_url,now);
           try{if(!provisioner?.renew)throw new Error('RENEW_NOT_SUPPORTED');await provisioner.renew({panelClientId:original.panel_client_id,addDays:original.duration_days,addTrafficGb:original.traffic_gb});db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(),sid);return json(res,201,{orderId:id,status:'active',subscriptionUrl:publicSubscriptionUrl(req,original.subscription_access_token,original.subscription_url),balanceToman:getWalletStatement(db,account.id,1).balanceToman});}
           catch(e){db.prepare("UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?").run(String(e.message||e),sid);postWalletTransaction(db,{accountId:account.id,amountToman:price,type:'refund',reference:`reseller-renew-refund:${id}`,actor:'system',note:`بازپرداخت تمدید ناموفق ${id}`});return json(res,502,{error:'RENEW_FAILED',refunded:true});}
+        }
+        const controlMatch=path.match(/^\/api\/reseller\/orders\/([^/]+)\/(suspend|resume|delete)$/);
+        if(req.method==='POST'&&controlMatch){
+          const body=await readJson(req),action=controlMatch[2],row=db.prepare(`SELECT o.id,o.account_id,o.customer_name,s.id subscription_id,s.status,s.panel_client_id FROM orders o JOIN subscriptions s ON s.order_id=o.id WHERE o.id=? AND o.reseller_id=? AND o.order_kind='purchase'`).get(controlMatch[1],account.id);if(!row)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
+          const reason=String(body.reason||'').trim();if(action==='suspend'&&reason.length<3)return json(res,400,{error:'SUSPENSION_REASON_REQUIRED'});if(action==='delete'&&body.confirm!==true)return json(res,400,{error:'DELETE_CONFIRMATION_REQUIRED'});
+          try{if(action==='suspend'){if(!provisioner?.suspend)throw new Error('CONTROL_NOT_SUPPORTED');await provisioner.suspend({panelClientId:row.panel_client_id});db.prepare("UPDATE subscriptions SET control_status='suspended',suspension_reason=?,suspended_at=? WHERE id=?").run(reason,new Date().toISOString(),row.subscription_id);}else if(action==='resume'){if(!provisioner?.resume)throw new Error('CONTROL_NOT_SUPPORTED');await provisioner.resume({panelClientId:row.panel_client_id});db.prepare("UPDATE subscriptions SET control_status='active',suspension_reason=NULL,suspended_at=NULL WHERE id=?").run(row.subscription_id);}else{if(!provisioner?.remove)throw new Error('CONTROL_NOT_SUPPORTED');await provisioner.remove({panelClientId:row.panel_client_id});db.prepare("UPDATE subscriptions SET control_status='deleted',deleted_at=?,suspension_reason=? WHERE id=?").run(new Date().toISOString(),reason||'حذف توسط همکار',row.subscription_id);}if(row.account_id)notify(row.account_id,action==='suspend'?'اشتراک تعلیق شد':action==='resume'?'اشتراک فعال شد':'اشتراک حذف شد',reason||'درخواست توسط همکار فروش انجام شد.');audit(account.id,action,'subscription',row.subscription_id,{reason});return json(res,200,{status:action==='resume'?'active':action==='suspend'?'suspended':'deleted'});}catch(e){return json(res,502,{error:'PANEL_CONTROL_FAILED',detail:String(e.message||e)});}
         }
         if(req.method==='POST'&&path==='/api/reseller/purchase'){
           const b=await readJson(req),plan=db.prepare(`SELECT p.*,r.price_toman reseller_price FROM plans p LEFT JOIN reseller_plan_prices r ON r.plan_id=p.id AND r.reseller_id=? AND r.active=1 WHERE p.id=? AND p.active=1`).get(account.id,b.planId);
@@ -649,7 +658,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
       const statusMatch = path.match(/^\/api\/orders\/([^/]+)$/);
       if (req.method === 'GET' && statusMatch) {
-        const row = db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.customer_name,o.phone,o.status,o.created_at,o.review_note,p.name plan_name,CAST(p.price_irr/10 AS INTEGER) price_toman,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token
+        const row = db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.parent_order_id,o.customer_name,o.phone,o.status,o.created_at,o.review_note,p.name plan_name,CAST(p.price_irr/10 AS INTEGER) price_toman,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.control_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token
           FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id
           WHERE o.id=? AND o.tracking_token=?`).get(statusMatch[1], url.searchParams.get('token'));
         if (!row) return json(res, 404, { error:'ORDER_NOT_FOUND' });
@@ -664,7 +673,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
 
       if (req.method === 'GET' && path === '/api/admin/orders') {
-        const rows = db.prepare(`SELECT o.*,CAST(o.amount_transferred_irr/10 AS INTEGER) amount_transferred_irr,p.name plan_name,CAST(p.price_irr/10 AS INTEGER) price_irr,s.status subscription_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.provision_error,l.name location_name
+        const rows = db.prepare(`SELECT o.*,CAST(o.amount_transferred_irr/10 AS INTEGER) amount_transferred_irr,p.name plan_name,CAST(p.price_irr/10 AS INTEGER) price_irr,s.status subscription_status,s.control_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.provision_error,l.name location_name
           FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id ORDER BY o.created_at DESC`).all();
         return json(res, 200, rows.map(row=>exposeSubscription(req,row)));
       }

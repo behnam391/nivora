@@ -97,5 +97,8 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
     if(result?.adjusted!==undefined&&result.adjusted<1)throw new Error(result?.skipped?.[0]?.reason||'3X-UI did not adjust client');
     return result;
   };
+  provision.suspend=async ({panelClientId})=>call('POST','clients/bulkDisable',{emails:[panelClientId]});
+  provision.resume=async ({panelClientId})=>call('POST','clients/bulkEnable',{emails:[panelClientId]});
+  provision.remove=async ({panelClientId})=>call('POST','clients/bulkDel',{emails:[panelClientId],keepTraffic:true});
   return provision;
 }

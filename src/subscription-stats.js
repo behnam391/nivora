@@ -6,6 +6,7 @@ export async function readPanelStats(file = process.env.PANEL_STATS_PATH || 'dat
 }
 
 export function enrichSubscription(order, stats = {}, now = Date.now()) {
+  if(order.control_status&&order.control_status!=='active')order.subscription_status=order.control_status;
   const row = stats[order.panel_client_id] || {};
   const totalBytes = Number(row.totalBytes ?? (Number(order.traffic_gb || 0) * 1024 ** 3));
   const usedBytes = Number(row.upBytes || 0) + Number(row.downBytes || 0);
