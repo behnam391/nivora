@@ -241,6 +241,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/admin-customers.js'){const js=await readFile(resolve('public/admin-customers.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-password-resets.js'){const js=await readFile(resolve('public/admin-password-resets.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-growth.js'){const js=await readFile(resolve('public/admin-growth.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
+      if(req.method==='GET'&&path==='/admin-telegram.js'){const js=await readFile(resolve('public/admin-telegram.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if (req.method === 'GET' && path === '/admin.js') {
         const js = await readFile(resolve('public/admin.js'));
         res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' }); return res.end(js);
