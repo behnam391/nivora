@@ -11,7 +11,7 @@ import { buildMultiEndpointSubscription, fetchCleanIpSource, fetchSubscriptionTe
 import { evaluateOrder, sweepPendingOrders, ingestBankMessage, loadAutoReviewConfig } from './auto-review.js';
 import { extractReceiptFields } from './receipt-ocr.js';
 import net from 'node:net';
-import { createHash, randomInt } from 'node:crypto';
+import { createHash, randomInt, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { sendSms } from './sms.js';
 import { createTelegramRecovery } from './telegram-bot.js';
 
@@ -106,7 +106,13 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   const notify = (accountId,title,body) => db.prepare('INSERT INTO notifications(id,account_id,title,body,created_at) VALUES(?,?,?,?,?)').run(randomUUID(),accountId,title,body,new Date().toISOString());
   const normalizePhone = value => String(value || '').replace(/[\s\-()]/g, '').replace(/^\+98/, '0').replace(/^0098/, '0');
   const codeHash = code => createHash('sha256').update(String(code)).digest('hex');
-  const telegramRecovery=createTelegramRecovery(db);
+  const settingGet=key=>db.prepare('SELECT value FROM app_settings WHERE key=?').get(key)?.value;
+  const settingSet=(key,value)=>db.prepare(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).run(key,String(value),new Date().toISOString());
+  const settingsKey=createHash('sha256').update(process.env.SETTINGS_ENCRYPTION_KEY||adminToken).digest();
+  const encrypt=value=>{const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',settingsKey,iv),data=Buffer.concat([cipher.update(value,'utf8'),cipher.final()]);return `${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${data.toString('base64url')}`};
+  const decrypt=value=>{try{const [a,b,c]=value.split('.'),iv=Buffer.from(a,'base64url'),dec=createDecipheriv('aes-256-gcm',settingsKey,iv);dec.setAuthTag(Buffer.from(b,'base64url'));return Buffer.concat([dec.update(Buffer.from(c,'base64url')),dec.final()]).toString('utf8')}catch{return ''}};
+  const telegramConfig=()=>({enabled:settingGet('telegram_enabled')==='true',token:decrypt(settingGet('telegram_token')||'')||process.env.TELEGRAM_BOT_TOKEN,secret:decrypt(settingGet('telegram_secret')||'')||process.env.TELEGRAM_WEBHOOK_SECRET});
+  const telegramRecovery=createTelegramRecovery(db,{getConfig:telegramConfig});
   const guard=createRequestGuard();
   const autoReviewConfig = loadAutoReviewConfig();
   const subscriptionRow = id => db.prepare('SELECT * FROM subscriptions WHERE id=?').get(id);
@@ -465,6 +471,19 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
 
       if (path.startsWith('/api/admin/') && !isAdmin(req)) return json(res, 401, { error: 'UNAUTHORIZED' });
+
+      if(req.method==='GET'&&path==='/api/admin/telegram-settings'){
+        const c=telegramConfig();return json(res,200,{enabled:c.enabled,tokenConfigured:Boolean(c.token),tokenHint:c.token?`…${c.token.slice(-4)}`:'',webhookSecretConfigured:Boolean(c.secret),webhookUrl:'https://b.nivorali.com/api/telegram/webhook'});
+      }
+      if(req.method==='PATCH'&&path==='/api/admin/telegram-settings'){
+        const b=await readJson(req);if(typeof b.enabled==='boolean')settingSet('telegram_enabled',b.enabled);if(String(b.token||'').trim()){if(!/^\d+:[A-Za-z0-9_-]{20,}$/.test(String(b.token).trim()))return json(res,400,{error:'INVALID_TELEGRAM_TOKEN'});settingSet('telegram_token',encrypt(String(b.token).trim()));}if(b.rotateSecret===true||!telegramConfig().secret)settingSet('telegram_secret',encrypt(randomBytes(32).toString('base64url')));audit('admin','update','telegram_settings','telegram');return json(res,200,{saved:true});
+      }
+      if(req.method==='POST'&&path==='/api/admin/telegram-settings/webhook'){
+        const c=telegramConfig();if(!c.enabled||!c.token||!c.secret)return json(res,400,{error:'TELEGRAM_SETTINGS_INCOMPLETE'});const webhookUrl=`${String(process.env.PUBLIC_BASE_URL||`https://${req.headers.host}`).replace(/\/$/,``)}/api/telegram/webhook`,response=await fetch(`https://api.telegram.org/bot${c.token}/setWebhook`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:webhookUrl,secret_token:c.secret,drop_pending_updates:true})}),data=await response.json();if(!response.ok||!data.ok)return json(res,502,{error:'TELEGRAM_WEBHOOK_FAILED',detail:data.description});settingSet('telegram_webhook_url',webhookUrl);return json(res,200,{connected:true,url:webhookUrl});
+      }
+      if(req.method==='GET'&&path==='/api/admin/telegram-settings/status'){
+        const c=telegramConfig();if(!c.token)return json(res,200,{connected:false});const response=await fetch(`https://api.telegram.org/bot${c.token}/getWebhookInfo`),data=await response.json();return json(res,200,{connected:Boolean(data.ok&&data.result?.url),url:data.result?.url||'',pending:data.result?.pending_update_count||0,lastError:data.result?.last_error_message||''});
+      }
 
       if (req.method === 'GET' && path === '/api/admin/bank-transactions') {
         const status = url.searchParams.get('status');

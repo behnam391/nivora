@@ -1,10 +1,11 @@
 import { hashPassword } from './auth.js';
 
 const normalizePhone=value=>String(value||'').replace(/[^\d+]/g,'').replace(/^\+98/,'0').replace(/^0098/,'0');
-export function createTelegramRecovery(db,{token=process.env.TELEGRAM_BOT_TOKEN,secret=process.env.TELEGRAM_WEBHOOK_SECRET,fetchImpl=fetch}={}){
-  const send=async(chatId,text,extra={})=>{if(!token)return;await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chatId,text,...extra})})};
+export function createTelegramRecovery(db,{getConfig=()=>({token:process.env.TELEGRAM_BOT_TOKEN,secret:process.env.TELEGRAM_WEBHOOK_SECRET,enabled:true}),fetchImpl=fetch}={}){
   return async(req,res,readJson,json)=>{
-    if(!token||!secret)return json(res,503,{error:'TELEGRAM_RECOVERY_DISABLED'});
+    const {token,secret,enabled}=getConfig();
+    if(!enabled||!token||!secret)return json(res,503,{error:'TELEGRAM_RECOVERY_DISABLED'});
+    const send=async(chatId,text,extra={})=>{await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chatId,text,...extra})})};
     if(req.headers['x-telegram-bot-api-secret-token']!==secret)return json(res,401,{error:'UNAUTHORIZED'});
     const update=await readJson(req),message=update.message;if(!message?.chat?.id)return json(res,200,{ok:true});const chat=String(message.chat.id),now=new Date(),expires=new Date(now.getTime()+10*60_000).toISOString();
     if(message.text==='/start'||message.text==='بازیابی رمز'){db.prepare(`INSERT INTO telegram_recovery_sessions(chat_id,state,expires_at,created_at) VALUES(?,'waiting_contact',?,?) ON CONFLICT(chat_id) DO UPDATE SET account_id=NULL,verified_phone=NULL,state='waiting_contact',expires_at=excluded.expires_at`).run(chat,expires,now.toISOString());await send(chat,'برای احراز هویت، شماره‌ای را بفرستید که متعلق به همین حساب تلگرام است.',{reply_markup:{keyboard:[[{text:'ارسال شماره من',request_contact:true}]],resize_keyboard:true,one_time_keyboard:true}});return json(res,200,{ok:true});}

@@ -4,3 +4,4 @@
 .bank-card footer{border-color:rgba(255,255,255,.15)}
 @media(max-width:950px){.nav[data-view=cards]:before{content:'▭'}}
 @media(max-width:620px){nav{grid-template-columns:repeat(4,1fr)}}
+.telegram-settings{max-width:760px;display:grid;gap:18px}.telegram-settings label{display:grid;gap:7px}.telegram-settings small{color:#6b7f78}.telegram-settings .check{display:flex;align-items:center;gap:9px}

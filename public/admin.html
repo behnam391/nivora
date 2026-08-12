@@ -17,7 +17,7 @@
   <div id="app" class="app hidden">
     <aside>
       <div class="brand"><div class="brand-mark small"><img src="/brand-mark.svg" alt=""></div><div><b>Nivora</b><span>مرکز مدیریت</span></div></div>
-      <nav><button class="nav active" data-view="overview">نمای کلی</button><button class="nav" data-view="plans">پلن‌ها</button><button class="nav" data-view="cards">کارت‌های بانکی</button><button class="nav" data-view="orders">سفارش‌ها <i id="pending-badge">۰</i></button></nav>
+      <nav><button class="nav active" data-view="overview">نمای کلی</button><button class="nav" data-view="plans">پلن‌ها</button><button class="nav" data-view="cards">کارت‌های بانکی</button><button class="nav" data-view="orders">سفارش‌ها <i id="pending-badge">۰</i></button><button class="nav" data-view="telegram">ربات تلگرام</button></nav>
       <button id="logout" class="ghost logout">خروج</button>
     </aside>
     <main>
@@ -46,6 +46,7 @@
         <div class="panel-head standalone"><div><h2>کارت‌های بانکی</h2><p>کارت‌های فعال در صفحه خرید نمایش داده می‌شوند.</p></div><button id="new-card" class="primary">+ کارت جدید</button></div>
         <div id="cards-grid" class="plans-grid"></div>
       </section>
+      <section id="telegram" class="view hidden"><div class="panel-head standalone"><div><h2>ربات بازیابی تلگرام</h2><p>توکن و اتصال امن وبهوک را مدیریت کنید.</p></div><span id="telegram-status" class="status awaiting_receipt">در حال بررسی</span></div><form id="telegram-form" class="panel telegram-settings"><label class="check"><input id="telegram-enabled" type="checkbox"> ربات فعال باشد</label><label>توکن جدید ربات<input id="telegram-token" type="password" autocomplete="new-password" placeholder="برای حفظ توکن فعلی خالی بگذارید"><small id="telegram-token-hint"></small></label><label class="check"><input id="telegram-rotate" type="checkbox"> رمز امنیتی وبهوک تعویض شود</label><div class="modal-actions"><button class="primary" type="submit">ذخیره تنظیمات</button><button id="telegram-connect" class="ghost" type="button">اتصال وبهوک</button><button id="telegram-check" class="ghost" type="button">بررسی اتصال</button></div><p id="telegram-result" class="muted"></p></form></section>
     </main>
   </div>
 
@@ -55,5 +56,5 @@
 
   <dialog id="review-dialog"><form id="review-form"><div class="modal-head"><div><p class="eyebrow">RECEIPT REVIEW</p><h2>بررسی پرداخت</h2></div><button type="button" class="icon close-review">×</button></div><div id="review-summary"></div><label>یادداشت مدیر<textarea id="review-note" rows="3" placeholder="اختیاری"></textarea></label><div class="modal-actions split"><button type="button" id="reject-order" class="danger">رد پرداخت</button><button type="button" class="ghost close-review">انصراف</button><button type="submit" class="primary">تأیید پرداخت</button></div></form></dialog>
   <dialog id="card-dialog"><form id="card-form"><div class="modal-head"><div><p class="eyebrow">PAYMENT CARD</p><h2 id="card-dialog-title">کارت جدید</h2></div><button type="button" class="icon close-card">×</button></div><input id="card-id" type="hidden"><div class="form-grid"><label class="span-2">شماره کارت<input id="card-number" inputmode="numeric" maxlength="19" required></label><label>نام صاحب کارت<input id="card-holder" required></label><label>نام بانک<input id="card-bank" placeholder="اختیاری"></label><label>ترتیب نمایش<input id="card-sort" type="number" value="0"></label><label class="check"><input id="card-active" type="checkbox" checked> فعال و قابل نمایش</label></div><div class="modal-actions"><button type="button" class="ghost close-card">انصراف</button><button class="primary" type="submit">ذخیره کارت</button></div></form></dialog>
-  <div id="toast"></div><script src="/admin.js" defer></script><script src="/admin-resellers.js" defer></script><script src="/admin-account-edit.js" defer></script><script src="/admin-locations.js" defer></script><script src="/admin-topups.js" defer></script><script src="/admin-customers.js" defer></script><script src="/admin-password-resets.js" defer></script><script src="/admin-growth.js" defer></script>
+  <div id="toast"></div><script src="/admin.js" defer></script><script src="/admin-resellers.js" defer></script><script src="/admin-account-edit.js" defer></script><script src="/admin-locations.js" defer></script><script src="/admin-topups.js" defer></script><script src="/admin-customers.js" defer></script><script src="/admin-password-resets.js" defer></script><script src="/admin-growth.js" defer></script><script src="/admin-telegram.js" defer></script>
 </body></html>
