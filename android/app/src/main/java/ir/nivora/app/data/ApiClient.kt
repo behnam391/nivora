@@ -186,6 +186,7 @@ class ApiClient(private val baseUrl: String) {
             }
         }
     }
+    fun telegramBotUsername():String=request("/api/store-config").optString("telegramBotUsername")
 
     fun account(token: String): Account {
         val json = request("/api/customer/me", token = token)

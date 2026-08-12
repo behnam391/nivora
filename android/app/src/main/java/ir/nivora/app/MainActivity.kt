@@ -103,6 +103,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
         work = { api.requestPasswordReset(phone) },
         success = { onChallenge(it.id,it.debugCode) }
     )
+    override fun openTelegramRecovery()=background(work={api.telegramBotUsername()},success={username->if(username.isBlank())showNotice("ربات بازیابی هنوز فعال نشده است",true)else startActivity(Intent(Intent.ACTION_VIEW,android.net.Uri.parse("https://t.me/$username?start=recovery")))},failure={showNotice(friendly(it),true)})
     override fun confirmPasswordReset(phone:String,resetId:String,code:String,newPassword:String)=runAction(work={api.confirmPasswordReset(phone,resetId,code,newPassword)},success={showNotice("رمز عبور با موفقیت تغییر کرد")})
 
     override fun refresh() = loadDashboard(initial = false)

@@ -52,6 +52,7 @@ interface NivoraActions {
     fun login(phone: String, password: String, role: LoginRole)
     fun register(name: String, phone: String, password: String)
     fun requestPasswordReset(phone: String, onChallenge:(String,String?)->Unit)
+    fun openTelegramRecovery()
     fun confirmPasswordReset(phone:String, resetId:String, code:String, newPassword:String)
     fun refresh()
     fun selectSubscription(subscription: Subscription)

@@ -190,7 +190,7 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
             }
         }
     }
-    if (recoveryOpen) RecoveryDialog(phone,busy,{recoveryOpen=false},actions::requestPasswordReset,actions::confirmPasswordReset)
+    if (recoveryOpen) RecoveryDialog({recoveryOpen=false}){actions.openTelegramRecovery();recoveryOpen=false}
 }
 
 @Composable
@@ -223,20 +223,10 @@ private fun NivoraField(
 }
 
 @Composable
-private fun RecoveryDialog(initialPhone:String,busy:Boolean,onDismiss:()->Unit,onRequest:(String,(String,String?)->Unit)->Unit,onConfirm:(String,String,String,String)->Unit) {
-    var phone by remember(initialPhone) { mutableStateOf(initialPhone) }
-    var resetId by remember { mutableStateOf("") };var code by remember{mutableStateOf("")};var password by remember{mutableStateOf("")};var debug by remember{mutableStateOf<String?>(null)}
-    var error by remember { mutableStateOf<String?>(null) }
+private fun RecoveryDialog(onDismiss:()->Unit,onTelegram:()->Unit) {
     AppDialog(onDismiss) {
-        DialogTitle(Icons.Rounded.Key, "بازیابی رمز عبور", "درخواست برای مدیریت ارسال می‌شود و پس از احراز هویت رمز تازه دریافت می‌کنید.")
-        NivoraField(phone, { phone = it.filter(Char::isDigit).take(11) }, "شماره موبایل", Icons.Rounded.PhoneAndroid, KeyboardType.Phone)
-        if(resetId.isNotBlank()){NivoraField(code,{code=it.filter(Char::isDigit).take(6)},"کد ۶ رقمی",Icons.Rounded.Pin,KeyboardType.Number);NivoraField(password,{password=it},"رمز عبور جدید",Icons.Rounded.Lock,KeyboardType.Password);debug?.let{Text("کد آزمایشی: $it")}}
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Button(
-            onClick = { if(!phone.matches(Regex("09\\d{9}")))error="شماره موبایل معتبر نیست" else if(resetId.isBlank())onRequest(phone){id,d->resetId=id;debug=d}else if(code.length!=6||password.length<8)error="کد و رمز جدید را کامل وارد کنید" else{onConfirm(phone,resetId,code,password);onDismiss()} },
-            enabled = !busy,
-            modifier = Modifier.fillMaxWidth()
-        ) { Text("ثبت درخواست") }
+        DialogTitle(Icons.Rounded.Key,"بازیابی رمز عبور","شماره حساب را با دکمه رسمی تلگرام تأیید و رمز تازه را داخل ربات ثبت کنید.")
+        Button(onClick=onTelegram,modifier=Modifier.fillMaxWidth()){Icon(Icons.AutoMirrored.Rounded.Send,null);Spacer(Modifier.width(7.dp));Text("ورود به ربات بازیابی")}
         TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("انصراف") }
     }
 }

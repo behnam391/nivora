@@ -231,6 +231,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS telegram_account_links (telegram_user_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,account_id TEXT NOT NULL REFERENCES accounts(id),phone TEXT NOT NULL,linked_at TEXT NOT NULL,last_seen_at TEXT NOT NULL);
   `);
   const orderColumns = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
   if (!orderColumns.includes('tracking_token')) db.exec('ALTER TABLE orders ADD COLUMN tracking_token TEXT');
