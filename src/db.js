@@ -217,6 +217,15 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       read_at TEXT,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS password_reset_codes (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id),
+      code_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL
+    );
   `);
   const orderColumns = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
   if (!orderColumns.includes('tracking_token')) db.exec('ALTER TABLE orders ADD COLUMN tracking_token TEXT');
@@ -239,11 +248,16 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   const accountColumns = db.prepare('PRAGMA table_info(accounts)').all().map(c => c.name);
   if (!accountColumns.includes('password_hash')) db.exec('ALTER TABLE accounts ADD COLUMN password_hash TEXT');
   if (!accountColumns.includes('password_salt')) db.exec('ALTER TABLE accounts ADD COLUMN password_salt TEXT');
+  if (!accountColumns.includes('managed_by_reseller_id')) db.exec('ALTER TABLE accounts ADD COLUMN managed_by_reseller_id TEXT REFERENCES accounts(id)');
+  const resellerCustomerColumns = db.prepare('PRAGMA table_info(reseller_customers)').all().map(c => c.name);
+  if (!resellerCustomerColumns.includes('account_id')) db.exec('ALTER TABLE reseller_customers ADD COLUMN account_id TEXT REFERENCES accounts(id)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_tracking_token ON orders(tracking_token)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_wallet_topups_account ON wallet_topups(account_id,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tickets_account ON support_tickets(account_id,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_account ON notifications(account_id,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_resets_status ON password_reset_requests(status,requested_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_password_reset_codes_account ON password_reset_codes(account_id,created_at DESC)');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_reseller_customers_account ON reseller_customers(account_id) WHERE account_id IS NOT NULL');
   db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_customers_owner ON reseller_customers(reseller_id,status,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_location_endpoints_location ON location_endpoints(location_id,active,priority)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token) WHERE access_token IS NOT NULL');
@@ -256,5 +270,36 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   for (const customer of legacyCustomers) insertLegacyCustomer.run(randomUUID(),customer.reseller_id,customer.name,customer.phone,'',customer.created_at,customer.updated_at);
   db.exec(`UPDATE orders SET reseller_customer_id=(SELECT rc.id FROM reseller_customers rc WHERE rc.reseller_id=orders.reseller_id AND rc.phone=orders.phone) WHERE reseller_id IS NOT NULL AND reseller_customer_id IS NULL`);
   db.exec(`UPDATE orders SET reseller_sale_price_toman=(SELECT CAST(p.price_irr/10 AS INTEGER) FROM plans p WHERE p.id=orders.plan_id) WHERE reseller_id IS NOT NULL AND reseller_sale_price_toman IS NULL`);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bank_transactions (
+      id TEXT PRIMARY KEY,
+      amount_rial INTEGER NOT NULL DEFAULT 0,
+      tracking_code TEXT,
+      card_last4 TEXT,
+      bank TEXT NOT NULL DEFAULT '',
+      direction TEXT NOT NULL DEFAULT 'credit' CHECK(direction IN ('credit','debit','unknown')),
+      raw_message TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'sms',
+      status TEXT NOT NULL DEFAULT 'unmatched' CHECK(status IN ('unmatched','matched','ignored')),
+      matched_order_id TEXT REFERENCES orders(id),
+      received_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      dedupe_key TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_tx_dedupe ON bank_transactions(dedupe_key);
+    CREATE INDEX IF NOT EXISTS idx_bank_tx_match ON bank_transactions(status,direction,amount_rial,received_at);
+    CREATE TABLE IF NOT EXISTS order_reviews (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL REFERENCES orders(id),
+      decision TEXT NOT NULL CHECK(decision IN ('approved','rejected','manual')),
+      confidence INTEGER NOT NULL DEFAULT 0,
+      reason TEXT NOT NULL DEFAULT '',
+      matched_bank_tx_id TEXT REFERENCES bank_transactions(id),
+      ocr_amount_rial INTEGER,
+      ocr_tracking_code TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_order_reviews_order ON order_reviews(order_id,created_at DESC);
+  `);
   return db;
 }

@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import ir.nivora.app.BuildConfig
 import ir.nivora.app.data.*
 
@@ -188,10 +190,7 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
             }
         }
     }
-    if (recoveryOpen) RecoveryDialog(phone, busy, onDismiss = { recoveryOpen = false }) {
-        actions.requestPasswordReset(it)
-        recoveryOpen = false
-    }
+    if (recoveryOpen) RecoveryDialog(phone,busy,{recoveryOpen=false},actions::requestPasswordReset,actions::confirmPasswordReset)
 }
 
 @Composable
@@ -224,15 +223,17 @@ private fun NivoraField(
 }
 
 @Composable
-private fun RecoveryDialog(initialPhone: String, busy: Boolean, onDismiss: () -> Unit, onSubmit: (String) -> Unit) {
+private fun RecoveryDialog(initialPhone:String,busy:Boolean,onDismiss:()->Unit,onRequest:(String,(String,String?)->Unit)->Unit,onConfirm:(String,String,String,String)->Unit) {
     var phone by remember(initialPhone) { mutableStateOf(initialPhone) }
+    var resetId by remember { mutableStateOf("") };var code by remember{mutableStateOf("")};var password by remember{mutableStateOf("")};var debug by remember{mutableStateOf<String?>(null)}
     var error by remember { mutableStateOf<String?>(null) }
     AppDialog(onDismiss) {
         DialogTitle(Icons.Rounded.Key, "بازیابی رمز عبور", "درخواست برای مدیریت ارسال می‌شود و پس از احراز هویت رمز تازه دریافت می‌کنید.")
         NivoraField(phone, { phone = it.filter(Char::isDigit).take(11) }, "شماره موبایل", Icons.Rounded.PhoneAndroid, KeyboardType.Phone)
+        if(resetId.isNotBlank()){NivoraField(code,{code=it.filter(Char::isDigit).take(6)},"کد ۶ رقمی",Icons.Rounded.Pin,KeyboardType.Number);NivoraField(password,{password=it},"رمز عبور جدید",Icons.Rounded.Lock,KeyboardType.Password);debug?.let{Text("کد آزمایشی: $it")}}
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button(
-            onClick = { if (phone.matches(Regex("09\\d{9}"))) onSubmit(phone) else error = "شماره موبایل معتبر نیست" },
+            onClick = { if(!phone.matches(Regex("09\\d{9}")))error="شماره موبایل معتبر نیست" else if(resetId.isBlank())onRequest(phone){id,d->resetId=id;debug=d}else if(code.length!=6||password.length<8)error="کد و رمز جدید را کامل وارد کنید" else{onConfirm(phone,resetId,code,password);onDismiss()} },
             enabled = !busy,
             modifier = Modifier.fillMaxWidth()
         ) { Text("ثبت درخواست") }
@@ -312,7 +313,7 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
         onLoadCards = actions::loadPaymentCards,
         onCopy = actions::copyText,
         onDismiss = { topupOpen = false },
-        onSubmit = { amount, reference -> actions.submitTopup(amount, reference); topupOpen = false }
+        onSubmit = { amount, reference,receipt -> actions.submitTopup(amount, reference,receipt); topupOpen = false }
     )
     if (ticketOpen) TicketDialog(
         busy = state.actionBusy,
@@ -374,8 +375,8 @@ private fun ResellerDashboard(state: NivoraUiState, actions: NivoraActions, snac
         }
     }
 
-    if (addCustomerOpen) ResellerCustomerDialog(state.actionBusy, onDismiss = { addCustomerOpen = false }) { name, phone, note ->
-        actions.createResellerCustomer(name, phone, note); addCustomerOpen = false
+    if (addCustomerOpen) ResellerCustomerDialog(state.actionBusy, onDismiss = { addCustomerOpen = false }) { name, phone,password,note ->
+        actions.createResellerCustomer(name, phone,password,note); addCustomerOpen = false
     }
     purchasePlan?.let { plan ->
         ResellerPurchaseDialog(plan, account.customers, preferredCustomer, account.balanceToman, state.actionBusy, onDismiss = { purchasePlan = null; preferredCustomer = null }) { customer, salePrice ->
@@ -383,7 +384,7 @@ private fun ResellerDashboard(state: NivoraUiState, actions: NivoraActions, snac
         }
     }
     detailCustomer?.let { customer ->
-        ResellerCustomerDetailDialog(customer, account.orders.filter { it.customerId == customer.id }, onDismiss = { detailCustomer = null }, onSale = { detailCustomer = null; preferredCustomer = customer; destination = ResellerDestination.PLANS }, onCopy = actions::copyText, onRenew = { detailCustomer = null; renewOrder = it })
+        ResellerCustomerDetailDialog(customer, account.orders.filter { it.customerId == customer.id }, state.actionBusy, onDismiss = { detailCustomer = null }, onSale = { detailCustomer = null; preferredCustomer = customer; destination = ResellerDestination.PLANS }, onCopy = actions::copyText, onRenew = { detailCustomer = null; renewOrder = it },onReset={actions.resetResellerCustomerPassword(customer,it)})
     }
     renewOrder?.let { order ->
         val cost = state.resellerPlans.firstOrNull { it.id == order.planId }?.priceToman ?: 0
@@ -488,9 +489,9 @@ private fun ResellerWalletScreen(account: ResellerAccount) {
 }
 
 @Composable
-private fun ResellerCustomerDialog(busy: Boolean, onDismiss: () -> Unit, onSubmit: (String, String, String) -> Unit) {
-    var name by rememberSaveable { mutableStateOf("") }; var phone by rememberSaveable { mutableStateOf("") }; var note by rememberSaveable { mutableStateOf("") }; var error by rememberSaveable { mutableStateOf<String?>(null) }
-    AppDialog(onDismiss) { DialogTitle(Icons.Rounded.PersonAdd, "مشتری جدید", "برای مشتری یک پرونده اختصاصی بسازید."); NivoraField(name, { name = it.take(80) }, "نام و نام خانوادگی", Icons.Rounded.PersonOutline); NivoraField(phone, { phone = it.filter(Char::isDigit).take(11) }, "شماره موبایل", Icons.Rounded.PhoneAndroid, KeyboardType.Phone); OutlinedTextField(note, { note = it.take(500) }, Modifier.fillMaxWidth(), label = { Text("یادداشت داخلی (اختیاری)") }, minLines = 2, shape = RoundedCornerShape(16.dp)); error?.let { Text(it, color = NivoraDanger) }; Button(onClick = { error = when { name.trim().length < 2 -> "نام مشتری را کامل وارد کنید"; !phone.matches(Regex("09\\d{9}")) -> "شماره موبایل معتبر نیست"; else -> null }; if (error == null) onSubmit(name.trim(), phone, note.trim()) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("ذخیره در دفترچه") }; TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("انصراف") } }
+private fun ResellerCustomerDialog(busy: Boolean, onDismiss: () -> Unit, onSubmit: (String, String,String, String) -> Unit) {
+    var name by rememberSaveable { mutableStateOf("") }; var phone by rememberSaveable { mutableStateOf("") };var password by rememberSaveable{mutableStateOf("")}; var note by rememberSaveable { mutableStateOf("") }; var error by rememberSaveable { mutableStateOf<String?>(null) }
+    AppDialog(onDismiss) { DialogTitle(Icons.Rounded.PersonAdd,"مشتری جدید","حساب ورود مشتری را همراه پرونده فروش بسازید.");NivoraField(name,{name=it.take(80)},"نام و نام خانوادگی",Icons.Rounded.PersonOutline);NivoraField(phone,{phone=it.filter(Char::isDigit).take(11)},"شماره موبایل",Icons.Rounded.PhoneAndroid,KeyboardType.Phone);NivoraField(password,{password=it},"رمز ورود مشتری",Icons.Rounded.Lock,KeyboardType.Password);OutlinedTextField(note,{note=it.take(500)},Modifier.fillMaxWidth(),label={Text("یادداشت داخلی (اختیاری)")},minLines=2,shape=RoundedCornerShape(16.dp));error?.let{Text(it,color=NivoraDanger)};Button(onClick={error=when{name.trim().length<2->"نام مشتری را کامل وارد کنید";!phone.matches(Regex("09\\d{9}"))->"شماره موبایل معتبر نیست";password.length<8->"رمز باید حداقل ۸ کاراکتر باشد";else->null};if(error==null)onSubmit(name.trim(),phone,password,note.trim())},enabled=!busy,modifier=Modifier.fillMaxWidth()){Text("ساخت حساب مشتری")};TextButton(onClick=onDismiss,modifier=Modifier.fillMaxWidth()){Text("انصراف")} }
 }
 
 @Composable
@@ -500,7 +501,9 @@ private fun ResellerPurchaseDialog(plan: Plan, customers: List<ResellerCustomer>
 }
 
 @Composable
-private fun ResellerCustomerDetailDialog(customer: ResellerCustomer, orders: List<ResellerOrder>, onDismiss: () -> Unit, onSale: () -> Unit, onCopy: (String, String) -> Unit, onRenew: (ResellerOrder) -> Unit) {
+private fun ResellerCustomerDetailDialog(customer: ResellerCustomer, orders: List<ResellerOrder>, busy:Boolean,onDismiss: () -> Unit, onSale: () -> Unit, onCopy: (String, String) -> Unit, onRenew: (ResellerOrder) -> Unit,onReset:(String)->Unit) {
+    var password by rememberSaveable(customer.id){mutableStateOf("")}
+    if(customer.managedAccount && password.isNotBlank()) { /* state is rendered in the customer dialog below */ }
     AppDialog(onDismiss) { DialogTitle(Icons.Rounded.AccountCircle, customer.name, customer.phone); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { InfoTile("فعال", faNumber(customer.activeSubscriptions)); InfoTile("فروش", toman(customer.revenueToman)); InfoTile("سود", toman(customer.profitToman)) }; Button(onClick = onSale, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(6.dp)); Text("اشتراک جدید برای مشتری") }; Text("اشتراک‌ها و تمدیدها", style = MaterialTheme.typography.titleMedium); if (orders.isEmpty()) Text("هنوز اشتراکی ثبت نشده است.", color = MaterialTheme.colorScheme.onSurfaceVariant) else orders.forEach { order -> Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Row { Column(Modifier.weight(1f)) { Text(order.planName, fontWeight = FontWeight.Bold); Text(if (order.orderKind == "renewal") "تمدید · ${shortDate(order.createdAt)}" else "فروش اولیه · ${shortDate(order.createdAt)}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }; StatusPill(if (order.status == "active") "فعال" else order.status, if (order.status == "active") NivoraGreenDark else NivoraWarning) }; Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) { order.subscriptionUrl?.let { OutlinedButton(onClick = { onCopy(it, "لینک اشتراک کپی شد") }, modifier = Modifier.weight(1f)) { Text("کپی لینک") } }; if (order.orderKind == "purchase" && order.status == "active") Button(onClick = { onRenew(order) }, modifier = Modifier.weight(1f)) { Text("تمدید") } } } } }; TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("بستن") } }
 }
 
@@ -863,11 +866,13 @@ private fun TopupDialog(
     onLoadCards: () -> Unit,
     onCopy: (String, String) -> Unit,
     onDismiss: () -> Unit,
-    onSubmit: (Int, String) -> Unit
+    onSubmit: (Int, String,String) -> Unit
 ) {
     var amount by rememberSaveable { mutableStateOf("") }
     var reference by rememberSaveable { mutableStateOf("") }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
+    var receiptUri by rememberSaveable { mutableStateOf("") }
+    val receiptPicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()){it?.let{receiptUri=it.toString()}}
     LaunchedEffect(Unit) { onLoadCards() }
     AppDialog(onDismiss) {
         DialogTitle(Icons.Rounded.AccountBalanceWallet, "شارژ کیف پول", "مبلغ را کارت‌به‌کارت کنید و شماره پیگیری را ثبت کنید.")
@@ -886,6 +891,7 @@ private fun TopupDialog(
             shape = RoundedCornerShape(16.dp)
         )
         NivoraField(reference, { reference = it.take(40) }, "شماره پیگیری واریز", Icons.AutoMirrored.Rounded.ReceiptLong)
+        OutlinedButton(onClick={receiptPicker.launch("image/*")},modifier=Modifier.fillMaxWidth()){Icon(Icons.Rounded.AddPhotoAlternate,null);Spacer(Modifier.width(7.dp));Text(if(receiptUri.isBlank())"انتخاب تصویر رسید" else "تصویر رسید انتخاب شد")}
         error?.let { Text(it, color = NivoraDanger, style = MaterialTheme.typography.bodyMedium) }
         Button(
             onClick = {
@@ -895,7 +901,8 @@ private fun TopupDialog(
                     reference.trim().length < 3 -> "شماره پیگیری واریز را وارد کنید"
                     else -> null
                 }
-                if (error == null) onSubmit(value!!, reference.trim())
+                if(error==null&&receiptUri.isBlank())error="تصویر رسید را انتخاب کنید"
+                if (error == null) onSubmit(value!!, reference.trim(),receiptUri)
             },
             enabled = !busy && cards.isNotEmpty(),
             modifier = Modifier.fillMaxWidth()

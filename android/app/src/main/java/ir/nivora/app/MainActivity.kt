@@ -2,6 +2,9 @@ package ir.nivora.app
 
 import android.Manifest
 import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.*
 import android.content.pm.PackageManager
 import android.net.VpnService
@@ -67,6 +70,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
             }
         }
         if (signedIn) loadDashboard(initial = true)
+        if(signedIn&&Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     override fun onDestroy() {
@@ -93,10 +97,11 @@ class MainActivity : ComponentActivity(), NivoraActions {
         }
     )
 
-    override fun requestPasswordReset(phone: String) = runAction(
+    override fun requestPasswordReset(phone: String, onChallenge:(String,String?)->Unit) = runAction(
         work = { api.requestPasswordReset(phone) },
-        success = { showNotice("درخواست بازیابی ثبت شد؛ پشتیبانی پس از بررسی با شما هماهنگ می‌کند") }
+        success = { onChallenge(it.id,it.debugCode) }
     )
+    override fun confirmPasswordReset(phone:String,resetId:String,code:String,newPassword:String)=runAction(work={api.confirmPasswordReset(phone,resetId,code,newPassword)},success={showNotice("رمز عبور با موفقیت تغییر کرد")})
 
     override fun refresh() = loadDashboard(initial = false)
 
@@ -196,9 +201,9 @@ class MainActivity : ComponentActivity(), NivoraActions {
         )
     }
 
-    override fun submitTopup(amountToman: Int, reference: String) = withToken { token ->
+    override fun submitTopup(amountToman: Int, reference: String, receiptUri:String) = withToken { token ->
         runAction(
-            work = { api.topup(token, amountToman, reference) },
+            work = { val uri=android.net.Uri.parse(receiptUri);val bytes=contentResolver.openInputStream(uri)?.use{it.readBytes()}?:throw ApiException("INVALID_RECEIPT",400);if(bytes.size>4*1024*1024)throw ApiException("INVALID_RECEIPT",400);val uploaded=api.uploadReceipt(token,bytes,contentResolver.getType(uri)?:"image/jpeg");api.topup(token,amountToman,reference,uploaded) },
             success = { showNotice("درخواست شارژ برای بررسی ارسال شد"); loadDashboard(initial = false) }
         )
     }
@@ -247,12 +252,14 @@ class MainActivity : ComponentActivity(), NivoraActions {
         )
     }
 
-    override fun createResellerCustomer(name: String, phone: String, note: String) = withToken { token ->
+    override fun createResellerCustomer(name: String, phone: String, password:String, note: String) = withToken { token ->
         runAction(
-            work = { api.createResellerCustomer(token, name, phone, note) },
+            work = { api.createResellerCustomer(token, name, phone, password, note) },
             success = { showNotice("مشتری به دفترچه اضافه شد"); loadDashboard(initial = false) }
         )
     }
+
+    override fun resetResellerCustomerPassword(customer:ResellerCustomer,password:String)=withToken{token->runAction(work={api.resetResellerCustomerPassword(token,customer.id,password)},success={showNotice("رمز مشتری تغییر کرد");loadDashboard(false)})}
 
     override fun resellerPurchase(plan: Plan, customer: ResellerCustomer, salePriceToman: Int) = withToken { token ->
         runAction(
@@ -326,10 +333,12 @@ class MainActivity : ComponentActivity(), NivoraActions {
             },
             success = { payload ->
                 if (payload.reseller != null) {
+                    showNewNotifications(payload.reseller.notifications)
                     state = state.copy(signedIn = true, loading = false, refreshing = false, reseller = payload.reseller, resellerPlans = payload.resellerPlans, account = null, loadError = null)
                     return@background
                 }
                 val account = payload.account ?: return@background
+                showNewNotifications(account.notifications)
                 val plans = payload.plans
                 val tickets = payload.tickets
                 val active = account.subscriptions.filter { it.status == "active" && it.url != null }
@@ -376,6 +385,13 @@ class MainActivity : ComponentActivity(), NivoraActions {
 
     private fun showNotice(text: String, error: Boolean = false) {
         state = state.copy(notice = UiNotice(noticeIds.incrementAndGet(), text, error))
+    }
+
+    private fun showNewNotifications(items:List<CustomerNotification>){
+        val fresh=items.filter{it.readAt==null};if(fresh.isEmpty())return
+        val manager=getSystemService(NotificationManager::class.java);val channel="nivora_alerts"
+        if(Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(NotificationChannel(channel,"اعلان‌های نیورا",NotificationManager.IMPORTANCE_HIGH).apply{enableVibration(true);setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI,null)})
+        fresh.take(3).forEach{n->manager.notify(n.id.hashCode(),Notification.Builder(this,channel).setSmallIcon(R.drawable.ic_nivora_notification).setContentTitle(n.title).setContentText(n.body).setAutoCancel(true).build())}
     }
 
     private fun friendly(error: Throwable): String {

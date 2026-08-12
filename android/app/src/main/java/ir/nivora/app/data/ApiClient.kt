@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import android.util.Base64
 
 class ApiClient(private val baseUrl: String) {
     private data class RawResponse(val status: Int, val body: String)
@@ -72,7 +73,7 @@ class ApiClient(private val baseUrl: String) {
             ResellerCustomer(
                 it.getString("id"), it.getString("name"), it.getString("phone"),
                 it.optString("note"), it.optInt("active_subscriptions"), it.optInt("subscription_count"),
-                it.optInt("revenue_toman"), it.optInt("profit_toman")
+                it.optInt("revenue_toman"), it.optInt("profit_toman"), it.optString("account_id").isNotBlank()
             )
         }
         val orders = JSONArray(ordersRaw).objects().map(::resellerOrder)
@@ -82,10 +83,11 @@ class ApiClient(private val baseUrl: String) {
                 it.getString("type"), it.optString("note").takeIf(String::isNotBlank), it.getString("created_at")
             )
         }
+        val notifications = me.array("notifications").objects().map { CustomerNotification(it.getString("id"),it.getString("title"),it.getString("body"),it.optString("read_at").takeIf(String::isNotBlank),it.getString("created_at")) }
         return ResellerAccount(
             me.getString("name"), me.getString("phone"), me.getInt("balanceToman"),
             me.optInt("customersCount"), me.optInt("salesCount"), me.optInt("activeSubscriptions"),
-            me.optInt("totalRevenueToman"), me.optInt("totalProfitToman"), transactions, customers, orders
+            me.optInt("totalRevenueToman"), me.optInt("totalProfitToman"), notifications, transactions, customers, orders
         )
     }
 
@@ -100,9 +102,10 @@ class ApiClient(private val baseUrl: String) {
         }
     }
 
-    fun createResellerCustomer(token: String, name: String, phone: String, note: String) {
-        request("/api/reseller/customers", "POST", token, JSONObject().put("name", name).put("phone", phone).put("note", note))
+    fun createResellerCustomer(token: String, name: String, phone: String, password: String, note: String) {
+        request("/api/reseller/customers", "POST", token, JSONObject().put("name", name).put("phone", phone).put("password",password).put("note", note))
     }
+    fun resetResellerCustomerPassword(token: String, customerId: String, password: String) { request("/api/reseller/customers/$customerId/reset-password", "POST", token, JSONObject().put("password",password)) }
 
     fun resellerPurchase(token: String, planId: String, customerId: String, salePriceToman: Int): PurchaseResult {
         val json = request("/api/reseller/purchase", "POST", token, JSONObject().put("planId", planId).put("customerId", customerId).put("salePriceToman", salePriceToman))
@@ -113,9 +116,8 @@ class ApiClient(private val baseUrl: String) {
         request("/api/reseller/orders/$orderId/renew", "POST", token, JSONObject().put("salePriceToman", salePriceToman))
     }
 
-    fun requestPasswordReset(phone: String) {
-        request("/api/customer/password-reset-requests", "POST", body = JSONObject().put("phone", phone))
-    }
+    fun requestPasswordReset(phone: String): ResetChallenge { val j=request("/api/customer/password-reset/request", "POST", body=JSONObject().put("phone",phone)); return ResetChallenge(j.optString("resetId"),j.optString("debugCode").takeIf(String::isNotBlank)) }
+    fun confirmPasswordReset(phone:String, resetId:String, code:String, newPassword:String) { request("/api/customer/password-reset/confirm","POST",body=JSONObject().put("phone",phone).put("resetId",resetId).put("code",code).put("newPassword",newPassword)) }
 
     fun purchase(token: String, planId: String, discountCode: String = ""): PurchaseResult {
         val json = request(
@@ -145,12 +147,13 @@ class ApiClient(private val baseUrl: String) {
         request("/api/customer/orders/$orderId/renew", "POST", token, JSONObject())
     }
 
-    fun topup(token: String, amount: Int, reference: String) {
+    fun uploadReceipt(token:String, bytes:ByteArray, mimeType:String):String = request("/api/receipts","POST",token,JSONObject().put("mimeType",mimeType).put("data",Base64.encodeToString(bytes,Base64.NO_WRAP))).getString("url")
+    fun topup(token: String, amount: Int, reference: String, receiptUrl:String) {
         request(
             "/api/customer/wallet/topups",
             "POST",
             token,
-            JSONObject().put("amountToman", amount).put("receiptReference", reference.trim())
+            JSONObject().put("amountToman", amount).put("receiptReference", reference.trim()).put("receiptImageUrl",receiptUrl)
         )
     }
 

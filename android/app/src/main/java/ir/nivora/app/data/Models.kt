@@ -98,7 +98,8 @@ data class ResellerCustomer(
     val activeSubscriptions: Int,
     val subscriptionCount: Int,
     val revenueToman: Int,
-    val profitToman: Int
+    val profitToman: Int,
+    val managedAccount: Boolean
 )
 
 data class ResellerOrder(
@@ -128,6 +129,7 @@ data class ResellerAccount(
     val activeSubscriptions: Int,
     val totalRevenueToman: Int,
     val totalProfitToman: Int,
+    val notifications: List<CustomerNotification>,
     val transactions: List<WalletTransaction>,
     val customers: List<ResellerCustomer>,
     val orders: List<ResellerOrder>
@@ -137,5 +139,6 @@ data class Session(val token: String, val name: String, val role: String)
 data class PaymentCard(val number: String, val holder: String, val bank: String?)
 data class PurchaseResult(val subscriptionUrl: String?, val discountToman: Int, val balanceToman: Int?)
 data class DiscountResult(val code: String, val percent: Int)
+data class ResetChallenge(val id: String, val debugCode: String?)
 
 class ApiException(val code: String, val status: Int) : RuntimeException(code)

@@ -8,7 +8,11 @@ import { selectLocationForPlan } from './capacity.js';
 import { createRequestGuard } from './security.js';
 import { enrichSubscription, readPanelStats } from './subscription-stats.js';
 import { buildMultiEndpointSubscription, fetchCleanIpSource, fetchSubscriptionText, measureCloudflareEndpoint, measureTcpEndpoint, parseCleanIpList } from './multi-endpoint.js';
+import { evaluateOrder, sweepPendingOrders, ingestBankMessage, loadAutoReviewConfig } from './auto-review.js';
+import { extractReceiptFields } from './receipt-ocr.js';
 import net from 'node:net';
+import { createHash, randomInt } from 'node:crypto';
+import { sendSms } from './sms.js';
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -99,9 +103,61 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     'INSERT INTO audit_log(actor,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)'
   ).run(actor, action, type, id, details && JSON.stringify(details), new Date().toISOString());
   const notify = (accountId,title,body) => db.prepare('INSERT INTO notifications(id,account_id,title,body,created_at) VALUES(?,?,?,?,?)').run(randomUUID(),accountId,title,body,new Date().toISOString());
+  const normalizePhone = value => String(value || '').replace(/[\s\-()]/g, '').replace(/^\+98/, '0').replace(/^0098/, '0');
+  const codeHash = code => createHash('sha256').update(String(code)).digest('hex');
   const guard=createRequestGuard();
+  const autoReviewConfig = loadAutoReviewConfig();
+  const subscriptionRow = id => db.prepare('SELECT * FROM subscriptions WHERE id=?').get(id);
 
-  return async (req, res) => {
+  // Shared approval → provisioning path used by both the admin review routes and the
+  // auto-review agent. The order's status must already be set to 'approved'.
+  async function finalizeApprovedOrder(order, { actor = 'admin' } = {}) {
+    const now = new Date().toISOString();
+    const subscriptionId = randomUUID();
+    if (order.order_kind === 'renewal') {
+      const parent = db.prepare(`SELECT s.panel_client_id,s.subscription_url,s.upstream_subscription_url,s.access_token subscription_access_token FROM subscriptions s WHERE s.order_id=? AND s.status='active'`).get(order.parent_order_id);
+      if (!parent || !provisioner?.renew) return { ok: false, code: 'RENEW_TARGET_UNAVAILABLE', note: 'Renewal target unavailable' };
+      db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,upstream_subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?,?)`).run(subscriptionId, order.id, parent.panel_client_id, parent.subscription_url, parent.upstream_subscription_url || parent.subscription_url, now);
+      audit(actor, 'approve', 'renewal_order', order.id);
+      try {
+        await provisioner.renew({ panelClientId: parent.panel_client_id, addDays: order.duration_days, addTrafficGb: order.traffic_gb });
+        db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(), subscriptionId);
+        const row = subscriptionRow(subscriptionId); row.subscription_access_token = parent.subscription_access_token;
+        return { ok: true, subscription: row };
+      } catch (e) {
+        db.prepare("UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?").run(String(e.message || e), subscriptionId);
+        return { ok: false, code: 'RENEW_FAILED' };
+      }
+    }
+    const location = order.location_id ? db.prepare('SELECT * FROM service_locations WHERE id=? AND active=1').get(order.location_id) : selectLocationForPlan(db, order.plan_id);
+    if (!location) return { ok: false, code: 'NO_CAPACITY', note: 'No server capacity' };
+    db.prepare('UPDATE orders SET location_id=? WHERE id=?').run(location.id, order.id);
+    order.location_id = location.id; order.location_name = location.name; order.panel_inbound_id = location.panel_inbound_id; order.panel_cdn_inbound_id = location.panel_cdn_inbound_id;
+    const accessToken = subscriptionToken();
+    db.prepare(`INSERT INTO subscriptions(id,order_id,status,access_token,created_at) VALUES(?,?,'pending_provision',?,?)`).run(subscriptionId, order.id, accessToken, now);
+    audit(actor, 'approve', 'order', order.id);
+    if (provisioner) {
+      try {
+        const result = await provisioner(order);
+        db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,upstream_subscription_url=?,activated_at=? WHERE id=?`).run(result.panelClientId, result.subscriptionUrl, result.subscriptionUrl, new Date().toISOString(), subscriptionId);
+      } catch (e) {
+        db.prepare(`UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?`).run(String(e.message || e), subscriptionId);
+      }
+    }
+    return { ok: true, subscription: subscriptionRow(subscriptionId) };
+  }
+
+  // Load an approved order with the plan fields the provisioner needs, then provision it.
+  async function provisionApprovedById(orderId, actor = 'agent') {
+    const order = db.prepare(`SELECT o.*,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit FROM orders o JOIN plans p ON p.id=o.plan_id WHERE o.id=?`).get(orderId);
+    if (!order) return { ok: false, code: 'ORDER_NOT_FOUND' };
+    return finalizeApprovedOrder(order, { actor });
+  }
+  const ocrExtract = autoReviewConfig.ocrEnabled ? (imageUrl => extractReceiptFields(imageUrl)) : null;
+  const agentDeps = () => ({ config: autoReviewConfig, provisionApproved: id => provisionApprovedById(id, 'agent'), ocrExtract, actor: 'agent' });
+  const triggerReview = orderId => autoReviewConfig.enabled ? evaluateOrder(db, orderId, agentDeps()).catch(() => {}) : Promise.resolve();
+
+  const handler = async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
       const path = url.pathname;
@@ -221,13 +277,28 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         });
       }
       if(req.method==='POST'&&path==='/api/customer/register'){
-        const b=await readJson(req);if(!b.name?.trim()||!/^09\d{9}$/.test(b.phone||''))return json(res,400,{error:'INVALID_ACCOUNT'});
+        const b=await readJson(req),phone=normalizePhone(b.phone);if(!b.name?.trim()||!/^09\d{9}$/.test(phone))return json(res,400,{error:'INVALID_ACCOUNT'});
         let password;try{password=hashPassword(b.password)}catch(e){return json(res,400,{error:e.message});}
-        const id=randomUUID(),now=new Date().toISOString();try{db.prepare(`INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt) VALUES(?,?,?,'customer','active',0,?,?,?,?)`).run(id,b.phone,b.name.trim(),now,now,password.hash,password.salt);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(randomUUID(),id,now);}catch{return json(res,409,{error:'PHONE_ALREADY_EXISTS'});}
-        const session=createSession(db,id);audit(b.phone,'register','account',id);return json(res,201,{...session,account:{id,name:b.name.trim(),phone:b.phone}});
+        const id=randomUUID(),now=new Date().toISOString();try{db.prepare(`INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt) VALUES(?,?,?,'customer','active',0,?,?,?,?)`).run(id,phone,b.name.trim(),now,now,password.hash,password.salt);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(randomUUID(),id,now);}catch{return json(res,409,{error:'PHONE_ALREADY_EXISTS'});}
+        const session=createSession(db,id);audit(phone,'register','account',id);return json(res,201,{...session,account:{id,name:b.name.trim(),phone}});
       }
       if(req.method==='POST'&&path==='/api/customer/login'){
         const b=await readJson(req),account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(b.phone);if(!account||!verifyPassword(b.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});const session=createSession(db,account.id);return json(res,200,{...session,account:{id:account.id,name:account.name,phone:account.phone}});
+      }
+      if(req.method==='POST'&&path==='/api/customer/password-reset/request'){
+        const b=await readJson(req),phone=normalizePhone(b.phone);if(!/^09\d{9}$/.test(phone))return json(res,400,{error:'INVALID_PHONE'});
+        const account=db.prepare("SELECT id FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(phone);if(!account)return json(res,202,{accepted:true});
+        const code=String(randomInt(100000,1000000)),id=randomUUID(),now=new Date(),expires=new Date(now.getTime()+600000);
+        db.prepare('UPDATE password_reset_codes SET consumed_at=? WHERE account_id=? AND consumed_at IS NULL').run(now.toISOString(),account.id);
+        db.prepare('INSERT INTO password_reset_codes(id,account_id,code_hash,expires_at,created_at) VALUES(?,?,?,?,?)').run(id,account.id,codeHash(code),expires.toISOString(),now.toISOString());
+        try{await sendSms({to:phone,message:`کد بازیابی رمز نیورا: ${code}\nاعتبار: ۱۰ دقیقه`});}catch(e){if(process.env.PASSWORD_RESET_DEBUG_CODE!=='true'){db.prepare('DELETE FROM password_reset_codes WHERE id=?').run(id);return json(res,503,{error:e.message});}}
+        audit(phone,'request','password_reset_code',id);return json(res,202,{accepted:true,resetId:id,...(process.env.PASSWORD_RESET_DEBUG_CODE==='true'?{debugCode:code}:{})});
+      }
+      if(req.method==='POST'&&path==='/api/customer/password-reset/confirm'){
+        const b=await readJson(req),phone=normalizePhone(b.phone),row=db.prepare(`SELECT c.*,a.phone FROM password_reset_codes c JOIN accounts a ON a.id=c.account_id WHERE c.id=? AND a.phone=? AND c.consumed_at IS NULL`).get(b.resetId,phone);
+        if(!row||row.expires_at<=new Date().toISOString()||row.attempts>=5)return json(res,400,{error:'RESET_CODE_INVALID'});
+        if(row.code_hash!==codeHash(String(b.code||''))){db.prepare('UPDATE password_reset_codes SET attempts=attempts+1 WHERE id=?').run(row.id);return json(res,400,{error:'RESET_CODE_INVALID'});}
+        let password;try{password=hashPassword(b.newPassword)}catch(e){return json(res,400,{error:e.message});}const now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE accounts SET password_hash=?,password_salt=?,updated_at=? WHERE id=?').run(password.hash,password.salt,now,row.account_id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(row.account_id);db.prepare('UPDATE password_reset_codes SET consumed_at=? WHERE id=?').run(now,row.id);db.exec('COMMIT');}catch{db.exec('ROLLBACK');return json(res,500,{error:'PASSWORD_RESET_FAILED'});}audit(phone,'confirm','password_reset_code',row.id);return json(res,200,{reset:true});
       }
       if(req.method==='POST'&&path==='/api/customer/password-reset-requests'){
         const b=await readJson(req),phone=String(b.phone||'').trim();
@@ -276,7 +347,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             (SELECT COUNT(*) FROM orders o JOIN subscriptions s ON s.order_id=o.id WHERE o.reseller_id=? AND o.order_kind='purchase' AND s.status='active') active_subscriptions,
             (SELECT COALESCE(SUM(reseller_sale_price_toman),0) FROM orders WHERE reseller_id=? AND status='approved') total_revenue_toman,
             (SELECT COALESCE(SUM(CAST(amount_transferred_irr/10 AS INTEGER)),0) FROM orders WHERE reseller_id=? AND status='approved') total_cost_toman`).get(account.id,account.id,account.id,account.id,account.id);
-          return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,customersCount:summary.customers_count,salesCount:summary.sales_count,activeSubscriptions:summary.active_subscriptions,totalRevenueToman:summary.total_revenue_toman,totalProfitToman:summary.total_revenue_toman-summary.total_cost_toman});
+          const notifications=db.prepare('SELECT id,title,body,read_at,created_at FROM notifications WHERE account_id=? ORDER BY created_at DESC LIMIT 30').all(account.id);
+          return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,notifications,customersCount:summary.customers_count,salesCount:summary.sales_count,activeSubscriptions:summary.active_subscriptions,totalRevenueToman:summary.total_revenue_toman,totalProfitToman:summary.total_revenue_toman-summary.total_cost_toman});
         }
         if(req.method==='GET'&&path==='/api/reseller/plans'){
           const rows=db.prepare(`SELECT p.id,p.name,p.description,p.traffic_gb,p.duration_days,p.device_limit,CAST(p.price_irr/10 AS INTEGER) retail_price_toman,r.price_toman,
@@ -285,7 +357,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         }
         if(req.method==='GET'&&path==='/api/reseller/customers'){
           const q=String(url.searchParams.get('q')||'').trim(),like=`%${q}%`;
-          const rows=db.prepare(`SELECT rc.id,rc.name,rc.phone,rc.note,rc.created_at,rc.updated_at,
+          const rows=db.prepare(`SELECT rc.id,rc.name,rc.phone,rc.note,rc.account_id,rc.created_at,rc.updated_at,
             COUNT(DISTINCT CASE WHEN o.order_kind='purchase' THEN o.id END) subscription_count,
             COUNT(DISTINCT CASE WHEN o.order_kind='purchase' AND s.status='active' THEN o.id END) active_subscriptions,
             COUNT(DISTINCT o.id) order_count,MAX(o.created_at) last_order_at,
@@ -297,10 +369,17 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           return json(res,200,rows.map(row=>({...row,profit_toman:row.revenue_toman-row.cost_toman})));
         }
         if(req.method==='POST'&&path==='/api/reseller/customers'){
-          const body=await readJson(req),customer=resellerCustomerFromBody(body);if(customer.name.length<2||!/^09\d{9}$/.test(customer.phone))return json(res,400,{error:'INVALID_CUSTOMER'});
-          if(db.prepare('SELECT id FROM reseller_customers WHERE reseller_id=? AND phone=?').get(account.id,customer.phone))return json(res,409,{error:'CUSTOMER_ALREADY_EXISTS'});
-          const id=randomUUID(),now=new Date().toISOString();db.prepare("INSERT INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at) VALUES(?,?,?,?,?,'active',?,?)").run(id,account.id,customer.name,customer.phone,customer.note,now,now);audit(account.id,'create','reseller_customer',id);return json(res,201,{id,...customer,created_at:now,updated_at:now});
+          const body=await readJson(req),customer=resellerCustomerFromBody({...body,phone:normalizePhone(body.phone)});if(customer.name.length<2||!/^09\d{9}$/.test(customer.phone))return json(res,400,{error:'INVALID_CUSTOMER'});
+          let password;try{password=hashPassword(body.password||randomUUID())}catch(e){return json(res,400,{error:e.message});}
+          if(db.prepare('SELECT id FROM accounts WHERE phone=?').get(customer.phone)||db.prepare('SELECT id FROM reseller_customers WHERE phone=?').get(customer.phone))return json(res,409,{error:'PHONE_ALREADY_EXISTS'});
+          const id=randomUUID(),customerAccountId=randomUUID(),now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{db.prepare(`INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt,managed_by_reseller_id) VALUES(?,?,?,'customer','active',0,?,?,?,?,?)`).run(customerAccountId,customer.phone,customer.name,now,now,password.hash,password.salt,account.id);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(randomUUID(),customerAccountId,now);db.prepare("INSERT INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at,account_id) VALUES(?,?,?,?,?,'active',?,?,?)").run(id,account.id,customer.name,customer.phone,customer.note,now,now,customerAccountId);db.exec('COMMIT');}catch{db.exec('ROLLBACK');return json(res,409,{error:'PHONE_ALREADY_EXISTS'});}audit(account.id,'create','reseller_customer',id,{accountId:customerAccountId});notify(customerAccountId,'حساب شما ساخته شد','همکار فروش نیورا حساب کاربری شما را ایجاد کرد.');return json(res,201,{id,...customer,account_id:customerAccountId,created_at:now,updated_at:now});
         }
+        const resellerResetMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)\/reset-password$/);
+        if(resellerResetMatch&&req.method==='POST'){
+          const customer=db.prepare(`SELECT rc.*,a.id managed_account_id FROM reseller_customers rc JOIN accounts a ON a.id=rc.account_id AND a.managed_by_reseller_id=rc.reseller_id WHERE rc.id=? AND rc.reseller_id=? AND rc.status='active'`).get(resellerResetMatch[1],account.id);if(!customer)return json(res,403,{error:'CUSTOMER_PASSWORD_NOT_MANAGED'});
+          const body=await readJson(req);let password;try{password=hashPassword(body.password)}catch(e){return json(res,400,{error:e.message});}const now=new Date().toISOString();db.prepare('UPDATE accounts SET password_hash=?,password_salt=?,updated_at=? WHERE id=?').run(password.hash,password.salt,now,customer.managed_account_id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(customer.managed_account_id);notify(customer.managed_account_id,'رمز عبور تغییر کرد','رمز حساب شما توسط همکار فروش تغییر داده شد.');audit(account.id,'reset_password','reseller_customer',customer.id);return json(res,200,{reset:true});
+        }
+        if(req.method==='POST'&&path==='/api/reseller/notifications/read'){db.prepare('UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE account_id=?').run(new Date().toISOString(),account.id);return json(res,200,{success:true});}
         const resellerCustomerMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)$/);
         if(resellerCustomerMatch&&req.method==='GET'){
           const customer=db.prepare("SELECT * FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(resellerCustomerMatch[1],account.id);if(!customer)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});
@@ -359,7 +438,40 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         return json(res, 201, { url:`/receipts/${name}` });
       }
 
+      // Bank-SMS ingest webhook (called by an SMS-forwarder app on the phone holding the
+      // receiving SIM). Authenticated by a shared secret, NOT the admin token.
+      if (req.method === 'POST' && path === '/api/sms/ingest') {
+        const secret = process.env.SMS_WEBHOOK_SECRET;
+        if (!secret) return json(res, 503, { error: 'SMS_INGEST_DISABLED' });
+        const provided = req.headers['x-webhook-secret'] || url.searchParams.get('secret');
+        if (provided !== secret) return json(res, 401, { error: 'UNAUTHORIZED' });
+        const b = await readJson(req);
+        const message = String(b.message || b.text || '').trim();
+        if (!message) return json(res, 400, { error: 'EMPTY_MESSAGE' });
+        const result = ingestBankMessage(db, { message, receivedAt: b.receivedAt || b.timestamp, sender: b.sender || b.from || '', source: 'sms', defaultUnit: autoReviewConfig.defaultSmsUnit });
+        if (result.duplicate) return json(res, 200, { accepted: true, duplicate: true });
+        let matched = null;
+        if (result.usable) { const sweep = await handler.sweep(); matched = sweep; }
+        return json(res, 201, { accepted: true, transactionId: result.id, usable: result.usable, direction: result.parsed.direction, amountRial: result.parsed.amountRial, matched });
+      }
+
       if (path.startsWith('/api/admin/') && !isAdmin(req)) return json(res, 401, { error: 'UNAUTHORIZED' });
+
+      if (req.method === 'GET' && path === '/api/admin/bank-transactions') {
+        const status = url.searchParams.get('status');
+        const select = 'SELECT id,amount_rial,tracking_code,card_last4,bank,direction,status,matched_order_id,source,received_at,created_at,raw_message FROM bank_transactions';
+        const rows = status ? db.prepare(`${select} WHERE status=? ORDER BY received_at DESC LIMIT 300`).all(status) : db.prepare(`${select} ORDER BY received_at DESC LIMIT 300`).all();
+        return json(res, 200, rows);
+      }
+      const autoReviewMatch = path.match(/^\/api\/admin\/orders\/([^/]+)\/auto-review$/);
+      if (req.method === 'POST' && autoReviewMatch) {
+        const decision = await evaluateOrder(db, autoReviewMatch[1], agentDeps());
+        return json(res, 200, decision);
+      }
+      const orderReviewsMatch = path.match(/^\/api\/admin\/orders\/([^/]+)\/reviews$/);
+      if (req.method === 'GET' && orderReviewsMatch) {
+        return json(res, 200, db.prepare('SELECT * FROM order_reviews WHERE order_id=? ORDER BY created_at DESC LIMIT 50').all(orderReviewsMatch[1]));
+      }
 
       if(req.method==='GET'&&path==='/api/admin/wallet-topups'){const status=url.searchParams.get('status');const select=`SELECT t.*,a.name customer_name,a.phone,COALESCE(w.balance_toman,0) balance_toman FROM wallet_topups t JOIN accounts a ON a.id=t.account_id LEFT JOIN wallet_accounts w ON w.account_id=a.id`;const rows=status?db.prepare(`${select} WHERE t.status=? ORDER BY t.created_at DESC`).all(status):db.prepare(`${select} ORDER BY t.created_at DESC`).all();return json(res,200,rows);}
       if(req.method==='GET'&&path==='/api/admin/financial-summary'){const sales=db.prepare(`SELECT COUNT(*) orders_count,COALESCE(SUM(amount_transferred_irr/10),0) sales_toman FROM orders WHERE status='approved'`).get(),wallets=db.prepare(`SELECT COALESCE(SUM(balance_toman),0) wallet_liability_toman FROM wallet_accounts`).get(),customers=db.prepare(`SELECT COUNT(*) customers_count FROM accounts WHERE role='customer'`).get(),pending=db.prepare(`SELECT COUNT(*) pending_topups,COALESCE(SUM(amount_toman),0) pending_topups_toman FROM wallet_topups WHERE status='under_review'`).get();return json(res,200,{...sales,...wallets,...customers,...pending});}
@@ -531,6 +643,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, b.customerName.trim(), b.phone, plan.id, hasReceipt ? 'under_review' : 'awaiting_receipt',
           b.amountTransferredIrr ? b.amountTransferredIrr * 10 : null, b.receiptReference || null, b.receiptImageUrl || null, new Date().toISOString(), trackingToken);
         audit(b.phone, 'create', 'order', id);
+        if (hasReceipt) await triggerReview(id);
         return json(res, 201, { id, trackingToken, status: hasReceipt ? 'under_review' : 'awaiting_receipt', expectedAmountIrr: Math.round(plan.price_irr / 10) });
       }
 
@@ -547,7 +660,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const token=url.searchParams.get('token'),original=db.prepare(`SELECT o.*,p.price_irr,s.status subscription_status,s.panel_client_id,s.subscription_url FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id WHERE o.id=? AND o.tracking_token=? AND o.order_kind='purchase' AND s.status='active'`).get(customerRenewMatch[1],token);
         if(!original)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});const b=await readJson(req);if(!b.receiptReference&&!b.receiptImageUrl)return json(res,400,{error:'RECEIPT_REQUIRED'});
         const id=randomUUID(),trackingToken=randomUUID().replace(/-/g,''),now=new Date().toISOString();db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,receipt_reference,receipt_image_url,created_at,tracking_token,location_id,order_kind,parent_order_id) VALUES(?,?,?,?,'under_review',?,?,?,?,?,?,'renewal',?)`).run(id,original.customer_name,original.phone,original.plan_id,b.amountTransferredIrr?Number(b.amountTransferredIrr)*10:original.price_irr,b.receiptReference||null,b.receiptImageUrl||null,now,trackingToken,original.location_id,original.id);
-        audit(original.phone,'create','renewal_order',id,{parentOrderId:original.id});return json(res,201,{id,trackingToken,status:'under_review',expectedAmountToman:Math.round(original.price_irr/10)});
+        audit(original.phone,'create','renewal_order',id,{parentOrderId:original.id});await triggerReview(id);return json(res,201,{id,trackingToken,status:'under_review',expectedAmountToman:Math.round(original.price_irr/10)});
       }
 
       if (req.method === 'GET' && path === '/api/admin/orders') {
@@ -566,30 +679,14 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         db.prepare('UPDATE orders SET status=?,review_note=?,reviewed_by=?,reviewed_at=? WHERE id=?')
           .run(action === 'approve' ? 'approved' : 'rejected', b.note || null, b.reviewedBy || 'admin', now, id);
         if (action === 'reject') { audit('admin', 'reject', 'order', id, b); return json(res, 200, { id, status: 'rejected' }); }
-        const subscriptionId = randomUUID();
-        if(order.order_kind==='renewal'){
-          const parent=db.prepare(`SELECT s.panel_client_id,s.subscription_url,s.upstream_subscription_url,s.access_token subscription_access_token FROM subscriptions s WHERE s.order_id=? AND s.status='active'`).get(order.parent_order_id);
-          if(!parent||!provisioner?.renew){db.prepare("UPDATE orders SET status='under_review',review_note='Renewal target unavailable',reviewed_at=NULL WHERE id=?").run(id);return json(res,409,{error:'RENEW_TARGET_UNAVAILABLE'});}
-          db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,upstream_subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?,?)`).run(subscriptionId,id,parent.panel_client_id,parent.subscription_url,parent.upstream_subscription_url||parent.subscription_url,now);
-          audit('admin','approve','renewal_order',id,b);
-          try{await provisioner.renew({panelClientId:parent.panel_client_id,addDays:order.duration_days,addTrafficGb:order.traffic_gb});db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(),subscriptionId);return json(res,200,{...db.prepare('SELECT * FROM subscriptions WHERE id=?').get(subscriptionId),subscription_url:publicSubscriptionUrl(req,parent.subscription_access_token,parent.subscription_url)});}
-          catch(e){db.prepare("UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?").run(String(e.message||e),subscriptionId);return json(res,502,{error:'RENEW_FAILED'});}
+        order.status = 'approved';
+        const result = await finalizeApprovedOrder(order, { actor: b.reviewedBy || 'admin' });
+        if (!result.ok) {
+          if (result.code === 'RENEW_FAILED') return json(res, 502, { error: 'RENEW_FAILED' });
+          db.prepare("UPDATE orders SET status='under_review',review_note=?,reviewed_at=NULL WHERE id=?").run(result.note || null, id);
+          return json(res, 409, { error: result.code });
         }
-        const location=order.location_id?db.prepare('SELECT * FROM service_locations WHERE id=? AND active=1').get(order.location_id):selectLocationForPlan(db,order.plan_id);
-        if(!location){db.prepare("UPDATE orders SET status='under_review',review_note='No server capacity',reviewed_at=NULL WHERE id=?").run(id);return json(res,409,{error:'NO_CAPACITY'});}
-        db.prepare('UPDATE orders SET location_id=? WHERE id=?').run(location.id,id);order.location_id=location.id;order.location_name=location.name;order.panel_inbound_id=location.panel_inbound_id;order.panel_cdn_inbound_id=location.panel_cdn_inbound_id;
-        const accessToken=subscriptionToken();db.prepare(`INSERT INTO subscriptions(id,order_id,status,access_token,created_at) VALUES(?,?,'pending_provision',?,?)`).run(subscriptionId,id,accessToken,now);
-        audit('admin', 'approve', 'order', id, b);
-        if (provisioner) {
-          try {
-            const result = await provisioner(order);
-            db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,upstream_subscription_url=?,activated_at=? WHERE id=?`)
-              .run(result.panelClientId,result.subscriptionUrl,result.subscriptionUrl,new Date().toISOString(),subscriptionId);
-          } catch (e) {
-            db.prepare(`UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?`).run(String(e.message || e), subscriptionId);
-          }
-        }
-        return json(res,200,exposeSubscription(req,db.prepare('SELECT * FROM subscriptions WHERE id=?').get(subscriptionId)));
+        return json(res, 200, exposeSubscription(req, result.subscription));
       }
 
       return json(res, 404, { error: 'NOT_FOUND' });
@@ -597,4 +694,6 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       return json(res, e.message === 'BODY_TOO_LARGE' ? 413 : 400, { error: 'BAD_REQUEST', message: e.message });
     }
   };
+  handler.sweep = () => sweepPendingOrders(db, agentDeps());
+  return handler;
 }
