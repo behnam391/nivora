@@ -24,6 +24,19 @@ if ! command -v node >/dev/null || [[ $(node -p 'Number(process.versions.node.sp
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
 fi
+read -rp "Admin username [admin]: " ADMIN_USERNAME; ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+[[ "$ADMIN_USERNAME" =~ ^[A-Za-z0-9_.-]{3,40}$ ]] || { echo "Invalid admin username"; exit 1; }
+while true; do
+  read -rsp "Admin password (min 8 chars): " ADMIN_PASSWORD; echo
+  read -rsp "Repeat admin password: " ADMIN_PASSWORD_REPEAT; echo
+  [[ ${#ADMIN_PASSWORD} -ge 8 ]] || { echo "Password is too short"; continue; }
+  [[ "$ADMIN_PASSWORD" == "$ADMIN_PASSWORD_REPEAT" ]] || { echo "Passwords do not match"; continue; }
+  break
+done
+ADMIN_PASSWORD_RESULT=$(printf '%s' "$ADMIN_PASSWORD" | node "$SOURCE_DIR/scripts/hash-admin-password.mjs")
+unset ADMIN_PASSWORD ADMIN_PASSWORD_REPEAT
+ADMIN_PASSWORD_SALT=${ADMIN_PASSWORD_RESULT%%:*}
+ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_RESULT#*:}
 id nivora >/dev/null 2>&1 || useradd --system --home /opt/nivora --shell /usr/sbin/nologin nivora
 INSTALL_DIR=/opt/nivora
 mkdir -p "$INSTALL_DIR"
@@ -33,6 +46,10 @@ cat > "$INSTALL_DIR/.env" <<EOF
 NODE_ENV=production
 PORT=8787
 ADMIN_TOKEN=$ADMIN_TOKEN
+ADMIN_USERNAME=$ADMIN_USERNAME
+ADMIN_PASSWORD_SALT=$ADMIN_PASSWORD_SALT
+ADMIN_PASSWORD_HASH=$ADMIN_PASSWORD_HASH
+ADMIN_SESSION_HOURS=12
 DATABASE_PATH=./data/nivora.db
 BACKUP_DIR=./backups
 BACKUP_KEEP=14
@@ -56,5 +73,5 @@ systemctl enable --now nivora.service nivora-backup.timer nivora-panel-stats.tim
 ln -sf "$INSTALL_DIR/nivora.sh" /usr/local/bin/nivora
 chmod +x "$INSTALL_DIR/nivora.sh" /usr/local/bin/nivora
 echo "Installed: https://$NIVORA_DOMAIN"
-echo "Admin token (save it now): $ADMIN_TOKEN"
+echo "Admin login: $ADMIN_USERNAME (password was set during installation)"
 echo "Management command: nivora"

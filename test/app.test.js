@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { openDatabase } from '../src/db.js';
 import { createApp } from '../src/app.js';
-import { buildClientPayload, createThreeXuiProvisioner } from '../src/providers/three-x-ui.js';
+import { buildClientPayload, buildCompatibleClientPayload, createThreeXuiProvisioner } from '../src/providers/three-x-ui.js';
 import { getWalletStatement, postWalletTransaction } from '../src/wallet.js';
 import { selectLocationForPlan } from '../src/capacity.js';
+import { hashPassword } from '../src/auth.js';
 
 const start = async (options = {}) => {
   const db = openDatabase(':memory:');
@@ -39,6 +40,17 @@ test('admin dashboard is served and protected API rejects invalid token', async 
   r = await fetch(`${base}/account`); assert.equal(r.status,200); assert.match(await r.text(),/حساب مشتری Nivora/);
 });
 
+test('admin signs in with username and password and receives an expiring session', async t => {
+  const password=hashPassword('StrongAdminPass123');
+  const {server,base}=await start({adminUsername:'behnam',adminPasswordSalt:password.salt,adminPasswordHash:password.hash});
+  t.after(()=>server.close());
+  let r=await fetch(`${base}/api/admin/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'behnam',password:'wrong-password'})});
+  assert.equal(r.status,401);
+  r=await fetch(`${base}/api/admin/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'behnam',password:'StrongAdminPass123'})});
+  assert.equal(r.status,200);const session=await r.json();assert.ok(session.token);assert.equal(session.expiresInHours,12);
+  r=await fetch(`${base}/api/admin/plans`,{headers:{authorization:`Bearer ${session.token}`}});assert.equal(r.status,200);
+});
+
 test('customer order can only be tracked with its private tracking token', async t => {
   const { server, base } = await start(); t.after(() => server.close());
   const admin = { authorization:'Bearer test-token', 'content-type':'application/json' };
@@ -69,7 +81,19 @@ test('3X-UI payload uses binary gigabytes and starts expiry after first use', ()
   assert.equal(payload.client.limitIp, 2);
   assert.equal(payload.client.flow, 'xtls-rprx-vision');
   assert.deepEqual(payload.inboundIds, [1]);
+  assert.deepEqual(buildClientPayload({ id:'12345678-abcd', phone:'09121234567', plan_name:'استاندارد', traffic_gb:60, duration_days:30, device_limit:2 }, 1, [2,3]).inboundIds, [1,2,3]);
   assert.deepEqual(buildClientPayload({ id:'87654321-abcd', phone:'09121234567', plan_name:'CDN', traffic_gb:10, duration_days:30, device_limit:1, panel_inbound_id:4, panel_cdn_inbound_id:9 }, 1).inboundIds, [4,9]);
+  const compatible=buildCompatibleClientPayload(payload.client,[7,6,7]);
+  assert.deepEqual(compatible.inboundIds,[7,6]);assert.equal(compatible.client.flow,'');assert.equal(compatible.client.id,payload.client.id);assert.equal(compatible.client.subId,payload.client.subId);
+});
+
+test('3X-UI provisioner adds CDN transports with the same identity and empty flow', async () => {
+  const calls=[];
+  const transport=async request=>{calls.push(request);return {success:true,obj:request.body?.client||{}}};
+  const provision=createThreeXuiProvisioner({baseUrl:'https://panel.test',apiToken:'token',inboundId:1,cdnInboundIds:[7,6],subscriptionBaseUrl:'https://sub.test/nivo',rejectUnauthorized:true},transport);
+  await provision({id:'abcdef12-test',phone:'09121234567',plan_name:'Smart',traffic_gb:20,duration_days:30,device_limit:1});
+  assert.equal(calls.length,2);assert.deepEqual(calls[1].body.inboundIds,[7,6]);
+  assert.equal(calls[1].body.client.id,calls[0].body.client.id);assert.equal(calls[1].body.client.subId,calls[0].body.client.subId);assert.equal(calls[1].body.client.flow,'');
 });
 
 test('3X-UI provisioner creates client then builds the public subscription URL', async () => {
@@ -121,6 +145,17 @@ test('reseller logs in and purchases a provisioned subscription from wallet', as
   r=await fetch(`${base}/api/reseller/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:plan.id,customerName:'مشتری',phone:'09123333333'})});assert.equal(r.status,201);const purchase=await r.json();assert.match(purchase.subscriptionUrl,/\/sub\/[a-f0-9]{32}$/);assert.equal(purchase.balanceToman,120000);
   r=await fetch(`${base}/api/reseller/orders`,{headers:auth});const orders=await r.json();
   r=await fetch(`${base}/api/reseller/orders/${orders[0].id}/renew`,{method:'POST',headers:auth,body:'{}'});assert.equal(r.status,201);const renewed=await r.json();assert.equal(renewed.balanceToman,40000);
+});
+
+test('reseller support conversations and admin operation alerts work end to end', async t => {
+  const {server,base}=await start();t.after(()=>server.close());const admin={authorization:'Bearer test-token','content-type':'application/json'};
+  let r=await fetch(`${base}/api/admin/accounts`,{method:'POST',headers:admin,body:JSON.stringify({name:'Support Partner',phone:'09127777777',password:'password-123',role:'reseller'})});const reseller=await r.json();
+  r=await fetch(`${base}/api/reseller/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:reseller.phone,password:'password-123'})});const login=await r.json(),auth={authorization:`Bearer ${login.token}`,'content-type':'application/json'};
+  r=await fetch(`${base}/api/reseller/tickets`,{method:'POST',headers:auth,body:JSON.stringify({subject:'Wallet question',body:'Please review my balance.'})});assert.equal(r.status,201);const ticket=await r.json();
+  r=await fetch(`${base}/api/admin/notifications`,{headers:admin});const alerts=await r.json();assert.equal(alerts.counts.openTickets,1);assert.equal(alerts.items[0].type,'ticket');
+  r=await fetch(`${base}/api/admin/tickets/${ticket.id}`,{method:'POST',headers:admin,body:JSON.stringify({body:'Your balance is correct.'})});assert.equal(r.status,201);
+  r=await fetch(`${base}/api/reseller/tickets/${ticket.id}`,{headers:auth});const conversation=await r.json();assert.equal(conversation.messages.length,2);assert.equal(conversation.status,'answered');
+  r=await fetch(`${base}/api/reseller/me`,{headers:auth});const me=await r.json();assert.ok(me.notifications.some(x=>x.title));
 });
 
 test('reseller customer book scopes profiles, sales, renewals and profit to its owner', async t => {
