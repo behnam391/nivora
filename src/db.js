@@ -125,6 +125,17 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS panel_nodes (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT '',
+      panel_type TEXT NOT NULL DEFAULT '3x-ui',
+      base_url TEXT NOT NULL DEFAULT '',
+      api_token_encrypted TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS plan_locations (
       plan_id TEXT NOT NULL REFERENCES plans(id),
       location_id TEXT NOT NULL REFERENCES service_locations(id),
@@ -251,6 +262,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!subscriptionColumns.includes('control_status')) db.exec("ALTER TABLE subscriptions ADD COLUMN control_status TEXT NOT NULL DEFAULT 'active'");
   const locationColumns = db.prepare('PRAGMA table_info(service_locations)').all().map(c => c.name);
   if (!locationColumns.includes('panel_cdn_inbound_id')) db.exec('ALTER TABLE service_locations ADD COLUMN panel_cdn_inbound_id INTEGER');
+  if (!locationColumns.includes('panel_node_id')) db.exec('ALTER TABLE service_locations ADD COLUMN panel_node_id TEXT REFERENCES panel_nodes(id)');
   const endpointColumns = db.prepare('PRAGMA table_info(location_endpoints)').all().map(c => c.name);
   if (!endpointColumns.includes('mode')) db.exec("ALTER TABLE location_endpoints ADD COLUMN mode TEXT NOT NULL DEFAULT 'direct' CHECK(mode IN ('direct','cloudflare'))");
   if (!endpointColumns.includes('server_name')) db.exec('ALTER TABLE location_endpoints ADD COLUMN server_name TEXT');
@@ -271,6 +283,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   db.exec(`CREATE TABLE IF NOT EXISTS telegram_recovery_sessions (chat_id TEXT PRIMARY KEY,account_id TEXT REFERENCES accounts(id),verified_phone TEXT,state TEXT NOT NULL DEFAULT 'waiting_contact',expires_at TEXT NOT NULL,created_at TEXT NOT NULL)`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_customers_owner ON reseller_customers(reseller_id,status,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_location_endpoints_location ON location_endpoints(location_id,active,priority)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_service_locations_node ON service_locations(panel_node_id)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token) WHERE access_token IS NOT NULL');
   db.exec('UPDATE subscriptions SET upstream_subscription_url=subscription_url WHERE upstream_subscription_url IS NULL AND subscription_url IS NOT NULL');
   const subscriptionsWithoutToken = db.prepare("SELECT s.id FROM subscriptions s JOIN orders o ON o.id=s.order_id WHERE s.access_token IS NULL AND o.order_kind='purchase'").all();

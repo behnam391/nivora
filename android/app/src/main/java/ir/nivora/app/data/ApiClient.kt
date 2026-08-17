@@ -65,6 +65,11 @@ class ApiClient(private val baseUrl: String) {
         ), "customer"
     )
 
+    fun neuralMeshManifest(testToken: String): JSONObject = request(
+        "/api/neuralmesh/manifest",
+        token = testToken
+    )
+
     fun resellerAccount(token: String): ResellerAccount {
         val me = request("/api/reseller/me", token = token)
         val customersRaw = rawRequest("/api/reseller/customers", token = token).body
@@ -256,8 +261,8 @@ class ApiClient(private val baseUrl: String) {
         }
     }
 
-    fun tickets(token: String): List<SupportTicket> {
-        val raw = rawRequest("/api/customer/tickets", token = token).body
+    fun tickets(token: String, role: String = "customer"): List<SupportTicket> {
+        val raw = rawRequest("/api/${if(role=="reseller") "reseller" else "customer"}/tickets", token = token).body
         return runCatching { JSONArray(raw) }.getOrElse { throw ApiException("INVALID_SERVER_RESPONSE", 502) }
             .objects().map {
                 SupportTicket(
@@ -267,15 +272,15 @@ class ApiClient(private val baseUrl: String) {
             }
     }
 
-    fun createTicket(token: String, subject: String, body: String) {
+    fun createTicket(token: String, subject: String, body: String, role: String = "customer") {
         request(
-            "/api/customer/tickets", "POST", token,
+            "/api/${if(role=="reseller") "reseller" else "customer"}/tickets", "POST", token,
             JSONObject().put("subject", subject.trim()).put("body", body.trim())
         )
     }
 
-    fun ticket(token: String, ticketId: String): TicketConversation {
-        val json = request("/api/customer/tickets/$ticketId", token = token)
+    fun ticket(token: String, ticketId: String, role: String = "customer"): TicketConversation {
+        val json = request("/api/${if(role=="reseller") "reseller" else "customer"}/tickets/$ticketId", token = token)
         return TicketConversation(
             id = json.getString("id"),
             subject = json.getString("subject"),
@@ -289,15 +294,15 @@ class ApiClient(private val baseUrl: String) {
         )
     }
 
-    fun replyTicket(token: String, ticketId: String, body: String) {
+    fun replyTicket(token: String, ticketId: String, body: String, role: String = "customer") {
         request(
-            "/api/customer/tickets/$ticketId", "POST", token,
+            "/api/${if(role=="reseller") "reseller" else "customer"}/tickets/$ticketId", "POST", token,
             JSONObject().put("body", body.trim())
         )
     }
 
-    fun markNotificationsRead(token: String) {
-        request("/api/customer/notifications/read", "POST", token, JSONObject())
+    fun markNotificationsRead(token: String, role: String = "customer") {
+        request("/api/${if(role=="reseller") "reseller" else "customer"}/notifications/read", "POST", token, JSONObject())
     }
 
     private fun resellerOrder(json: JSONObject) = ResellerOrder(

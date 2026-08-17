@@ -51,6 +51,19 @@ test('admin signs in with username and password and receives an expiring session
   r=await fetch(`${base}/api/admin/plans`,{headers:{authorization:`Bearer ${session.token}`}});assert.equal(r.status,200);
 });
 
+test('admin changes password and previous browser sessions are revoked', async t => {
+  const password=hashPassword('StrongAdminPass123');
+  const {server,base}=await start({adminUsername:'behnam',adminPasswordSalt:password.salt,adminPasswordHash:password.hash});
+  t.after(()=>server.close());
+  let r=await fetch(`${base}/api/admin/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'behnam',password:'StrongAdminPass123'})});
+  const oldSession=await r.json(),headers={authorization:`Bearer ${oldSession.token}`,'content-type':'application/json'};
+  r=await fetch(`${base}/api/admin/change-password`,{method:'POST',headers,body:JSON.stringify({currentPassword:'wrong-password',newPassword:'NewStrongAdmin456'})});assert.equal(r.status,400);
+  r=await fetch(`${base}/api/admin/change-password`,{method:'POST',headers,body:JSON.stringify({currentPassword:'StrongAdminPass123',newPassword:'NewStrongAdmin456'})});assert.equal(r.status,200);
+  r=await fetch(`${base}/api/admin/plans`,{headers});assert.equal(r.status,401);
+  r=await fetch(`${base}/api/admin/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'behnam',password:'StrongAdminPass123'})});assert.equal(r.status,401);
+  r=await fetch(`${base}/api/admin/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'behnam',password:'NewStrongAdmin456'})});assert.equal(r.status,200);
+});
+
 test('customer order can only be tracked with its private tracking token', async t => {
   const { server, base } = await start(); t.after(() => server.close());
   const admin = { authorization:'Bearer test-token', 'content-type':'application/json' };

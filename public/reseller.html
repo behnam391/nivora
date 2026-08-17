@@ -29,6 +29,7 @@
         <button class="nav" data-view="plans"><i>＋</i><span>فروش اشتراک</span></button>
         <button class="nav" data-view="orders"><i>↻</i><span>فروش‌ها و تمدیدها</span></button>
         <button class="nav" data-view="wallet"><i>◈</i><span>کیف پول</span></button>
+        <button class="nav" data-view="support"><i>◌</i><span>پشتیبانی و اعلان‌ها</span><b id="support-badge">۰</b></button>
       </nav>
       <div class="partner-card"><span>حساب همکاری</span><b id="side-name">—</b><small id="side-phone">—</small></div>
       <button id="logout" class="logout">خروج امن</button>
@@ -75,6 +76,7 @@
         <div class="section-head"><div><span class="eyebrow">حساب مالی</span><h2>کیف پول همکاری</h2><p>تمام برداشت‌ها، بازگشت‌ها و شارژهای حساب.</p></div></div>
         <div id="wallet-hero" class="wallet-hero"></div><div id="ledger" class="panel ledger"></div>
       </section>
+      <section id="support" class="view hidden"><div class="section-head"><div><h2>پشتیبانی و اعلان‌ها</h2><p>گفت‌وگو با مدیریت و پیام‌های مهم حساب همکاری</p></div><button id="new-ticket" class="primary">تیکت جدید</button></div><div class="support-grid"><article class="panel"><div class="panel-head"><h2>اعلان‌ها</h2><button id="read-notifications" class="link">خواندم</button></div><div id="notification-list"></div></article><article class="panel"><div class="panel-head"><h2>گفت‌وگوها</h2></div><div id="ticket-list"></div></article></div></section>
     </main>
   </div>
 
@@ -86,7 +88,11 @@
 
   <dialog id="renew-dialog"><form id="renew-form"><button type="button" class="close" data-close="renew-dialog">×</button><span class="eyebrow">تمدید اشتراک</span><h2 id="renew-title">تمدید سرویس</h2><div id="renew-details" class="selected"></div><label>مبلغ تمدید برای مشتری (تومان)<input id="renew-sale-price" type="number" min="0" required></label><div id="renew-profit-preview" class="profit-preview"></div><p id="renew-error" class="form-error"></p><button id="renew-submit" class="primary wide">تأیید و تمدید</button></form></dialog>
 
+  <dialog id="ticket-dialog"><form id="ticket-form"><button type="button" class="close" data-close="ticket-dialog">×</button><span class="eyebrow">پشتیبانی همکاران</span><h2>تیکت جدید</h2><label>موضوع<input id="ticket-subject" required minlength="3"></label><label>پیام<textarea id="ticket-body" rows="5" required minlength="3"></textarea></label><p id="ticket-error" class="form-error"></p><button class="primary wide">ارسال پیام</button></form></dialog>
+  <dialog id="conversation-dialog" class="large-dialog"><div class="dialog-body"><button type="button" class="close" data-close="conversation-dialog">×</button><h2 id="conversation-title">گفت‌وگو</h2><div id="conversation-messages" class="conversation-messages"></div><form id="reply-form"><label>پاسخ<textarea id="reply-body" rows="3" required minlength="2"></textarea></label><button class="primary wide">ارسال پاسخ</button></form></div></dialog>
   <div id="toast" role="status"></div>
+  <style>.support-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.notice-row,.ticket-row{width:100%;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px 2px;border:0;border-top:1px solid var(--line);background:transparent;color:var(--ink);text-align:right}.notice-row:first-child,.ticket-row:first-child{border-top:0}.notice-row{display:grid}.notice-row.unread{border-radius:14px;padding:14px;background:#e9faf4}.notice-row b,.notice-row span,.notice-row small,.ticket-row b,.ticket-row small{display:block}.notice-row span,.notice-row small,.ticket-row small{color:var(--muted);margin-top:5px}.ticket-row span{flex:1}.ticket-row em{font-style:normal}.conversation-messages{display:grid;gap:10px;max-height:50vh;overflow:auto;padding:4px}.message{max-width:83%;padding:12px 14px;border-radius:16px;background:#eef4f1}.message.mine{margin-right:auto;background:#dcf8ed}.message p{white-space:pre-wrap;margin:5px 0}.message small{color:var(--muted)}@media(max-width:700px){.support-grid{grid-template-columns:1fr}}</style>
+  <script src="/web-notifications.js" defer></script>
   <script src="/reseller.js" defer></script>
 </body>
 </html>

@@ -266,7 +266,7 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
                 )
                 AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0) { purchasePlan = it }
                 AppDestination.WALLET -> WalletScreen(state, onTopup = { topupOpen = true })
-                AppDestination.SUPPORT -> SupportScreen(state, onNewTicket = { ticketOpen = true }, onOpenTicket = actions::openTicket, onLogout = actions::logout)
+                AppDestination.SUPPORT -> SupportScreen(state, onNewTicket = { ticketOpen = true }, onOpenTicket = actions::openTicket, onLogout = actions::logout, onNetworkLab = actions::openNetworkLab)
             }
             if (state.actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
             if (state.ticketLoading) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(.12f)), contentAlignment = Alignment.Center) {
@@ -341,6 +341,7 @@ private fun ResellerDashboard(state: NivoraUiState, actions: NivoraActions, snac
     var preferredCustomer by remember { mutableStateOf<ResellerCustomer?>(null) }
     var purchasePlan by remember { mutableStateOf<Plan?>(null) }
     var renewOrder by remember { mutableStateOf<ResellerOrder?>(null) }
+    var ticketOpen by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -351,6 +352,7 @@ private fun ResellerDashboard(state: NivoraUiState, actions: NivoraActions, snac
                 ResellerNavigationItem(ResellerDestination.CUSTOMERS, destination, Icons.Rounded.Groups, "مشتریان") { destination = it }
                 ResellerNavigationItem(ResellerDestination.PLANS, destination, Icons.Rounded.AddShoppingCart, "فروش") { destination = it }
                 ResellerNavigationItem(ResellerDestination.WALLET, destination, Icons.Rounded.AccountBalanceWallet, "کیف پول") { destination = it }
+                ResellerNavigationItem(ResellerDestination.SUPPORT, destination, Icons.Rounded.SupportAgent, "پشتیبانی") { destination = it; actions.markNotificationsRead() }
             }
         }
     ) { padding ->
@@ -360,6 +362,7 @@ private fun ResellerDashboard(state: NivoraUiState, actions: NivoraActions, snac
                 ResellerDestination.CUSTOMERS -> ResellerCustomersScreen(account.customers, onAdd = { addCustomerOpen = true }, onOpen = { detailCustomer = it }, onSale = { preferredCustomer = it; destination = ResellerDestination.PLANS })
                 ResellerDestination.PLANS -> ResellerPlansScreen(state.resellerPlans, account.balanceToman, preferredCustomer) { purchasePlan = it }
                 ResellerDestination.WALLET -> ResellerWalletScreen(account)
+                ResellerDestination.SUPPORT -> ResellerSupportScreen(account,state.tickets,{ticketOpen=true},actions::openTicket,actions::logout)
             }
             if (state.actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
         }
@@ -380,7 +383,12 @@ private fun ResellerDashboard(state: NivoraUiState, actions: NivoraActions, snac
         val cost = state.resellerPlans.firstOrNull { it.id == order.planId }?.priceToman ?: 0
         ResellerRenewDialog(order, cost, state.actionBusy, onDismiss = { renewOrder = null }) { price -> actions.resellerRenew(order, price); renewOrder = null }
     }
+    if(ticketOpen) TicketDialog(state.actionBusy,{ticketOpen=false}){subject,body->actions.createTicket(subject,body);ticketOpen=false}
+    state.ticketConversation?.let{TicketConversationDialog(it,state.actionBusy,actions::closeTicketConversation,actions::replyTicket)}
 }
+
+@Composable
+private fun ResellerSupportScreen(account:ResellerAccount,tickets:List<SupportTicket>,onNew:()->Unit,onOpen:(SupportTicket)->Unit,onLogout:()->Unit){LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(13.dp)){item{Text("پشتیبانی همکاران",style=MaterialTheme.typography.headlineLarge);Text("اعلان‌های فروش و گفت‌وگو مستقیم با مدیریت",color=MaterialTheme.colorScheme.onSurfaceVariant)};item{SectionHeader("اعلان‌ها",if(account.notifications.isEmpty())"اعلان تازه‌ای ندارید" else "پیام‌های مهم حساب همکاری")};if(account.notifications.isEmpty())item{EmptyState(Icons.Rounded.NotificationsNone,"اعلانی نیست","رویدادهای کیف پول، فروش و پاسخ مدیریت اینجا دیده می‌شوند.")}else items(account.notifications,key={it.id}){NotificationRow(it)};item{SectionHeader("تیکت‌ها","پیگیری درخواست‌های همکاری","تیکت جدید",onNew)};if(tickets.isEmpty())item{EmptyState(Icons.Rounded.Forum,"گفت‌وگویی ندارید","برای مدیریت پیام بفرستید.","پیام جدید",onNew)}else items(tickets,key={it.id}){TicketRow(it){onOpen(it)}};item{OutlinedButton(onClick=onLogout,modifier=Modifier.fillMaxWidth()){Icon(Icons.AutoMirrored.Rounded.Logout,null);Text(" خروج از حساب")}}}}
 
 @Composable
 private fun RowScope.ResellerNavigationItem(destination: ResellerDestination, selected: ResellerDestination, icon: ImageVector, label: String, onClick: (ResellerDestination) -> Unit) {
@@ -529,7 +537,7 @@ private fun HomeScreen(
         }
         item {
             Column(Modifier.padding(horizontal = 20.dp)) {
-                ConnectionHero(state.vpnState, state.vpnError, state.selectedSubscription, state.pingMs, state.pingBusy, actions::toggleVpn, actions::measurePing)
+                ConnectionHero(state.vpnState, state.vpnError, state.smartRoute, state.selectedSubscription, state.pingMs, state.pingBusy, actions::toggleVpn, actions::measurePing)
             }
         }
         item {
@@ -687,7 +695,7 @@ private fun TransactionRow(transaction: WalletTransaction) {
 }
 
 @Composable
-private fun SupportScreen(state: NivoraUiState, onNewTicket: () -> Unit, onOpenTicket: (SupportTicket) -> Unit, onLogout: () -> Unit) {
+private fun SupportScreen(state: NivoraUiState, onNewTicket: () -> Unit, onOpenTicket: (SupportTicket) -> Unit, onLogout: () -> Unit, onNetworkLab: () -> Unit) {
     val account = state.account ?: return
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -730,6 +738,9 @@ private fun SupportScreen(state: NivoraUiState, onNewTicket: () -> Unit, onOpenT
                         Text("Nivora ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
                     }
                     Text("اتصال امن با هسته Xray · اطلاعات ورود رمزگذاری‌شده", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+                    if (BuildConfig.NETWORK_LAB_ENABLED) FilledTonalButton(onClick = onNetworkLab, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Rounded.Science, null); Spacer(Modifier.width(7.dp)); Text("آزمایشگاه هوشمند شبکه")
+                    }
                     OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.AutoMirrored.Rounded.Logout, null); Spacer(Modifier.width(7.dp)); Text("خروج امن از حساب")
                     }

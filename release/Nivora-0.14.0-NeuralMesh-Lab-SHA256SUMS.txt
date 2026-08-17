@@ -1,0 +1,2 @@
+406968eb525ca8129c163e69bf55bb4411ce0051e359f1a5a56ffd57640072d4  Nivora-0.14.0-NeuralMesh-Lab-arm64.apk
+84d8c2069cf1d941ad727f47f6b82b3f908c870beff77a8856ec619149718bd6  Nivora-0.14.0-NeuralMesh-Lab-universal.apk

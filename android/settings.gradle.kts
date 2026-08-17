@@ -6,6 +6,7 @@ dependencyResolutionManagement {
         maven("https://maven.aliyun.com/repository/google") {
             content { includeGroupByRegex("androidx\\..*") }
         }
+        maven("https://redirector.gvt1.com/edgedl/android/maven2")
         google()
         mavenCentral()
     }

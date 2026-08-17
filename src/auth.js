@@ -9,7 +9,7 @@ export function verifyPassword(password, salt, expected) {
   const actual=scryptSync(password,salt,64),target=Buffer.from(expected,'hex');
   return actual.length===target.length&&timingSafeEqual(actual,target);
 }
-export function createSession(db, accountId, days = 30) {
+export function createSession(db, accountId, days = Number(process.env.SESSION_DAYS || 365)) {
   const token=randomBytes(32).toString('base64url'),tokenHash=createHash('sha256').update(token).digest('hex');
   const now=new Date(),expires=new Date(now.getTime()+days*86400000);
   db.prepare('INSERT INTO account_sessions(id,account_id,token_hash,expires_at,created_at) VALUES(?,?,?,?,?)').run(randomBytes(16).toString('hex'),accountId,tokenHash,expires.toISOString(),now.toISOString());

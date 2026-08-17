@@ -5,6 +5,8 @@ import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.media.AudioAttributes
 import android.content.*
 import android.content.pm.PackageManager
 import android.net.VpnService
@@ -21,13 +23,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.activity.compose.setContent
 import androidx.core.content.ContextCompat
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import ir.nivora.app.data.*
 import ir.nivora.app.ui.*
 import ir.nivora.app.vpn.NivoraVpnService
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity(), NivoraActions {
     private val api = ApiClient(BuildConfig.API_BASE_URL)
@@ -36,8 +46,34 @@ class MainActivity : ComponentActivity(), NivoraActions {
     private lateinit var session: SecureSessionStore
     private val selection by lazy { getSharedPreferences("selection", MODE_PRIVATE) }
     private val vpnPreferences by lazy { getSharedPreferences("vpn", MODE_PRIVATE) }
+    private val alertPreferences by lazy { getSharedPreferences("alerts", MODE_PRIVATE) }
     private var state by mutableStateOf(NivoraUiState())
     private var receiverRegistered = false
+    private var networkCallbackRegistered = false
+    private var lastUnderlyingNetwork: String? = null
+    private var networkRestartAt = 0L
+    private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) {
+            if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) ||
+                !capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return
+            val key = when {
+                capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                else -> "other"
+            }
+            handler.post {
+                val previous = lastUnderlyingNetwork
+                lastUnderlyingNetwork = key
+                if (previous != null && previous != key && state.vpnState == "connected" &&
+                    System.currentTimeMillis() - networkRestartAt > 5_000) {
+                    networkRestartAt = System.currentTimeMillis()
+                    showNotice("شبکه تغییر کرد؛ مسیر هوشمند دوباره انتخاب می‌شود")
+                    startSelectedVpn()
+                }
+            }
+        }
+    }
     private val notificationPoll=object:Runnable{override fun run(){if(session.token()!=null)loadDashboard(false);handler.postDelayed(this,60_000)}}
 
     private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -50,7 +86,9 @@ class MainActivity : ComponentActivity(), NivoraActions {
         override fun onReceive(context: Context?, intent: Intent?) {
             val vpnState = vpnPreferences.getString("state", "disconnected") ?: "disconnected"
             val error = vpnPreferences.getString("error", null)
-            state = state.copy(vpnState = vpnState, vpnError = friendlyVpnError(error))
+            val smartRoute = intent?.getStringExtra(NivoraVpnService.EXTRA_SMART_ROUTE)
+                ?: vpnPreferences.getString("smart_route", null)
+            state = state.copy(vpnState = vpnState, vpnError = friendlyVpnError(error), smartRoute = smartRoute)
             if (vpnState == "connected") handler.postDelayed({ refresh() }, 3_500)
         }
     }
@@ -60,17 +98,19 @@ class MainActivity : ComponentActivity(), NivoraActions {
         enableEdgeToEdge()
         session = SecureSessionStore(this)
         registerVpnReceiver()
+        registerNetworkObserver()
         val storedState = vpnPreferences.getString("state", "disconnected") ?: "disconnected"
         val correctedState = if (storedState in setOf("connected", "connecting") && !NivoraVpnService.isCoreRunning()) "disconnected" else storedState
         if (correctedState != storedState) vpnPreferences.edit().putString("state", correctedState).remove("error").apply()
         val signedIn = session.token() != null
-        state = state.copy(signedIn = signedIn, loading = signedIn, role = session.role(), vpnState = correctedState, vpnError = friendlyVpnError(vpnPreferences.getString("error", null)))
+        state = state.copy(signedIn = signedIn, loading = signedIn, role = session.role(), vpnState = correctedState, vpnError = friendlyVpnError(vpnPreferences.getString("error", null)), smartRoute = vpnPreferences.getString("smart_route", null))
         setContent {
             NivoraTheme {
                 Surface { NivoraApp(state, this@MainActivity) }
             }
         }
         if (signedIn) loadDashboard(initial = true)
+        if(signedIn)scheduleNotificationWorker()
         if(signedIn&&Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         handler.postDelayed(notificationPoll,60_000)
     }
@@ -78,6 +118,9 @@ class MainActivity : ComponentActivity(), NivoraActions {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         if (receiverRegistered) unregisterReceiver(vpnReceiver)
+        if (networkCallbackRegistered) runCatching {
+            getSystemService(android.net.ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback)
+        }
         super.onDestroy()
     }
 
@@ -85,6 +128,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
         work = { api.login(phone, password, if (role == LoginRole.RESELLER) "reseller" else "customer") },
         success = {
             session.save(it.token, it.role)
+            scheduleNotificationWorker()
             state = state.copy(signedIn = true, loading = true, role = it.role, account = null, reseller = null, loadError = null)
             loadDashboard(initial = true)
         }
@@ -94,6 +138,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
         work = { api.register(name, phone, password) },
         success = {
             session.save(it.token, "customer")
+            scheduleNotificationWorker()
             state = state.copy(signedIn = true, loading = true, role = "customer", loadError = null)
             loadDashboard(initial = true)
         }
@@ -143,20 +188,33 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     override fun measurePing() {
-        val url = state.selectedSubscription?.url
-        if (url.isNullOrBlank()) {
-            showNotice("برای تست پینگ یک اشتراک فعال انتخاب کنید", true)
+        if (state.vpnState != "connected") {
+            showNotice("ابتدا اتصال امن را برقرار کنید", true)
             return
         }
         if (state.pingBusy) return
         state = state.copy(pingBusy = true)
         background(
             work = {
-                val endpoints = NetworkTools.endpointsFromSubscription(api.subscription(url))
-                NetworkTools.fastest(endpoints)?.latencyMs
-                    ?: throw ApiException("INVALID_SUBSCRIPTION", 422)
+                val values = listOf(
+                    "https://www.gstatic.com/generate_204" to true,
+                    "https://www.youtube.com/generate_204" to true,
+                    "https://www.instagram.com/" to false
+                ).mapNotNull { (target, expected204) -> runCatching {
+                    val started = android.os.SystemClock.elapsedRealtime()
+                    val connection = (URL(target).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 7_000; readTimeout = 7_000; useCaches = false; instanceFollowRedirects = false
+                    }
+                    try {
+                        val code = connection.responseCode
+                        if ((expected204 && code != 204) || (!expected204 && code !in 200..499)) throw java.io.IOException()
+                        android.os.SystemClock.elapsedRealtime() - started
+                    } finally { connection.disconnect() }
+                }.getOrNull() }
+                if (values.size < 2) throw ApiException("INVALID_SUBSCRIPTION", 422)
+                values.sorted()[values.size / 2]
             },
-            success = { ping -> state = state.copy(pingBusy = false, pingMs = ping); showNotice("تأخیر سرور: $ping میلی‌ثانیه") },
+            success = { ping -> state = state.copy(pingBusy = false, pingMs = ping); showNotice("تأخیر واقعی اینترنت: $ping میلی‌ثانیه") },
             failure = { state = state.copy(pingBusy = false); showNotice("اندازه‌گیری پینگ انجام نشد", true) }
         )
     }
@@ -213,7 +271,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
 
     override fun createTicket(subject: String, body: String) = withToken { token ->
         runAction(
-            work = { api.createTicket(token, subject, body) },
+            work = { api.createTicket(token, subject, body, state.role) },
             success = { showNotice("تیکت برای پشتیبانی ارسال شد"); loadDashboard(initial = false) }
         )
     }
@@ -222,7 +280,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
         if (state.ticketLoading) return@withToken
         state = state.copy(ticketLoading = true)
         background(
-            work = { api.ticket(token, ticket.id) },
+            work = { api.ticket(token, ticket.id, state.role) },
             success = { state = state.copy(ticketLoading = false, ticketConversation = it) },
             failure = { state = state.copy(ticketLoading = false); showNotice(friendly(it), true) }
         )
@@ -231,7 +289,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
     override fun replyTicket(body: String) = withToken { token ->
         val ticket = state.ticketConversation ?: return@withToken
         runAction(
-            work = { api.replyTicket(token, ticket.id, body); api.ticket(token, ticket.id) },
+            work = { api.replyTicket(token, ticket.id, body, state.role); api.ticket(token, ticket.id, state.role) },
             success = {
                 state = state.copy(ticketConversation = it)
                 showNotice("پاسخ شما ارسال شد")
@@ -249,10 +307,14 @@ class MainActivity : ComponentActivity(), NivoraActions {
         if (account.notifications.none { it.readAt == null }) return@withToken
         state = state.copy(account = account.copy(notifications = account.notifications.map { it.copy(readAt = it.readAt ?: "read") }))
         background(
-            work = { api.markNotificationsRead(token) },
+            work = { api.markNotificationsRead(token, state.role) },
             success = { },
             failure = { if ((it as? ApiException)?.code == "UNAUTHORIZED") logout() }
         )
+    }
+
+    override fun openNetworkLab() {
+        if (BuildConfig.NETWORK_LAB_ENABLED) startActivity(Intent(this, NetworkLabActivity::class.java))
     }
 
     override fun createResellerCustomer(name: String, phone: String, password:String, note: String) = withToken { token ->
@@ -292,6 +354,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
     override fun logout() {
         startService(Intent(this, NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP))
         session.clear()
+        WorkManager.getInstance(this).cancelUniqueWork("nivora-notification-poll")
         selection.edit().clear().apply()
         state = NivoraUiState(vpnState = "disconnected")
     }
@@ -327,7 +390,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
                 if (state.role == "reseller") {
                     val reseller = api.resellerAccount(token)
                     val resellerPlans = api.resellerPlans(token)
-                    DashboardPayload(reseller = reseller, resellerPlans = resellerPlans)
+                    DashboardPayload(reseller = reseller, resellerPlans = resellerPlans, tickets = api.tickets(token,"reseller"))
                 } else {
                     val account = api.account(token)
                     val plans = api.plans()
@@ -338,7 +401,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
             success = { payload ->
                 if (payload.reseller != null) {
                     showNewNotifications(payload.reseller.notifications)
-                    state = state.copy(signedIn = true, loading = false, refreshing = false, reseller = payload.reseller, resellerPlans = payload.resellerPlans, account = null, loadError = null)
+                    state = state.copy(signedIn = true, loading = false, refreshing = false, reseller = payload.reseller, resellerPlans = payload.resellerPlans, tickets = payload.tickets, account = null, loadError = null)
                     return@background
                 }
                 val account = payload.account ?: return@background
@@ -362,8 +425,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
             },
             failure = { error ->
                 if ((error as? ApiException)?.code == "UNAUTHORIZED") {
-                    session.clear()
-                    state = NivoraUiState(vpnState = state.vpnState)
+                    state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
                 } else {
                     state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
                     if (state.account != null || state.reseller != null) showNotice(friendly(error), true)
@@ -392,10 +454,22 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     private fun showNewNotifications(items:List<CustomerNotification>){
-        val fresh=items.filter{it.readAt==null};if(fresh.isEmpty())return
-        val manager=getSystemService(NotificationManager::class.java);val channel="nivora_alerts_v2"
-        if(Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(NotificationChannel(channel,"اعلان‌های نیورا",NotificationManager.IMPORTANCE_HIGH).apply{enableVibration(true);setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI,null)})
-        fresh.take(3).forEach{n->manager.notify(n.id.hashCode(),Notification.Builder(this,channel).setSmallIcon(R.drawable.ic_nivora_notification).setContentTitle(n.title).setContentText(n.body).setAutoCancel(true).build())}
+        val seen=alertPreferences.getStringSet("seen_ids",emptySet())?.toMutableSet()?:mutableSetOf()
+        val initialized=alertPreferences.getBoolean("initialized",false)
+        val fresh=items.filter{it.readAt==null&&!seen.contains(it.id)}
+        items.forEach{seen.add(it.id)}
+        alertPreferences.edit().putStringSet("seen_ids",seen.toList().takeLast(150).toSet()).putBoolean("initialized",true).apply()
+        if(!initialized||fresh.isEmpty())return
+        val manager=getSystemService(NotificationManager::class.java);val channel="nivora_alerts_v3"
+        val sound=android.provider.Settings.System.DEFAULT_NOTIFICATION_URI
+        if(Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(NotificationChannel(channel,"اعلان‌های نیورا",NotificationManager.IMPORTANCE_HIGH).apply{enableVibration(true);vibrationPattern=longArrayOf(0,220,120,220);setSound(sound,AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).build())})
+        val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        fresh.take(3).forEach{n->manager.notify(n.id.hashCode(),Notification.Builder(this,channel).setSmallIcon(R.drawable.ic_nivora_notification).setContentTitle(n.title).setContentText(n.body).setContentIntent(open).setSound(sound).setAutoCancel(true).build())}
+    }
+
+    private fun scheduleNotificationWorker(){
+        val request=PeriodicWorkRequestBuilder<NivoraNotificationWorker>(15,TimeUnit.MINUTES).setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork("nivora-notification-poll",ExistingPeriodicWorkPolicy.UPDATE,request)
     }
 
     private fun friendly(error: Throwable): String {
@@ -431,6 +505,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
             error.contains("subscription", true) -> "دریافت اشتراک ممکن نشد"
             error.contains("timeout", true) -> "سرور در زمان مناسب پاسخ نداد"
             error.contains("empty", true) || error.contains("خالی") -> "اشتراک کانفیگ فعالی ندارد"
+            error.contains("TUNNEL_UNHEALTHY", true) -> "این مسیر اینترنت واقعی نداد؛ مسیر دیگری لازم است"
             else -> "اتصال امن برقرار نشد؛ دوباره تلاش کنید"
         }
     }
@@ -439,6 +514,14 @@ class MainActivity : ComponentActivity(), NivoraActions {
         val filter = IntentFilter(NivoraVpnService.ACTION_STATE)
         ContextCompat.registerReceiver(this, vpnReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         receiverRegistered = true
+    }
+
+    private fun registerNetworkObserver() {
+        val request = android.net.NetworkRequest.Builder()
+            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        getSystemService(android.net.ConnectivityManager::class.java).registerNetworkCallback(request, networkCallback)
+        networkCallbackRegistered = true
     }
 
     private fun <T> background(work: () -> T, success: (T) -> Unit, failure: (Throwable) -> Unit) {

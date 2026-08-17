@@ -5,10 +5,11 @@ import { randomUUID } from 'node:crypto';
 const GB = 1024 ** 3;
 const DAY = 24 * 60 * 60 * 1000;
 
-export function buildClientPayload(order, inboundId) {
+export function buildClientPayload(order, inboundId, extraInboundIds = []) {
   const safePhone = String(order.phone).replace(/\D/g, '');
   const suffix = String(order.id).replace(/-/g, '').slice(0, 8);
-  const inboundIds = [order.panel_inbound_id || inboundId, order.panel_cdn_inbound_id]
+  const extras = Array.isArray(extraInboundIds) ? extraInboundIds : [extraInboundIds];
+  const inboundIds = [order.panel_inbound_id || inboundId, order.panel_cdn_inbound_id, ...extras]
     .map(Number).filter(Number.isInteger).filter(value => value > 0);
   return {
     client: {
@@ -23,6 +24,14 @@ export function buildClientPayload(order, inboundId) {
       ,subId: randomUUID()
     },
     inboundIds: [...new Set(inboundIds)]
+  };
+}
+
+export function buildCompatibleClientPayload(client, inboundIds, flow = '') {
+  return {
+    client: { ...client, flow },
+    inboundIds: [...new Set((Array.isArray(inboundIds) ? inboundIds : [inboundIds])
+      .map(Number).filter(value => Number.isInteger(value) && value > 0))]
   };
 }
 
@@ -62,6 +71,14 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
   const baseUrl = config.baseUrl || process.env.PANEL_BASE_URL;
   const apiToken = config.apiToken || process.env.PANEL_API_TOKEN;
   const inboundId = Number(config.inboundId || process.env.PANEL_INBOUND_ID);
+  // These inbounds must all accept VLESS Vision. HTTP/UDP transports need
+  // separately provisioned client records with a compatible (usually empty) flow.
+  const extraInboundIds = String(config.visionInboundIds || process.env.PANEL_VISION_INBOUND_IDS || process.env.PANEL_EXTRA_INBOUND_IDS || process.env.PANEL_SECONDARY_INBOUND_ID || '')
+    .split(',').map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value > 0);
+  // CDN/HTTP transports cannot use xtls-rprx-vision. They receive a second
+  // client record with the same UUID and subId, but an empty flow.
+  const cdnInboundIds = String(config.cdnInboundIds || process.env.PANEL_CDN_INBOUND_IDS || '')
+    .split(',').map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value > 0);
   const subscriptionBaseUrl = config.subscriptionBaseUrl || process.env.PANEL_SUBSCRIPTION_BASE_URL;
   const rejectUnauthorized = config.rejectUnauthorized ?? process.env.PANEL_TLS_REJECT_UNAUTHORIZED !== 'false';
   if (!baseUrl || !apiToken || !inboundId || !subscriptionBaseUrl) throw new Error('3X-UI provisioning configuration is incomplete');
@@ -74,10 +91,13 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
   };
 
   const provision = async order => {
-    const payload = buildClientPayload(order, inboundId);
+    const payload = buildClientPayload(order, inboundId, extraInboundIds);
     const added = await call('POST', 'clients/add', payload);
     let client = added?.client || added;
     if (!client?.subId) client = payload.client;
+    if (cdnInboundIds.length) {
+      await call('POST', 'clients/add', buildCompatibleClientPayload(client, cdnInboundIds));
+    }
     if (!client?.subId) {
       try {
         const obj = await call('GET', `clients/get/${encodeURIComponent(payload.client.email)}`);

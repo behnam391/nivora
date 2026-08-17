@@ -9,11 +9,13 @@ android {
         applicationId 'ir.nivora.app'
         minSdk 26
         targetSdk 36
-        versionCode 18
-        versionName '0.10.0'
+        versionCode 24
+        versionName '0.14.1'
         ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
         def apiUrl = providers.gradleProperty('NIVORA_API_BASE_URL').getOrElse('https://b.nivorali.com')
+        def neuralMeshPublicKey = providers.gradleProperty('NEURALMESH_PUBLIC_KEY_SPKI').getOrElse('')
         buildConfigField 'String', 'API_BASE_URL', '"' + apiUrl + '"'
+        buildConfigField 'String', 'NEURALMESH_PUBLIC_KEY_SPKI', '"' + neuralMeshPublicKey + '"'
     }
     def releaseStore = System.getenv('NIVORA_KEYSTORE_PATH')
     def releaseStorePassword = System.getenv('NIVORA_KEYSTORE_PASSWORD')
@@ -34,10 +36,21 @@ android {
         }
     }
     buildTypes {
+        debug {
+            buildConfigField 'boolean', 'NETWORK_LAB_ENABLED', 'true'
+        }
         release {
+            buildConfigField 'boolean', 'NETWORK_LAB_ENABLED', 'false'
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             if (signingConfigs.findByName('nivoraRelease')) signingConfig signingConfigs.nivoraRelease
+        }
+        research {
+            initWith debug
+            applicationIdSuffix '.research'
+            versionNameSuffix '-research'
+            buildConfigField 'boolean', 'NETWORK_LAB_ENABLED', 'true'
+            matchingFallbacks = ['debug']
         }
     }
     splits {
@@ -63,6 +76,7 @@ dependencies {
     implementation 'androidx.compose.material:material-icons-extended'
     implementation 'androidx.compose.runtime:runtime-saveable'
     implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.work:work-runtime-ktx:2.10.0'
     debugImplementation 'androidx.compose.ui:ui-tooling'
     testImplementation 'junit:junit:4.13.2'
 }

@@ -128,6 +128,7 @@ fun AppTopBar(name: String, unread: Int, refreshing: Boolean, onRefresh: () -> U
 fun ConnectionHero(
     state: String,
     error: String?,
+    smartRoute: String?,
     subscription: Subscription?,
     pingMs: Long?,
     pingBusy: Boolean,
@@ -199,6 +200,21 @@ fun ConnectionHero(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (connected && !smartRoute.isNullOrBlank()) {
+                    Text(
+                        "مسیر هوشمند: $smartRoute",
+                        color = Color(0xFF8EF0CF),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 7.dp)
+                    )
+                } else if (connecting) {
+                    Text(
+                        "در حال انتخاب بهترین مسیر برای این شبکه…",
+                        color = Color(0xFF9DB9AF),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 7.dp)
+                    )
+                }
                 if (state == "error" && !error.isNullOrBlank()) {
                     Text(error, color = Color(0xFFFFA9AE), style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp))
                 }

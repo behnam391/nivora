@@ -100,9 +100,14 @@ const validEndpoint = endpoint => endpoint.label.length >= 2 && endpoint.host.le
 
 export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', adminUsername = process.env.ADMIN_USERNAME || '', adminPasswordSalt = process.env.ADMIN_PASSWORD_SALT || '', adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || '', provisioner = null, neuralMeshManifest = null } = {}) {
   const adminSessionHours=Math.min(72,Math.max(1,Number(process.env.ADMIN_SESSION_HOURS)||12));
+  const savedAdmin=Object.fromEntries(db.prepare("SELECT key,value FROM app_settings WHERE key IN ('admin_username','admin_password_salt','admin_password_hash','admin_session_version')").all().map(row=>[row.key,row.value]));
+  let activeAdminUsername=savedAdmin.admin_username||adminUsername;
+  let activeAdminPasswordSalt=savedAdmin.admin_password_salt||adminPasswordSalt;
+  let activeAdminPasswordHash=savedAdmin.admin_password_hash||adminPasswordHash;
+  let adminSessionVersion=savedAdmin.admin_session_version||'1';
   const sessionSignature=payload=>createHmac('sha256',adminToken).update(payload).digest('base64url');
-  const issueAdminSession=()=>{const payload=Buffer.from(JSON.stringify({role:'admin',exp:Date.now()+adminSessionHours*3600000,nonce:randomBytes(16).toString('hex')})).toString('base64url');return `${payload}.${sessionSignature(payload)}`};
-  const validAdminSession=token=>{try{const [payload,signature]=String(token||'').split('.');if(!payload||!signature)return false;const expected=Buffer.from(sessionSignature(payload)),actual=Buffer.from(signature);if(expected.length!==actual.length||!timingSafeEqual(expected,actual))return false;const data=JSON.parse(Buffer.from(payload,'base64url').toString('utf8'));return data.role==='admin'&&Number(data.exp)>Date.now()}catch{return false}};
+  const issueAdminSession=()=>{const payload=Buffer.from(JSON.stringify({role:'admin',exp:Date.now()+adminSessionHours*3600000,credentialVersion:adminSessionVersion,nonce:randomBytes(16).toString('hex')})).toString('base64url');return `${payload}.${sessionSignature(payload)}`};
+  const validAdminSession=token=>{try{const [payload,signature]=String(token||'').split('.');if(!payload||!signature)return false;const expected=Buffer.from(sessionSignature(payload)),actual=Buffer.from(signature);if(expected.length!==actual.length||!timingSafeEqual(expected,actual))return false;const data=JSON.parse(Buffer.from(payload,'base64url').toString('utf8'));return data.role==='admin'&&data.credentialVersion===adminSessionVersion&&Number(data.exp)>Date.now()}catch{return false}};
   const isAdmin = req => {const token=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];return token===adminToken||validAdminSession(token)};
   const audit = (actor, action, type, id, details = null) => db.prepare(
     'INSERT INTO audit_log(actor,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)'
@@ -249,6 +254,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       if (req.method === 'GET' && path === '/admin-locations.js') {
         const js=await readFile(resolve('public/admin-locations.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);
+      }
+      if (req.method === 'GET' && path === '/admin-nodes.js') {
+        const js=await readFile(resolve('public/admin-nodes.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);
       }
       if (req.method === 'GET' && path === '/admin-locations.css') {
         const css=await readFile(resolve('public/admin-locations.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);
@@ -494,14 +502,26 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
       if(req.method==='POST'&&path==='/api/admin/login'){
         const b=await readJson(req),username=String(b.username||'').trim(),password=String(b.password||'');
-        if(!adminUsername||!adminPasswordSalt||!adminPasswordHash)return json(res,503,{error:'ADMIN_CREDENTIALS_NOT_CONFIGURED'});
-        const suppliedUser=Buffer.from(username),expectedUser=Buffer.from(adminUsername);
+        if(!activeAdminUsername||!activeAdminPasswordSalt||!activeAdminPasswordHash)return json(res,503,{error:'ADMIN_CREDENTIALS_NOT_CONFIGURED'});
+        const suppliedUser=Buffer.from(username),expectedUser=Buffer.from(activeAdminUsername);
         const validUser=suppliedUser.length===expectedUser.length&&timingSafeEqual(suppliedUser,expectedUser);
-        if(!validUser||!verifyPassword(password,adminPasswordSalt,adminPasswordHash))return json(res,401,{error:'INVALID_CREDENTIALS'});
+        if(!validUser||!verifyPassword(password,activeAdminPasswordSalt,activeAdminPasswordHash))return json(res,401,{error:'INVALID_CREDENTIALS'});
         audit('admin','login','admin_session','web');return json(res,200,{token:issueAdminSession(),expiresInHours:adminSessionHours});
       }
 
       if (path.startsWith('/api/admin/') && !isAdmin(req)) return json(res, 401, { error: 'UNAUTHORIZED' });
+
+      if(req.method==='POST'&&path==='/api/admin/change-password'){
+        const b=await readJson(req),currentPassword=String(b.currentPassword||''),newPassword=String(b.newPassword||'');
+        if(!verifyPassword(currentPassword,activeAdminPasswordSalt,activeAdminPasswordHash))return json(res,400,{error:'CURRENT_PASSWORD_INCORRECT'});
+        if(currentPassword===newPassword)return json(res,400,{error:'PASSWORD_UNCHANGED'});
+        let password;try{password=hashPassword(newPassword)}catch(e){return json(res,400,{error:e.message});}
+        adminSessionVersion=randomBytes(16).toString('hex');
+        activeAdminPasswordSalt=password.salt;activeAdminPasswordHash=password.hash;
+        settingSet('admin_username',activeAdminUsername);settingSet('admin_password_salt',password.salt);settingSet('admin_password_hash',password.hash);settingSet('admin_session_version',adminSessionVersion);
+        audit('admin','change_password','admin_account','primary');
+        return json(res,200,{changed:true});
+      }
 
       if(req.method==='GET'&&path==='/api/admin/telegram-settings'){
         const c=telegramConfig();return json(res,200,{enabled:c.enabled,username:c.username,adminIds:c.adminIds.join(','),tokenConfigured:Boolean(c.token),tokenHint:c.token?`…${c.token.slice(-4)}`:'',webhookSecretConfigured:Boolean(c.secret),webhookUrl:'https://b.nivorali.com/api/telegram/webhook'});
@@ -553,14 +573,22 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         })));
       }
       if(req.method==='GET'&&path==='/api/admin/locations'){
-        const rows=db.prepare(`SELECT l.*,COUNT(DISTINCT pl.plan_id) plan_count,
+        const rows=db.prepare(`SELECT l.*,n.name panel_node_name,COUNT(DISTINCT pl.plan_id) plan_count,
           (SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=l.id) endpoint_count,
           (SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=l.id AND e.active=1 AND e.health_status='online') online_endpoint_count
-          FROM service_locations l LEFT JOIN plan_locations pl ON pl.location_id=l.id GROUP BY l.id ORDER BY l.active DESC,l.name`).all();return json(res,200,rows);
+          FROM service_locations l LEFT JOIN panel_nodes n ON n.id=l.panel_node_id LEFT JOIN plan_locations pl ON pl.location_id=l.id GROUP BY l.id ORDER BY l.active DESC,l.name`).all();return json(res,200,rows);
       }
+      const nodeFromBody=b=>({name:String(b.name||'').trim().slice(0,80),provider:String(b.provider||'').trim().slice(0,80),panelType:String(b.panelType||'3x-ui').trim().slice(0,30),baseUrl:String(b.baseUrl||'').trim().replace(/\/$/,'').slice(0,500),apiToken:String(b.apiToken||'').trim(),active:b.active!==false});
+      const validNode=node=>node.name.length>=2&&node.panelType==='3x-ui'&&(!node.baseUrl||(()=>{try{const u=new URL(node.baseUrl);return u.protocol==='https:'||u.protocol==='http:'}catch{return false}})());
+      if(req.method==='GET'&&path==='/api/admin/panel-nodes'){const rows=db.prepare('SELECT id,name,provider,panel_type,base_url,api_token_encrypted,active,created_at,updated_at FROM panel_nodes ORDER BY active DESC,name').all();return json(res,200,rows.map(n=>({id:n.id,name:n.name,provider:n.provider,panelType:n.panel_type,baseUrl:n.base_url,tokenConfigured:Boolean(decrypt(n.api_token_encrypted)),active:Boolean(n.active),createdAt:n.created_at,updatedAt:n.updated_at,locationCount:db.prepare('SELECT COUNT(*) count FROM service_locations WHERE panel_node_id=?').get(n.id).count})));}
+      if(req.method==='POST'&&path==='/api/admin/panel-nodes'){const n=nodeFromBody(await readJson(req));if(!validNode(n))return json(res,400,{error:'INVALID_PANEL_NODE'});const id=randomUUID(),now=new Date().toISOString();db.prepare('INSERT INTO panel_nodes(id,name,provider,panel_type,base_url,api_token_encrypted,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(id,n.name,n.provider,n.panelType,n.baseUrl,n.apiToken?encrypt(n.apiToken):'',n.active?1:0,now,now);audit('admin','create','panel_node',id,{name:n.name,baseUrl:n.baseUrl});return json(res,201,{id});}
+      const panelNodeMatch=path.match(/^\/api\/admin\/panel-nodes\/([^/]+)$/);
+      if(req.method==='PATCH'&&panelNodeMatch){const old=db.prepare('SELECT * FROM panel_nodes WHERE id=?').get(panelNodeMatch[1]);if(!old)return json(res,404,{error:'PANEL_NODE_NOT_FOUND'});const raw=await readJson(req),n=nodeFromBody({...old,name:raw.name??old.name,provider:raw.provider??old.provider,panelType:raw.panelType??old.panel_type,baseUrl:raw.baseUrl??old.base_url,apiToken:raw.apiToken??'',active:raw.active??Boolean(old.active)});if(!validNode(n))return json(res,400,{error:'INVALID_PANEL_NODE'});db.prepare('UPDATE panel_nodes SET name=?,provider=?,panel_type=?,base_url=?,api_token_encrypted=?,active=?,updated_at=? WHERE id=?').run(n.name,n.provider,n.panelType,n.baseUrl,n.apiToken?encrypt(n.apiToken):old.api_token_encrypted,n.active?1:0,new Date().toISOString(),old.id);audit('admin','update','panel_node',old.id,{name:n.name,baseUrl:n.baseUrl});return json(res,200,{id:old.id});}
+      if(req.method==='DELETE'&&panelNodeMatch){const count=db.prepare('SELECT COUNT(*) count FROM service_locations WHERE panel_node_id=?').get(panelNodeMatch[1]).count;if(count)return json(res,409,{error:'PANEL_NODE_IN_USE'});db.prepare('DELETE FROM panel_nodes WHERE id=?').run(panelNodeMatch[1]);audit('admin','delete','panel_node',panelNodeMatch[1]);return json(res,200,{deleted:true});}
       if(req.method==='POST'&&path==='/api/admin/locations'){
         const b=await readJson(req),country=String(b.countryCode||'').trim().toUpperCase();if(!b.name?.trim()||!/^[A-Z]{2}$/.test(country))return json(res,400,{error:'INVALID_LOCATION'});
-        const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO service_locations(id,name,country_code,city,provider,panel_type,panel_inbound_id,panel_cdn_inbound_id,capacity,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,b.name.trim(),country,b.city?.trim()||'',b.provider?.trim()||'',b.panelType||'3x-ui',b.panelInboundId||null,b.panelCdnInboundId||null,Math.max(Number(b.capacity)||0,0),b.active===false?0:1,now,now);audit('admin','create','location',id,{name:b.name,country});return json(res,201,{id});
+        const nodeId=String(b.panelNodeId||'').trim()||null;if(nodeId&&!db.prepare('SELECT id FROM panel_nodes WHERE id=?').get(nodeId))return json(res,400,{error:'INVALID_PANEL_NODE'});
+        const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO service_locations(id,name,country_code,city,provider,panel_type,panel_node_id,panel_inbound_id,panel_cdn_inbound_id,capacity,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id,b.name.trim(),country,b.city?.trim()||'',b.provider?.trim()||'',b.panelType||'3x-ui',nodeId,b.panelInboundId||null,b.panelCdnInboundId||null,Math.max(Number(b.capacity)||0,0),b.active===false?0:1,now,now);audit('admin','create','location',id,{name:b.name,country,nodeId});return json(res,201,{id});
       }
       const locationEndpoints=path.match(/^\/api\/admin\/locations\/([^/]+)\/endpoints$/);
       if(req.method==='GET'&&locationEndpoints){const location=db.prepare('SELECT id FROM service_locations WHERE id=?').get(locationEndpoints[1]);if(!location)return json(res,404,{error:'LOCATION_NOT_FOUND'});const rows=db.prepare('SELECT * FROM location_endpoints WHERE location_id=? ORDER BY priority,created_at').all(location.id);return json(res,200,rows.map(endpoint=>({...endpoint,active:Boolean(endpoint.active),transportMode:endpoint.mode})));}
@@ -582,7 +610,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='PATCH'&&endpointMatch){const old=db.prepare('SELECT * FROM location_endpoints WHERE id=?').get(endpointMatch[1]);if(!old)return json(res,404,{error:'ENDPOINT_NOT_FOUND'});const endpoint=endpointFromBody(await readJson(req),old);if(!validEndpoint(endpoint))return json(res,400,{error:'INVALID_ENDPOINT'});try{db.prepare("UPDATE location_endpoints SET label=?,host=?,port=?,mode=?,server_name=?,source_url=?,priority=?,active=?,health_status='unknown',last_latency_ms=NULL,last_checked_at=NULL,updated_at=? WHERE id=?").run(endpoint.label,endpoint.host,endpoint.port,endpoint.mode,endpoint.serverName||null,endpoint.sourceUrl||null,endpoint.priority,endpoint.active?1:0,new Date().toISOString(),old.id);}catch{return json(res,409,{error:'ENDPOINT_ALREADY_EXISTS'});}audit('admin','update','location_endpoint',old.id,{host:endpoint.host,port:endpoint.port,mode:endpoint.mode});return json(res,200,{id:old.id,...endpoint,transportMode:endpoint.mode});}
       if(req.method==='DELETE'&&endpointMatch){const endpoint=db.prepare('SELECT * FROM location_endpoints WHERE id=?').get(endpointMatch[1]);if(!endpoint)return json(res,404,{error:'ENDPOINT_NOT_FOUND'});db.prepare('DELETE FROM location_endpoints WHERE id=?').run(endpoint.id);audit('admin','delete','location_endpoint',endpoint.id,{host:endpoint.host});return json(res,200,{deleted:true});}
       const locationMatch=path.match(/^\/api\/admin\/locations\/([^/]+)$/);
-      if(req.method==='PATCH'&&locationMatch){const old=db.prepare('SELECT * FROM service_locations WHERE id=?').get(locationMatch[1]);if(!old)return json(res,404,{error:'LOCATION_NOT_FOUND'});const b=await readJson(req),name=String(b.name??old.name).trim(),country=String(b.countryCode??old.country_code).trim().toUpperCase(),directInbound=b.panelInboundId===undefined?old.panel_inbound_id:(Number(b.panelInboundId)||null),cdnInbound=b.panelCdnInboundId===undefined?old.panel_cdn_inbound_id:(Number(b.panelCdnInboundId)||null);if(!name||!/^[A-Z]{2}$/.test(country))return json(res,400,{error:'INVALID_LOCATION'});db.prepare(`UPDATE service_locations SET name=?,country_code=?,city=?,provider=?,panel_type=?,panel_inbound_id=?,panel_cdn_inbound_id=?,capacity=?,active=?,updated_at=? WHERE id=?`).run(name,country,b.city??old.city,b.provider??old.provider,b.panelType??old.panel_type,directInbound,cdnInbound,Math.max(Number(b.capacity??old.capacity),0),(b.active??Boolean(old.active))?1:0,new Date().toISOString(),locationMatch[1]);return json(res,200,{id:locationMatch[1]});}
+      if(req.method==='PATCH'&&locationMatch){const old=db.prepare('SELECT * FROM service_locations WHERE id=?').get(locationMatch[1]);if(!old)return json(res,404,{error:'LOCATION_NOT_FOUND'});const b=await readJson(req),name=String(b.name??old.name).trim(),country=String(b.countryCode??old.country_code).trim().toUpperCase(),directInbound=b.panelInboundId===undefined?old.panel_inbound_id:(Number(b.panelInboundId)||null),cdnInbound=b.panelCdnInboundId===undefined?old.panel_cdn_inbound_id:(Number(b.panelCdnInboundId)||null),nodeId=b.panelNodeId===undefined?old.panel_node_id:(String(b.panelNodeId||'').trim()||null);if(!name||!/^[A-Z]{2}$/.test(country)||(nodeId&&!db.prepare('SELECT id FROM panel_nodes WHERE id=?').get(nodeId)))return json(res,400,{error:'INVALID_LOCATION'});db.prepare(`UPDATE service_locations SET name=?,country_code=?,city=?,provider=?,panel_type=?,panel_node_id=?,panel_inbound_id=?,panel_cdn_inbound_id=?,capacity=?,active=?,updated_at=? WHERE id=?`).run(name,country,b.city??old.city,b.provider??old.provider,b.panelType??old.panel_type,nodeId,directInbound,cdnInbound,Math.max(Number(b.capacity??old.capacity),0),(b.active??Boolean(old.active))?1:0,new Date().toISOString(),locationMatch[1]);return json(res,200,{id:locationMatch[1]});}
       if(req.method==='DELETE'&&locationMatch){const count=db.prepare('SELECT COUNT(*) count FROM plan_locations WHERE location_id=?').get(locationMatch[1]).count;if(count)return json(res,409,{error:'LOCATION_IN_USE'});db.prepare('DELETE FROM service_locations WHERE id=?').run(locationMatch[1]);return json(res,200,{deleted:true});}
       const locationPlans=path.match(/^\/api\/admin\/locations\/([^/]+)\/plans$/);
       if(req.method==='GET'&&locationPlans){const rows=db.prepare(`SELECT p.id,p.name,CASE WHEN pl.plan_id IS NULL THEN 0 ELSE 1 END attached FROM plans p LEFT JOIN plan_locations pl ON pl.plan_id=p.id AND pl.location_id=? ORDER BY p.sort_order`).all(locationPlans[1]);return json(res,200,rows.map(p=>({...p,attached:Boolean(p.attached)})));}

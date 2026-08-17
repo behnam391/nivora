@@ -10,13 +10,20 @@ if [[ ! -f "$SOURCE_DIR/package.json" ]]; then
   git clone --depth 1 "$REPO_URL" "$TEMP_DIR/nivora"
   bash "$TEMP_DIR/nivora/install.sh"; exit $?
 fi
-read -rp "Domain (example: app.example.com): " NIVORA_DOMAIN
-[[ "$NIVORA_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "Invalid domain"; exit 1; }
-read -rp "3X-UI panel base URL: " PANEL_BASE
-read -rsp "3X-UI API token: " PANEL_TOKEN; echo
-read -rp "Inbound ID [1]: " INBOUND_ID; INBOUND_ID=${INBOUND_ID:-1}
-read -rp "Subscription base URL (example: https://sub.example.com/sub/): " SUB_BASE
-[[ -n "$PANEL_BASE" && -n "$PANEL_TOKEN" && -n "$SUB_BASE" ]] || { echo "Panel URL, API token and subscription URL are required"; exit 1; }
+RECOVERY_FILE=${NIVORA_RECOVERY_FILE:-}
+RECOVERY_URL=${NIVORA_RECOVERY_URL:-}
+TEMP_DIR=$(mktemp -d); trap 'rm -rf "$TEMP_DIR"' EXIT
+if [[ -n "$RECOVERY_URL" ]]; then curl -fL --retry 3 --proto '=https' --tlsv1.2 "$RECOVERY_URL" -o "$TEMP_DIR/recovery.tar.gz"; RECOVERY_FILE="$TEMP_DIR/recovery.tar.gz"; fi
+if [[ -n "$RECOVERY_FILE" && ! -f "$RECOVERY_FILE" ]]; then echo "Recovery bundle not found: $RECOVERY_FILE"; exit 1; fi
+if [[ -z "$RECOVERY_FILE" ]]; then
+  read -rp "Domain (example: app.example.com): " NIVORA_DOMAIN
+  [[ "$NIVORA_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "Invalid domain"; exit 1; }
+  read -rp "3X-UI panel base URL: " PANEL_BASE
+  read -rsp "3X-UI API token: " PANEL_TOKEN; echo
+  read -rp "Inbound ID [1]: " INBOUND_ID; INBOUND_ID=${INBOUND_ID:-1}
+  read -rp "Subscription base URL (example: https://sub.example.com/sub/): " SUB_BASE
+  [[ -n "$PANEL_BASE" && -n "$PANEL_TOKEN" && -n "$SUB_BASE" ]] || { echo "Panel URL, API token and subscription URL are required"; exit 1; }
+fi
 ADMIN_TOKEN=$(openssl rand -hex 32)
 apt-get update
 apt-get install -y ca-certificates curl git openssl caddy
@@ -24,25 +31,27 @@ if ! command -v node >/dev/null || [[ $(node -p 'Number(process.versions.node.sp
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
 fi
-read -rp "Admin username [admin]: " ADMIN_USERNAME; ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-[[ "$ADMIN_USERNAME" =~ ^[A-Za-z0-9_.-]{3,40}$ ]] || { echo "Invalid admin username"; exit 1; }
-while true; do
-  read -rsp "Admin password (min 8 chars): " ADMIN_PASSWORD; echo
-  read -rsp "Repeat admin password: " ADMIN_PASSWORD_REPEAT; echo
-  [[ ${#ADMIN_PASSWORD} -ge 8 ]] || { echo "Password is too short"; continue; }
-  [[ "$ADMIN_PASSWORD" == "$ADMIN_PASSWORD_REPEAT" ]] || { echo "Passwords do not match"; continue; }
-  break
-done
-ADMIN_PASSWORD_RESULT=$(printf '%s' "$ADMIN_PASSWORD" | node "$SOURCE_DIR/scripts/hash-admin-password.mjs")
-unset ADMIN_PASSWORD ADMIN_PASSWORD_REPEAT
-ADMIN_PASSWORD_SALT=${ADMIN_PASSWORD_RESULT%%:*}
-ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_RESULT#*:}
+if [[ -z "$RECOVERY_FILE" ]]; then
+  read -rp "Admin username [admin]: " ADMIN_USERNAME; ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+  [[ "$ADMIN_USERNAME" =~ ^[A-Za-z0-9_.-]{3,40}$ ]] || { echo "Invalid admin username"; exit 1; }
+  while true; do
+    read -rsp "Admin password (min 8 chars): " ADMIN_PASSWORD; echo
+    read -rsp "Repeat admin password: " ADMIN_PASSWORD_REPEAT; echo
+    [[ ${#ADMIN_PASSWORD} -ge 8 ]] || { echo "Password is too short"; continue; }
+    [[ "$ADMIN_PASSWORD" == "$ADMIN_PASSWORD_REPEAT" ]] || { echo "Passwords do not match"; continue; }
+    break
+  done
+  ADMIN_PASSWORD_RESULT=$(printf '%s' "$ADMIN_PASSWORD" | node "$SOURCE_DIR/scripts/hash-admin-password.mjs")
+  unset ADMIN_PASSWORD ADMIN_PASSWORD_REPEAT
+  ADMIN_PASSWORD_SALT=${ADMIN_PASSWORD_RESULT%%:*}
+  ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_RESULT#*:}
+fi
 id nivora >/dev/null 2>&1 || useradd --system --home /opt/nivora --shell /usr/sbin/nologin nivora
 INSTALL_DIR=/opt/nivora
 mkdir -p "$INSTALL_DIR"
 cp -a "$SOURCE_DIR"/. "$INSTALL_DIR"/
 mkdir -p "$INSTALL_DIR"/{data,receipts,backups}
-cat > "$INSTALL_DIR/.env" <<EOF
+if [[ -z "$RECOVERY_FILE" ]]; then cat > "$INSTALL_DIR/.env" <<EOF
 NODE_ENV=production
 PORT=8787
 ADMIN_TOKEN=$ADMIN_TOKEN
@@ -60,6 +69,11 @@ PANEL_SUBSCRIPTION_BASE_URL=$SUB_BASE
 PUBLIC_BASE_URL=https://$NIVORA_DOMAIN
 PANEL_TLS_REJECT_UNAUTHORIZED=true
 EOF
+else
+  bash "$INSTALL_DIR/scripts/import-recovery-bundle.sh" "$RECOVERY_FILE"
+  NIVORA_DOMAIN=$(sed -n 's#^PUBLIC_BASE_URL=https://\([^/]*\).*$#\1#p' "$INSTALL_DIR/.env" | head -n1)
+  [[ "$NIVORA_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || { echo 'PUBLIC_BASE_URL is missing from recovery bundle.'; exit 1; }
+fi
 chown -R nivora:nivora "$INSTALL_DIR"
 chmod 600 "$INSTALL_DIR/.env"
 install -m 0644 "$INSTALL_DIR/deploy/nivora.service" /etc/systemd/system/nivora.service
@@ -72,6 +86,7 @@ systemctl daemon-reload
 systemctl enable --now nivora.service nivora-backup.timer nivora-panel-stats.timer caddy
 ln -sf "$INSTALL_DIR/nivora.sh" /usr/local/bin/nivora
 chmod +x "$INSTALL_DIR/nivora.sh" /usr/local/bin/nivora
+chmod +x "$INSTALL_DIR/scripts/export-recovery-bundle.sh" "$INSTALL_DIR/scripts/import-recovery-bundle.sh"
 echo "Installed: https://$NIVORA_DOMAIN"
 echo "Admin login: $ADMIN_USERNAME (password was set during installation)"
 echo "Management command: nivora"

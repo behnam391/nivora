@@ -13,7 +13,7 @@ import ir.nivora.app.data.TicketConversation
 
 enum class AppDestination { HOME, PLANS, WALLET, SUPPORT }
 enum class LoginRole { CUSTOMER, RESELLER }
-enum class ResellerDestination { OVERVIEW, CUSTOMERS, PLANS, WALLET }
+enum class ResellerDestination { OVERVIEW, CUSTOMERS, PLANS, WALLET, SUPPORT }
 
 data class UiNotice(val id: Long, val text: String, val error: Boolean = false)
 
@@ -34,6 +34,7 @@ data class NivoraUiState(
     val loadError: String? = null,
     val vpnState: String = "disconnected",
     val vpnError: String? = null,
+    val smartRoute: String? = null,
     val selectedSubscriptionId: String? = null,
     val pingMs: Long? = null,
     val pingBusy: Boolean = false,
@@ -71,6 +72,7 @@ interface NivoraActions {
     fun replyTicket(body: String)
     fun closeTicketConversation()
     fun markNotificationsRead()
+    fun openNetworkLab()
     fun createResellerCustomer(name: String, phone: String, password:String, note: String)
     fun resetResellerCustomerPassword(customer:ResellerCustomer,password:String)
     fun resellerPurchase(plan: Plan, customer: ResellerCustomer, salePriceToman: Int)

@@ -13,4 +13,6 @@ android/app/libs/*.aar
 *.jks
 *.keystore
 android/signing.properties
+android/neuralmesh.properties
+/release/*.apk
 .tmp/

@@ -1,5 +1,8 @@
 buildscript {
-    repositories { google(); mavenCentral(); gradlePluginPortal() }
+    repositories {
+        maven { url 'https://redirector.gvt1.com/edgedl/android/maven2' }
+        google(); mavenCentral(); gradlePluginPortal()
+    }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.13.0'
         classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21'

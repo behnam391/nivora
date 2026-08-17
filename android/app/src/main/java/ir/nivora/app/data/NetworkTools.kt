@@ -11,7 +11,13 @@ import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
-data class ServiceEndpoint(val host: String, val port: Int, val serverName: String? = null, val tls: Boolean = false)
+data class ServiceEndpoint(
+    val host: String,
+    val port: Int,
+    val serverName: String? = null,
+    val tls: Boolean = false,
+    val transport: String = "tcp"
+)
 data class EndpointMeasurement(val endpoint: ServiceEndpoint, val latencyMs: Long)
 
 object NetworkTools {
@@ -37,7 +43,10 @@ object NetworkTools {
     }
 
     fun fastest(endpoints: List<ServiceEndpoint>, timeoutMs: Int = 3_000): EndpointMeasurement? {
-        val unique = endpoints.distinct().take(12)
+        // A raw TCP connect is meaningful for TCP/HTTP based Xray transports.
+        // UDP transports are kept in the subscription but ranked by Xray's
+        // observatory after the tunnel starts instead of being marked dead here.
+        val unique = endpoints.distinct().filter { it.transport !in setOf("hysteria2", "hy2", "tuic", "quic") }.take(12)
         if (unique.isEmpty()) return null
         val executor = Executors.newFixedThreadPool(unique.size.coerceAtMost(4))
         return try {
@@ -77,7 +86,7 @@ object NetworkTools {
                 val json = JSONObject(String(Base64.getMimeDecoder().decode(link.substringAfter("://")), Charsets.UTF_8))
                 val tls = json.optString("tls").equals("tls", ignoreCase = true)
                 val serverName = json.optString("sni").ifBlank { json.optString("host") }.ifBlank { null }
-                ServiceEndpoint(json.getString("add"), json.get("port").toString().toInt(), serverName, tls)
+                ServiceEndpoint(json.getString("add"), json.get("port").toString().toInt(), serverName, tls, json.optString("net", "tcp"))
             }
             else -> {
                 val uri = URI(link)
@@ -87,7 +96,11 @@ object NetworkTools {
                 }
                 val tls = params["security"]?.equals("tls", ignoreCase = true) == true
                 val serverName = params["sni"].orEmpty().ifBlank { params["host"].orEmpty() }.ifBlank { null }
-                uri.host?.takeIf(String::isNotBlank)?.let { ServiceEndpoint(it, port, serverName, tls) }
+                val transport = when (uri.scheme?.lowercase()) {
+                    "hysteria2", "hy2", "tuic" -> uri.scheme.lowercase()
+                    else -> params["type"].orEmpty().ifBlank { "tcp" }
+                }
+                uri.host?.takeIf(String::isNotBlank)?.let { ServiceEndpoint(it, port, serverName, tls, transport) }
             }
         }
     }.getOrNull()
