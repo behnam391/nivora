@@ -73,6 +73,18 @@ else
   bash "$INSTALL_DIR/scripts/import-recovery-bundle.sh" "$RECOVERY_FILE"
   NIVORA_DOMAIN=$(sed -n 's#^PUBLIC_BASE_URL=https://\([^/]*\).*$#\1#p' "$INSTALL_DIR/.env" | head -n1)
   [[ "$NIVORA_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] || { echo 'PUBLIC_BASE_URL is missing from recovery bundle.'; exit 1; }
+  if [[ -f "$INSTALL_DIR/recovery/x-ui/x-ui.db" ]]; then
+    if ! command -v x-ui >/dev/null; then
+      echo 'Installing 3x-ui required by the recovery bundle...'
+      XUI_NONINTERACTIVE=1 XUI_ENABLE_FAIL2BAN=false bash <(curl -fsSL https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh)
+    fi
+    systemctl stop x-ui || true
+    install -d -m 755 /etc/x-ui
+    install -m 600 "$INSTALL_DIR/recovery/x-ui/x-ui.db" /etc/x-ui/x-ui.db
+    [[ ! -f "$INSTALL_DIR/recovery/x-ui/default.env" ]] || install -m 600 "$INSTALL_DIR/recovery/x-ui/default.env" /etc/default/x-ui
+    [[ ! -f "$INSTALL_DIR/recovery/x-ui/install-result.env" ]] || install -m 600 "$INSTALL_DIR/recovery/x-ui/install-result.env" /etc/x-ui/install-result.env
+    systemctl start x-ui
+  fi
 fi
 chown -R nivora:nivora "$INSTALL_DIR"
 chmod 600 "$INSTALL_DIR/.env"
