@@ -6,6 +6,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -16,6 +17,9 @@ using Microsoft.Win32;
 namespace NivoraWindows {
     static class Program {
         [STAThread] static void Main() {
+            // .NET Framework defaults can still negotiate legacy TLS on some Windows installations.
+            // The Nivora API requires modern TLS.
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new MainForm());
@@ -74,7 +78,11 @@ namespace NivoraWindows {
                 response.EnsureSuccessStatusCode(); var data = ObjectOf(await response.Content.ReadAsStringAsync());
                 token = Value(data, "token"); if (String.IsNullOrWhiteSpace(token)) throw new Exception(); SaveToken(token); password.Clear();
                 await LoadSubscriptions(); ShowSubscriptions(); SetStatus("ورود انجام شد؛ یک اشتراک را انتخاب کنید.");
-            } catch { SetStatus("ورود ناموفق بود. شماره و رمز را بررسی کنید.", true); } finally { login.Enabled = true; }
+            } catch (Exception ex) {
+                var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Nivora Windows");
+                Directory.CreateDirectory(folder); File.WriteAllText(Path.Combine(folder, "last-login-error.txt"), ex.ToString(), Encoding.UTF8);
+                SetStatus("ورود ناموفق بود. شماره و رمز را بررسی کنید.", true);
+            } finally { login.Enabled = true; }
         }
 
         async System.Threading.Tasks.Task LoadSubscriptions() {
