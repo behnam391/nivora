@@ -15,6 +15,27 @@ class ApiClient(private val baseUrl: String) {
         .trim()
         .takeUnless { it.isEmpty() || it.equals("null", true) || it.equals("undefined", true) }
 
+    // Older orders predate location assignment. Infer only their display country
+    // from the plan/location title; new orders always use the server country code.
+    private fun inferredCountry(label: String?): String? {
+        val text = label?.lowercase().orEmpty()
+        return when {
+            "فنلاند" in text || "finland" in text || "helsinki" in text || "هلسینکی" in text -> "FI"
+            "آلمان" in text || "germany" in text || "nuremberg" in text || "نورمبرگ" in text -> "DE"
+            "هلند" in text || "netherlands" in text -> "NL"
+            "فرانسه" in text || "france" in text -> "FR"
+            "ترکیه" in text || "turkey" in text -> "TR"
+            "امارات" in text || "uae" in text -> "AE"
+            "آمریکا" in text || "america" in text || "united states" in text -> "US"
+            "انگلیس" in text || "بریتانیا" in text || "uk" in text -> "GB"
+            "کانادا" in text || "canada" in text -> "CA"
+            "سنگاپور" in text || "singapore" in text -> "SG"
+            "ژاپن" in text || "japan" in text -> "JP"
+            "ایران" in text || "iran" in text -> "IR"
+            else -> null
+        }
+    }
+
     private fun rawRequest(
         path: String,
         method: String = "GET",
@@ -215,7 +236,7 @@ class ApiClient(private val baseUrl: String) {
                 expiryTime = order.optLong("expiryTime").takeIf { order.has("expiryTime") && !order.isNull("expiryTime") },
                 startsOnFirstUse = order.optBoolean("startsOnFirstUse"),
                 locationName = order.cleanText("location_name"),
-                countryCode = order.cleanText("country_code"),
+                countryCode = order.cleanText("country_code") ?: inferredCountry(order.cleanText("location_name") ?: order.optString("plan_name")),
                 flagEmoji = order.cleanText("flag_emoji"),
                 city = order.cleanText("city"),
                 routeCount = order.optInt("route_count"),

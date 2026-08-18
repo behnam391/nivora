@@ -47,38 +47,11 @@ fun shortDate(value: String): String = runCatching {
         .format(Instant.parse(value).atZone(ZoneId.systemDefault()))
 }.getOrDefault(value.take(10))
 
-@Composable
-fun CountryFlag(code: String?, modifier: Modifier = Modifier) {
-    val normalized = code?.trim()?.uppercase(Locale.US).orEmpty()
-    val colors = when (normalized) {
-        "DE" -> listOf(Color(0xFF161616), Color(0xFFDD1E32), Color(0xFFFFCE00))
-        "NL" -> listOf(Color(0xFFAE1C28), Color.White, Color(0xFF21468B))
-        "FR" -> listOf(Color(0xFF1B4F9C), Color.White, Color(0xFFEF4135))
-        "IR" -> listOf(Color(0xFF239F40), Color.White, Color(0xFFDA0000))
-        "FI" -> listOf(Color.White, Color(0xFF003580), Color.White)
-        "TR" -> listOf(Color(0xFFE30A17))
-        "AE" -> listOf(Color(0xFF00732F), Color.White, Color.Black)
-        "US" -> listOf(Color(0xFFB22234), Color.White, Color(0xFFB22234), Color.White, Color(0xFFB22234))
-        "GB" -> listOf(Color(0xFF012169))
-        "CA" -> listOf(Color(0xFFD80621), Color.White, Color(0xFFD80621))
-        "SG" -> listOf(Color(0xFFEF3340), Color.White)
-        "JP" -> listOf(Color.White)
-        else -> emptyList()
-    }
-    Canvas(modifier.clip(RoundedCornerShape(8.dp))) {
-        if (colors.isEmpty()) {
-            drawRect(Color(0xFF1C3A54))
-            drawCircle(Color(0xFF55E6B7), size.minDimension * .2f, center)
-        } else {
-            val vertical = normalized == "FR" || normalized == "CA"
-            colors.forEachIndexed { index, color ->
-                if (vertical) drawRect(color, topLeft = androidx.compose.ui.geometry.Offset(size.width * index / colors.size, 0f), size = androidx.compose.ui.geometry.Size(size.width / colors.size, size.height))
-                else drawRect(color, topLeft = androidx.compose.ui.geometry.Offset(0f, size.height * index / colors.size), size = androidx.compose.ui.geometry.Size(size.width, size.height / colors.size))
-            }
-            if (normalized == "JP") drawCircle(Color(0xFFBC002D), size.minDimension * .24f, center)
-            if (normalized == "TR") drawCircle(Color.White, size.minDimension * .19f, center)
-        }
-    }
+fun countryFlag(code: String?): String = when (code?.trim()?.uppercase(Locale.US)) {
+    "IR" -> "🇮🇷"; "FI" -> "🇫🇮"; "DE" -> "🇩🇪"; "NL" -> "🇳🇱"
+    "FR" -> "🇫🇷"; "TR" -> "🇹🇷"; "AE" -> "🇦🇪"; "US" -> "🇺🇸"
+    "GB" -> "🇬🇧"; "CA" -> "🇨🇦"; "SG" -> "🇸🇬"; "JP" -> "🇯🇵"
+    else -> "🌐"
 }
 
 @Composable
@@ -220,7 +193,7 @@ fun ConnectionHero(
                 }
                 Spacer(Modifier.height(22.dp))
                 Text(
-                    subscription?.let { it.locationName ?: it.planName } ?: "اشتراک فعالی انتخاب نشده",
+                    subscription?.let { "${countryFlag(it.countryCode)}  ${it.locationName ?: it.planName}" } ?: "اشتراک فعالی انتخاب نشده",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
@@ -299,7 +272,7 @@ fun SubscriptionCard(
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
-                    CountryFlag(subscription.countryCode, Modifier.fillMaxSize())
+                    Text(countryFlag(subscription.countryCode), fontSize = 24.sp)
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
