@@ -28,6 +28,8 @@ namespace NivoraWindows {
 
     sealed class MainForm : Form {
         const string ApiBase = "https://b.nivorali.com";
+        const int SocksProxyPort = 13808;
+        const int HttpProxyPort = 13809;
         readonly HttpClient http = new HttpClient { Timeout = TimeSpan.FromSeconds(25) };
         readonly JavaScriptSerializer json = new JavaScriptSerializer();
         readonly TextBox phone = new TextBox(), password = new TextBox();
@@ -111,7 +113,8 @@ namespace NivoraWindows {
                 var raw = await http.GetStringAsync(items[subscriptions.SelectedIndex].Url); var link = FindVless(raw);
                 if (String.IsNullOrWhiteSpace(link)) throw new Exception("NO_VLESS_ROUTE");
                 var config = BuildXrayConfig(link); var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Nivora Windows"); Directory.CreateDirectory(root);
-                File.WriteAllText(Path.Combine(root, "xray.json"), config, Encoding.UTF8);
+                // Xray rejects a UTF-8 BOM at the beginning of JSON configuration files.
+                File.WriteAllText(Path.Combine(root, "xray.json"), config, new UTF8Encoding(false));
                 var exe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core", "xray.exe"); if (!File.Exists(exe)) throw new Exception("XRAY_NOT_FOUND");
                 StopConnection(false); xray = Process.Start(new ProcessStartInfo(exe, "run -c \"" + Path.Combine(root, "xray.json") + "\"") { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(exe) });
                 await System.Threading.Tasks.Task.Delay(1300); if (xray == null || xray.HasExited) throw new Exception("XRAY_START_FAILED");
@@ -137,7 +140,7 @@ namespace NivoraWindows {
             var user = new Dictionary<string, object> { { "id", id }, { "encryption", Get(query, "encryption", "none") } }; if (query.ContainsKey("flow")) user["flow"] = query["flow"];
             var root = new Dictionary<string, object> {
                 { "log", new Dictionary<string, object> { { "loglevel", "warning" } } },
-                { "inbounds", new object[] { new Dictionary<string, object> { { "tag", "socks" }, { "listen", "127.0.0.1" }, { "port", 10808 }, { "protocol", "socks" }, { "settings", new Dictionary<string, object> { { "udp", true } } } }, new Dictionary<string, object> { { "tag", "http" }, { "listen", "127.0.0.1" }, { "port", 10809 }, { "protocol", "http" } } } },
+                { "inbounds", new object[] { new Dictionary<string, object> { { "tag", "socks" }, { "listen", "127.0.0.1" }, { "port", SocksProxyPort }, { "protocol", "socks" }, { "settings", new Dictionary<string, object> { { "udp", true } } } }, new Dictionary<string, object> { { "tag", "http" }, { "listen", "127.0.0.1" }, { "port", HttpProxyPort }, { "protocol", "http" } } } },
                 { "outbounds", new object[] { new Dictionary<string, object> { { "protocol", "vless" }, { "settings", new Dictionary<string, object> { { "vnext", new object[] { new Dictionary<string, object> { { "address", host }, { "port", port }, { "users", new object[] { user } } } } } } }, { "streamSettings", stream } } } }
             };
             return json.Serialize(root);
@@ -154,7 +157,7 @@ namespace NivoraWindows {
         const int INTERNET_OPTION_SETTINGS_CHANGED = 39, INTERNET_OPTION_REFRESH = 37;
         [DllImport("wininet.dll", SetLastError = true)] static extern bool InternetSetOption(IntPtr hInternet, int option, IntPtr buffer, int length);
         static void SystemProxy(bool enabled) {
-            using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings")) { key.SetValue("ProxyEnable", enabled ? 1 : 0, RegistryValueKind.DWord); if (enabled) key.SetValue("ProxyServer", "127.0.0.1:10809"); }
+            using (var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings")) { key.SetValue("ProxyEnable", enabled ? 1 : 0, RegistryValueKind.DWord); if (enabled) key.SetValue("ProxyServer", "127.0.0.1:" + HttpProxyPort); }
             InternetSetOption(IntPtr.Zero, INTERNET_OPTION_SETTINGS_CHANGED, IntPtr.Zero, 0); InternetSetOption(IntPtr.Zero, INTERNET_OPTION_REFRESH, IntPtr.Zero, 0);
         }
         static string TokenPath { get { var p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Nivora Windows"); Directory.CreateDirectory(p); return Path.Combine(p, "session.bin"); } }
