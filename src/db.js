@@ -115,6 +115,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       country_code TEXT NOT NULL,
+      flag_emoji TEXT NOT NULL DEFAULT '',
       city TEXT NOT NULL DEFAULT '',
       provider TEXT NOT NULL DEFAULT '',
       panel_type TEXT NOT NULL DEFAULT '3x-ui',
@@ -261,6 +262,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!subscriptionColumns.includes('deleted_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN deleted_at TEXT');
   if (!subscriptionColumns.includes('control_status')) db.exec("ALTER TABLE subscriptions ADD COLUMN control_status TEXT NOT NULL DEFAULT 'active'");
   const locationColumns = db.prepare('PRAGMA table_info(service_locations)').all().map(c => c.name);
+  if (!locationColumns.includes('flag_emoji')) db.exec("ALTER TABLE service_locations ADD COLUMN flag_emoji TEXT NOT NULL DEFAULT ''");
   if (!locationColumns.includes('panel_cdn_inbound_id')) db.exec('ALTER TABLE service_locations ADD COLUMN panel_cdn_inbound_id INTEGER');
   if (!locationColumns.includes('panel_node_id')) db.exec('ALTER TABLE service_locations ADD COLUMN panel_node_id TEXT REFERENCES panel_nodes(id)');
   const endpointColumns = db.prepare('PRAGMA table_info(location_endpoints)').all().map(c => c.name);

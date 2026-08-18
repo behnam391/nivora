@@ -25,6 +25,7 @@ data class Subscription(
     val startsOnFirstUse: Boolean,
     val locationName: String?,
     val countryCode: String?,
+    val flagEmoji: String?,
     val city: String?,
     val routeCount: Int,
     val trafficGb: Int,

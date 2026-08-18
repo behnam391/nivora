@@ -9,6 +9,12 @@ import android.util.Base64
 class ApiClient(private val baseUrl: String) {
     private data class RawResponse(val status: Int, val body: String)
 
+    // JSONObject represents a JSON null as the literal text "null" on some Android versions.
+    // Do not let that leak into the UI as a location name or country code.
+    private fun JSONObject.cleanText(key: String): String? = optString(key, "")
+        .trim()
+        .takeUnless { it.isEmpty() || it.equals("null", true) || it.equals("undefined", true) }
+
     private fun rawRequest(
         path: String,
         method: String = "GET",
@@ -200,7 +206,7 @@ class ApiClient(private val baseUrl: String) {
                 id = order.getString("id"),
                 planName = order.getString("plan_name"),
                 status = order.optString("subscription_status", order.getString("status")),
-                url = order.optString("subscription_url").takeIf(String::isNotBlank),
+                url = order.cleanText("subscription_url"),
                 usedBytes = order.optLong("usedBytes"),
                 totalBytes = order.optLong("totalBytes"),
                 remainingBytes = order.optLong("remainingBytes"),
@@ -208,9 +214,10 @@ class ApiClient(private val baseUrl: String) {
                 remainingDays = order.optInt("remainingDays"),
                 expiryTime = order.optLong("expiryTime").takeIf { order.has("expiryTime") && !order.isNull("expiryTime") },
                 startsOnFirstUse = order.optBoolean("startsOnFirstUse"),
-                locationName = order.optString("location_name").takeIf(String::isNotBlank),
-                countryCode = order.optString("country_code").takeIf(String::isNotBlank),
-                city = order.optString("city").takeIf(String::isNotBlank),
+                locationName = order.cleanText("location_name"),
+                countryCode = order.cleanText("country_code"),
+                flagEmoji = order.cleanText("flag_emoji"),
+                city = order.cleanText("city"),
                 routeCount = order.optInt("route_count"),
                 trafficGb = order.optInt("traffic_gb"),
                 durationDays = order.optInt("duration_days"),

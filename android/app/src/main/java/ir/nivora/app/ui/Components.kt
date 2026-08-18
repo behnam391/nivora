@@ -47,7 +47,9 @@ fun shortDate(value: String): String = runCatching {
         .format(Instant.parse(value).atZone(ZoneId.systemDefault()))
 }.getOrDefault(value.take(10))
 
-fun countryFlag(code: String?): String {
+fun countryFlag(code: String?, customFlag: String? = null): String {
+    val supplied = customFlag?.trim().orEmpty()
+    if (supplied.isNotEmpty() && !supplied.equals("null", true) && !supplied.equals("undefined", true)) return supplied
     val normalized = code?.trim()?.uppercase(Locale.US).orEmpty()
     if (normalized.length != 2) return "🌐"
     return buildString {
@@ -194,7 +196,7 @@ fun ConnectionHero(
                 }
                 Spacer(Modifier.height(22.dp))
                 Text(
-                    subscription?.let { "${countryFlag(it.countryCode)}  ${it.locationName ?: it.planName}" } ?: "اشتراک فعالی انتخاب نشده",
+                    subscription?.let { "${countryFlag(it.countryCode, it.flagEmoji)}  ${it.locationName ?: it.planName}" } ?: "اشتراک فعالی انتخاب نشده",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
@@ -273,7 +275,7 @@ fun SubscriptionCard(
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
-                    Text(countryFlag(subscription.countryCode), fontSize = 24.sp)
+                    Text(countryFlag(subscription.countryCode, subscription.flagEmoji), fontSize = 24.sp)
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
