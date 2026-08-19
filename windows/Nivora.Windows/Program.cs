@@ -116,47 +116,48 @@ namespace NivoraWindows {
         void ShowSubscriptions() { BuildDashboard(); }
 
         void BuildDashboard() {
-            Controls.Clear(); ClientSize = new Size(930, 650); MinimumSize = new Size(930, 650);
-            dashboard.Dock = DockStyle.Fill; dashboard.BackColor = Color.FromArgb(6, 29, 24); dashboard.Controls.Clear(); Controls.Add(dashboard);
-            var header = new Panel { Dock = DockStyle.Top, Height = 86, BackColor = Color.FromArgb(10, 52, 43) };
-            var brand = new Label { Text = "NIVORA", ForeColor = Color.FromArgb(53, 225, 172), Font = new Font("Segoe UI", 23, FontStyle.Bold), AutoSize = true, Location = new Point(34, 21) }; header.Controls.Add(brand);
-            var subtitle = new Label { Text = "داشبورد مشتری · ویندوز", ForeColor = Color.FromArgb(176, 210, 199), Font = new Font("Segoe UI", 9), AutoSize = true, Location = new Point(38, 55) }; header.Controls.Add(subtitle);
-            var refresh = NavButton("↻  تازه‌سازی"); refresh.Location = new Point(678, 25); refresh.Click += async (s, e) => { try { SetStatus("در حال تازه‌سازی…"); await LoadSubscriptions(); ShowHome(); SetStatus("اطلاعات به‌روز شد."); } catch { SetStatus("به‌روزرسانی ناموفق بود.", true); } }; header.Controls.Add(refresh);
-            var exit = NavButton("خروج"); exit.Location = new Point(812, 25); exit.Width = 82; exit.Click += (s, e) => { StopConnection(false); DeleteToken(); Application.Restart(); }; header.Controls.Add(exit);
-            var side = new Panel { Dock = DockStyle.Left, Width = 184, BackColor = Color.FromArgb(9, 42, 35), Padding = new Padding(16, 24, 16, 16) };
+            Controls.Clear(); ClientSize = new Size(1040, 690); MinimumSize = new Size(1040, 690);
+            dashboard.Dock = DockStyle.Fill; dashboard.BackColor = Color.FromArgb(5, 24, 21); dashboard.RightToLeft = RightToLeft.Yes; dashboard.Controls.Clear(); Controls.Add(dashboard);
+            var header = new Panel { Dock = DockStyle.Top, Height = 82, BackColor = Color.FromArgb(9, 45, 38), RightToLeft = RightToLeft.Yes };
+            var brand = new Label { Text = "NIVORA", ForeColor = Color.FromArgb(53, 225, 172), Font = new Font("Segoe UI", 22, FontStyle.Bold), AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Location = new Point(720, 13), Size = new Size(260, 33) }; header.Controls.Add(brand);
+            var subtitle = new Label { Text = "داشبورد مشتری · ویندوز", ForeColor = Color.FromArgb(176, 210, 199), Font = new Font("Segoe UI", 9), AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Location = new Point(720, 45), Size = new Size(260, 22) }; header.Controls.Add(subtitle);
+            var refresh = NavButton("↻  تازه‌سازی"); refresh.Location = new Point(144, 21); refresh.Click += async (s, e) => { try { SetStatus("در حال تازه‌سازی…"); await LoadSubscriptions(); ShowHome(); SetStatus("اطلاعات به‌روز شد."); } catch { SetStatus("به‌روزرسانی ناموفق بود.", true); } }; header.Controls.Add(refresh);
+            var exit = NavButton("خروج"); exit.Location = new Point(34, 21); exit.Width = 88; exit.Click += (s, e) => { StopConnection(false); DeleteToken(); Application.Restart(); }; header.Controls.Add(exit);
+            var side = new Panel { Dock = DockStyle.Right, Width = 222, BackColor = Color.FromArgb(8, 38, 32), Padding = new Padding(18, 20, 18, 16), RightToLeft = RightToLeft.Yes };
+            var sideTitle = new Label { Text = "منوی کاربری", Dock = DockStyle.Top, Height = 38, ForeColor = Color.FromArgb(143, 191, 178), Font = new Font("Segoe UI", 9, FontStyle.Bold), TextAlign = ContentAlignment.MiddleRight }; side.Controls.Add(sideTitle);
             var home = MenuButton("خانه و اتصال"); home.Click += (s, e) => ShowHome(); side.Controls.Add(home);
             var wallet = MenuButton("کیف پول"); wallet.Top = 70; wallet.Click += (s, e) => ShowWallet(); side.Controls.Add(wallet);
             var support = MenuButton("پشتیبانی"); support.Top = 124; support.Click += (s, e) => ShowSupport(); side.Controls.Add(support);
-            var account = new Label { Text = "حساب مشتری\n" + (items.Count.ToString() + " اشتراک فعال"), ForeColor = Color.FromArgb(177, 211, 201), TextAlign = ContentAlignment.MiddleCenter, Dock = DockStyle.Bottom, Height = 64, Font = new Font("Segoe UI", 9) }; side.Controls.Add(account);
+            var account = new Label { Text = "حساب مشتری\n" + (items.Count.ToString() + " اشتراک فعال"), ForeColor = Color.FromArgb(177, 211, 201), TextAlign = ContentAlignment.MiddleCenter, Dock = DockStyle.Bottom, Height = 68, Font = new Font("Segoe UI", 9) }; side.Controls.Add(account);
             // Dock order is reverse z-order in WinForms: add fill first so it occupies
             // only the space remaining after the side menu and header.
             content.Dock = DockStyle.Fill; content.BackColor = Color.FromArgb(6, 29, 24);
-            dashboard.Controls.Add(content); dashboard.Controls.Add(side); dashboard.Controls.Add(header); ShowHome();
+            content.RightToLeft = RightToLeft.Yes; dashboard.Controls.Add(content); dashboard.Controls.Add(side); dashboard.Controls.Add(header); ShowHome();
         }
 
         Button NavButton(string text) { return new Button { Text = text, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 }, BackColor = Color.FromArgb(20, 71, 60), ForeColor = Color.White, Font = new Font("Segoe UI", 10, FontStyle.Bold), Width = 152, Height = 44, TextAlign = ContentAlignment.MiddleRight }; }
-        Button MenuButton(string text) { return new Button { Text = text, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 }, BackColor = Color.Transparent, ForeColor = Color.FromArgb(220, 237, 231), Font = new Font("Segoe UI", 11), Width = 152, Height = 46, TextAlign = ContentAlignment.MiddleRight, Location = new Point(16, 16) }; }
+        Button MenuButton(string text) { return new Button { Text = text, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 }, BackColor = Color.Transparent, ForeColor = Color.FromArgb(220, 237, 231), Font = new Font("Segoe UI", 11), Width = 186, Height = 46, TextAlign = ContentAlignment.MiddleRight, Location = new Point(18, 56), RightToLeft = RightToLeft.Yes }; }
         Label DashText(string text, int size, Color color) { return new Label { Text = text, ForeColor = color, Font = new Font("Segoe UI", size, FontStyle.Regular), AutoSize = true, RightToLeft = RightToLeft.Yes }; }
         Panel Card(int x, int y, int width, int height) { var card = new Panel { Location = new Point(x, y), Size = new Size(width, height), BackColor = Color.FromArgb(13, 53, 44), Padding = new Padding(20) }; content.Controls.Add(card); return card; }
 
         void ShowHome() {
-            content.Controls.Clear(); var hello = DashText("سلام، اتصال امن شما آماده است", 19, Color.White); hello.Location = new Point(38, 30); content.Controls.Add(hello);
-            var wallet = Card(38, 80, 660, 84); var walletTitle = DashText("کیف پول Nivora", 10, Color.FromArgb(164, 205, 193)); walletTitle.Location = new Point(22, 17); wallet.Controls.Add(walletTitle); var amount = DashText(balanceToman.ToString("N0") + " تومان", 20, Color.FromArgb(55, 225, 172)); amount.Font = new Font("Segoe UI", 20, FontStyle.Bold); amount.Location = new Point(22, 39); wallet.Controls.Add(amount); var seeWallet = NavButton("مشاهده کیف پول"); seeWallet.Location = new Point(480, 22); seeWallet.Click += (s, e) => ShowWallet(); wallet.Controls.Add(seeWallet);
-            var location = Card(38, 188, 660, 175); var headline = DashText("مسیر اتصال", 14, Color.White); headline.Location = new Point(20, 17); location.Controls.Add(headline);
-            subscriptions.Visible = true; subscriptions.RightToLeft = RightToLeft.Yes; subscriptions.SetBounds(22, 56, 610, 32); subscriptions.Font = new Font("Segoe UI", 11); location.Controls.Add(subscriptions);
+            content.Controls.Clear(); var hello = DashText("سلام، اتصال امن شما آماده است", 19, Color.White); hello.Location = new Point(515, 30); content.Controls.Add(hello);
+            var wallet = Card(38, 80, 740, 84); var walletTitle = DashText("کیف پول Nivora", 10, Color.FromArgb(164, 205, 193)); walletTitle.Location = new Point(620, 17); wallet.Controls.Add(walletTitle); var amount = DashText(balanceToman.ToString("N0") + " تومان", 20, Color.FromArgb(55, 225, 172)); amount.Font = new Font("Segoe UI", 20, FontStyle.Bold); amount.Location = new Point(530, 39); wallet.Controls.Add(amount); var seeWallet = NavButton("مشاهده کیف پول"); seeWallet.Location = new Point(22, 22); seeWallet.Click += (s, e) => ShowWallet(); wallet.Controls.Add(seeWallet);
+            var location = Card(38, 188, 740, 175); var headline = DashText("مسیر اتصال", 14, Color.White); headline.Location = new Point(625, 17); location.Controls.Add(headline);
+            subscriptions.Visible = true; subscriptions.RightToLeft = RightToLeft.Yes; subscriptions.SetBounds(22, 56, 696, 32); subscriptions.Font = new Font("Segoe UI", 11); location.Controls.Add(subscriptions);
             var route = DashText(items.Count > 0 ? "مسیر انتخاب‌شده با Reality و Xray اجرا می‌شود." : "اشتراک فعالی پیدا نشد.", 10, Color.FromArgb(174, 207, 197)); route.Location = new Point(22, 101); location.Controls.Add(route);
-            connect.Visible = true; connect.Text = "اتصال امن"; connect.SetBounds(22, 126, 293, 35); location.Controls.Add(connect);
-            disconnect.Visible = true; disconnect.SetBounds(339, 126, 293, 35); location.Controls.Add(disconnect);
-            var listTitle = DashText("اشتراک‌های من", 15, Color.White); listTitle.Location = new Point(38, 392); content.Controls.Add(listTitle);
-            int y = 430; foreach (var item in items.Take(2)) { var sub = Card(38, y, 660, 66); var flag = DashText(FlagFor(item.Country), 24, Color.White); flag.Location = new Point(20, 17); sub.Controls.Add(flag); var name = DashText(item.Label, 12, Color.White); name.Location = new Point(73, 13); sub.Controls.Add(name); var type = DashText("فعال · مسیر هوشمند", 9, Color.FromArgb(159, 208, 192)); type.Location = new Point(73, 38); sub.Controls.Add(type); y += 78; }
+            connect.Visible = true; connect.Text = "اتصال امن"; connect.SetBounds(385, 126, 333, 35); location.Controls.Add(connect);
+            disconnect.Visible = true; disconnect.SetBounds(22, 126, 333, 35); location.Controls.Add(disconnect);
+            var listTitle = DashText("اشتراک‌های من", 15, Color.White); listTitle.Location = new Point(655, 392); content.Controls.Add(listTitle);
+            int y = 430; foreach (var item in items.Take(2)) { var sub = Card(38, y, 740, 66); var flag = DashText(FlagFor(item.Country), 24, Color.White); flag.Location = new Point(686, 17); sub.Controls.Add(flag); var name = DashText(item.Label, 12, Color.White); name.Location = new Point(515, 13); sub.Controls.Add(name); var type = DashText("فعال · مسیر هوشمند", 9, Color.FromArgb(159, 208, 192)); type.Location = new Point(565, 38); sub.Controls.Add(type); y += 78; }
         }
 
         void ShowWallet() {
-            content.Controls.Clear(); var heading = DashText("کیف پول", 20, Color.White); heading.Location = new Point(38, 30); content.Controls.Add(heading);
-            var balance = Card(38, 82, 660, 125); var label = DashText("موجودی قابل استفاده", 11, Color.FromArgb(170, 210, 198)); label.Location = new Point(22, 21); balance.Controls.Add(label); var total = DashText(balanceToman.ToString("N0") + " تومان", 26, Color.FromArgb(55, 225, 172)); total.Font = new Font("Segoe UI", 26, FontStyle.Bold); total.Location = new Point(22, 53); balance.Controls.Add(total);
-            var info = DashText("افزایش موجودی و ارسال رسید از پنل وب یا اپ اندروید قابل انجام است.", 10, Color.FromArgb(185, 207, 199)); info.Location = new Point(38, 236); content.Controls.Add(info);
-            var history = DashText("گردش‌های اخیر", 15, Color.White); history.Location = new Point(38, 280); content.Controls.Add(history);
-            var list = new ListBox { Location = new Point(38, 320), Size = new Size(660, 200), BackColor = Color.FromArgb(13, 53, 44), ForeColor = Color.White, BorderStyle = BorderStyle.None, Font = new Font("Segoe UI", 10), RightToLeft = RightToLeft.Yes, HorizontalScrollbar = true }; foreach (var item in transactions.Take(12)) list.Items.Add(item); if (list.Items.Count == 0) list.Items.Add("هنوز گردشی ثبت نشده است."); content.Controls.Add(list);
+            content.Controls.Clear(); var heading = DashText("کیف پول", 20, Color.White); heading.Location = new Point(690, 30); content.Controls.Add(heading);
+            var balance = Card(38, 82, 740, 125); var label = DashText("موجودی قابل استفاده", 11, Color.FromArgb(170, 210, 198)); label.Location = new Point(570, 21); balance.Controls.Add(label); var total = DashText(balanceToman.ToString("N0") + " تومان", 26, Color.FromArgb(55, 225, 172)); total.Font = new Font("Segoe UI", 26, FontStyle.Bold); total.Location = new Point(475, 53); balance.Controls.Add(total);
+            var info = DashText("افزایش موجودی و ارسال رسید از پنل وب یا اپ اندروید قابل انجام است.", 10, Color.FromArgb(185, 207, 199)); info.Location = new Point(270, 236); content.Controls.Add(info);
+            var history = DashText("گردش‌های اخیر", 15, Color.White); history.Location = new Point(650, 280); content.Controls.Add(history);
+            var list = new ListBox { Location = new Point(38, 320), Size = new Size(740, 200), BackColor = Color.FromArgb(13, 53, 44), ForeColor = Color.White, BorderStyle = BorderStyle.None, Font = new Font("Segoe UI", 10), RightToLeft = RightToLeft.Yes, HorizontalScrollbar = true }; foreach (var item in transactions.Take(12)) list.Items.Add(item); if (list.Items.Count == 0) list.Items.Add("هنوز گردشی ثبت نشده است."); content.Controls.Add(list);
         }
 
         void ShowSupport() {
