@@ -22,7 +22,9 @@ namespace NivoraDesktop {
         readonly JavaScriptSerializer json = new JavaScriptSerializer();
         Process xray;
         public DesktopForm() {
-            Text = "Nivora"; Width = 1160; Height = 760; MinimumSize = new System.Drawing.Size(960, 660); StartPosition = FormStartPosition.CenterScreen;
+            // Keep the desktop client intentionally phone-like: the same compact flow
+            // and responsive layout is used on Windows instead of a stretched dashboard.
+            Text = "Nivora"; Width = 500; Height = 790; MinimumSize = new System.Drawing.Size(430, 650); MaximumSize = new System.Drawing.Size(620, 920); StartPosition = FormStartPosition.CenterScreen;
             Controls.Add(view); this.Load += async (s,e) => await Start(); FormClosing += (s,e) => Stop();
         }
         async System.Threading.Tasks.Task Start() {
