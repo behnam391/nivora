@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -138,18 +139,24 @@ namespace NivoraWindows {
         Button NavButton(string text) { return new Button { Text = text, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 }, BackColor = Color.FromArgb(20, 71, 60), ForeColor = Color.White, Font = new Font("Segoe UI", 10, FontStyle.Bold), Width = 152, Height = 44, TextAlign = ContentAlignment.MiddleRight }; }
         Button MenuButton(string text) { return new Button { Text = text, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 }, BackColor = Color.Transparent, ForeColor = Color.FromArgb(220, 237, 231), Font = new Font("Segoe UI", 11), Width = 186, Height = 46, TextAlign = ContentAlignment.MiddleRight, Location = new Point(18, 56), RightToLeft = RightToLeft.Yes }; }
         Label DashText(string text, int size, Color color) { return new Label { Text = text, ForeColor = color, Font = new Font("Segoe UI", size, FontStyle.Regular), AutoSize = true, RightToLeft = RightToLeft.Yes }; }
-        Panel Card(int x, int y, int width, int height) { var card = new Panel { Location = new Point(x, y), Size = new Size(width, height), BackColor = Color.FromArgb(13, 53, 44), Padding = new Padding(20) }; content.Controls.Add(card); return card; }
+        Panel Card(int x, int y, int width, int height) { var card = new RoundedPanel { Location = new Point(x, y), Size = new Size(width, height), BackColor = Color.FromArgb(15, 57, 47), Padding = new Padding(20), Radius = 22 }; content.Controls.Add(card); return card; }
 
         void ShowHome() {
-            content.Controls.Clear(); var hello = DashText("سلام، اتصال امن شما آماده است", 19, Color.White); hello.Location = new Point(515, 30); content.Controls.Add(hello);
-            var wallet = Card(38, 80, 740, 84); var walletTitle = DashText("کیف پول Nivora", 10, Color.FromArgb(164, 205, 193)); walletTitle.Location = new Point(620, 17); wallet.Controls.Add(walletTitle); var amount = DashText(balanceToman.ToString("N0") + " تومان", 20, Color.FromArgb(55, 225, 172)); amount.Font = new Font("Segoe UI", 20, FontStyle.Bold); amount.Location = new Point(530, 39); wallet.Controls.Add(amount); var seeWallet = NavButton("مشاهده کیف پول"); seeWallet.Location = new Point(22, 22); seeWallet.Click += (s, e) => ShowWallet(); wallet.Controls.Add(seeWallet);
-            var location = Card(38, 188, 740, 175); var headline = DashText("مسیر اتصال", 14, Color.White); headline.Location = new Point(625, 17); location.Controls.Add(headline);
-            subscriptions.Visible = true; subscriptions.RightToLeft = RightToLeft.Yes; subscriptions.SetBounds(22, 56, 696, 32); subscriptions.Font = new Font("Segoe UI", 11); location.Controls.Add(subscriptions);
-            var route = DashText(items.Count > 0 ? "مسیر انتخاب‌شده با Reality و Xray اجرا می‌شود." : "اشتراک فعالی پیدا نشد.", 10, Color.FromArgb(174, 207, 197)); route.Location = new Point(22, 101); location.Controls.Add(route);
-            connect.Visible = true; connect.Text = "اتصال امن"; connect.SetBounds(385, 126, 333, 35); location.Controls.Add(connect);
-            disconnect.Visible = true; disconnect.SetBounds(22, 126, 333, 35); location.Controls.Add(disconnect);
-            var listTitle = DashText("اشتراک‌های من", 15, Color.White); listTitle.Location = new Point(655, 392); content.Controls.Add(listTitle);
-            int y = 430; foreach (var item in items.Take(2)) { var sub = Card(38, y, 740, 66); var flag = DashText(FlagFor(item.Country), 24, Color.White); flag.Location = new Point(686, 17); sub.Controls.Add(flag); var name = DashText(item.Label, 12, Color.White); name.Location = new Point(515, 13); sub.Controls.Add(name); var type = DashText("فعال · مسیر هوشمند", 9, Color.FromArgb(159, 208, 192)); type.Location = new Point(565, 38); sub.Controls.Add(type); y += 78; }
+            content.Controls.Clear();
+            var hello = DashText("سلام، اتصال امن شما آماده است", 18, Color.White); hello.Location = new Point(505, 25); content.Controls.Add(hello);
+            var subline = DashText("Nivora به‌صورت هوشمند بهترین مسیر را اجرا می‌کند", 10, Color.FromArgb(159, 208, 192)); subline.Location = new Point(430, 57); content.Controls.Add(subline);
+            var hero = Card(38, 95, 740, 218); hero.BackColor = Color.FromArgb(10, 72, 57);
+            var orb = new RoundedPanel { Location = new Point(594, 30), Size = new Size(116, 116), BackColor = Color.FromArgb(31, 194, 145), Radius = 58 };
+            var power = new Label { Text = "●", ForeColor = Color.FromArgb(5, 42, 33), Font = new Font("Segoe UI", 48, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter, Dock = DockStyle.Fill }; orb.Controls.Add(power); hero.Controls.Add(orb);
+            var online = DashText("آمادهٔ اتصال", 18, Color.White); online.Font = new Font("Segoe UI", 18, FontStyle.Bold); online.Location = new Point(395, 42); hero.Controls.Add(online);
+            var route = DashText(items.Count > 0 ? "مسیر هوشمند · Reality / Xray" : "اشتراک فعالی پیدا نشد.", 10, Color.FromArgb(193, 231, 219)); route.Location = new Point(398, 77); hero.Controls.Add(route);
+            subscriptions.Visible = true; subscriptions.RightToLeft = RightToLeft.Yes; subscriptions.SetBounds(26, 132, 684, 34); subscriptions.Font = new Font("Segoe UI", 10.5F); hero.Controls.Add(subscriptions);
+            connect.Visible = true; connect.Text = "اتصال امن"; connect.SetBounds(385, 176, 325, 30); hero.Controls.Add(connect);
+            disconnect.Visible = true; disconnect.SetBounds(26, 176, 325, 30); hero.Controls.Add(disconnect);
+            var wallet = Card(38, 334, 355, 112); var walletTitle = DashText("کیف پول", 10, Color.FromArgb(164, 205, 193)); walletTitle.Location = new Point(266, 18); wallet.Controls.Add(walletTitle); var amount = DashText(balanceToman.ToString("N0") + " تومان", 18, Color.FromArgb(55, 225, 172)); amount.Font = new Font("Segoe UI", 18, FontStyle.Bold); amount.Location = new Point(185, 48); wallet.Controls.Add(amount); var seeWallet = NavButton("مشاهده"); seeWallet.Location = new Point(20, 57); seeWallet.Width = 114; seeWallet.Height = 32; seeWallet.Click += (s, e) => ShowWallet(); wallet.Controls.Add(seeWallet);
+            var service = Card(423, 334, 355, 112); var serviceTitle = DashText("وضعیت سرویس", 10, Color.FromArgb(164, 205, 193)); serviceTitle.Location = new Point(240, 18); service.Controls.Add(serviceTitle); var serviceValue = DashText(items.Count + " اشتراک فعال", 18, Color.White); serviceValue.Font = new Font("Segoe UI", 18, FontStyle.Bold); serviceValue.Location = new Point(205, 48); service.Controls.Add(serviceValue); var dot = new RoundedPanel { Location = new Point(30, 32), Size = new Size(48, 48), Radius = 24, BackColor = Color.FromArgb(22, 116, 86) }; dot.Controls.Add(new Label { Text = "✓", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 20, FontStyle.Bold), ForeColor = Color.FromArgb(93, 244, 191) }); service.Controls.Add(dot);
+            var listTitle = DashText("اشتراک‌های من", 15, Color.White); listTitle.Location = new Point(655, 475); content.Controls.Add(listTitle);
+            int y = 510; foreach (var item in items.Take(2)) { var sub = Card(38, y, 740, 66); var flag = DashText(FlagFor(item.Country), 24, Color.White); flag.Location = new Point(680, 17); sub.Controls.Add(flag); var name = DashText(item.Label, 12, Color.White); name.Location = new Point(470, 13); sub.Controls.Add(name); var type = DashText("فعال · آمادهٔ اتصال هوشمند", 9, Color.FromArgb(159, 208, 192)); type.Location = new Point(535, 38); sub.Controls.Add(type); y += 78; }
         }
 
         void ShowWallet() {
@@ -242,6 +249,22 @@ namespace NivoraWindows {
         static void SaveToken(string value) { File.WriteAllBytes(TokenPath, ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser)); }
         static string ReadToken() { try { return Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(TokenPath), null, DataProtectionScope.CurrentUser)); } catch { return null; } }
         static void DeleteToken() { try { File.Delete(TokenPath); } catch { } }
+        sealed class RoundedPanel : Panel {
+            public int Radius { get; set; }
+            public RoundedPanel() { DoubleBuffered = true; }
+            protected override void OnPaint(PaintEventArgs e) {
+                var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
+                int radius = Math.Min(Math.Min(Width, Height) / 2, Radius <= 0 ? 18 : Radius);
+                using (var path = new GraphicsPath()) {
+                    path.AddArc(bounds.X, bounds.Y, radius * 2, radius * 2, 180, 90);
+                    path.AddArc(bounds.Right - radius * 2, bounds.Y, radius * 2, radius * 2, 270, 90);
+                    path.AddArc(bounds.Right - radius * 2, bounds.Bottom - radius * 2, radius * 2, radius * 2, 0, 90);
+                    path.AddArc(bounds.X, bounds.Bottom - radius * 2, radius * 2, radius * 2, 90, 90);
+                    path.CloseFigure(); Region = new Region(path);
+                }
+                base.OnPaint(e);
+            }
+        }
         sealed class Subscription { public string Label; public string Url; public string Country; }
     }
 }
