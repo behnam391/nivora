@@ -1,4 +1,4 @@
-param([switch]$BuildOnly)
+param([switch]$BuildOnly, [switch]$SkipLint)
 $ErrorActionPreference = 'Stop'
 $signingHome = Join-Path $env:USERPROFILE '.nivora-signing'
 $credentialPath = Join-Path $signingHome 'credentials.xml'
@@ -14,7 +14,9 @@ $env:NIVORA_KEY_PASSWORD = $credential.GetNetworkCredential().Password
 $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
 Push-Location $PSScriptRoot
 try {
-    & .\gradlew.bat :app:assembleCustomerRelease :app:assemblePartnerRelease
+    $gradleArgs = @(':app:assembleCustomerRelease', ':app:assemblePartnerRelease')
+    if ($SkipLint) { $gradleArgs += @('-x', 'lintVitalCustomerRelease', '-x', 'lintVitalPartnerRelease') }
+    & .\gradlew.bat @gradleArgs
     if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
     if (!$BuildOnly) {
         Get-ChildItem app\build\outputs\apk\*\release\*.apk | Select-Object FullName,Length
