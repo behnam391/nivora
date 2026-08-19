@@ -1,11 +1,12 @@
 # Nivora Android
 
-اپ اختصاصی مشتری و همکار Nivora با رابط فارسی Material 3، اتصال واقعی Xray و مرکز فروش همراه است.
+دو اپ مستقل Nivora: نسخه مشتری برای اتصال و مدیریت اشتراک، و نسخه `Nivora Partner` برای همکاران فروش.
 
 ## امکانات
 
 - ورود، ثبت‌نام و درخواست بازیابی رمز
-- انتخاب نقش مشتری یا همکار در ورود
+- نسخه مشتری فقط ورود و ثبت‌نام مشتری را دارد؛ ورود همکار در آن وجود ندارد.
+- نسخه Partner فقط ورود همکار را دارد؛ ثبت‌نام همکار فقط توسط مدیریت انجام می‌شود.
 - داشبورد همکار با آمار فروش، سود، کیف پول و دفترچه مشتریان
 - ساخت اشتراک برای مشتری و تمدید مستقیم سرویس از داخل اپ
 - ذخیره رمزگذاری‌شده توکن با Android Keystore
@@ -27,14 +28,13 @@
 ```bash
 bash android/fetch-libxray.sh
 cd android
-./gradlew app:testDebugUnitTest app:lintDebug app:assembleDebug
+./gradlew app:testCustomerDebugUnitTest app:lintCustomerDebug app:assembleCustomerDebug app:assemblePartnerDebug
 ```
 
 خروجی‌ها برای معماری‌های رایج جدا می‌شوند:
 
-- `app-arm64-v8a-debug.apk` برای بیشتر گوشی‌های جدید
-- `app-armeabi-v7a-debug.apk` برای گوشی‌های قدیمی ۳۲ بیتی
-- `app-universal-debug.apk` برای نصب عمومی با حجم بیشتر
+- `app-customer-...apk` نسخه مشتری است.
+- `app-partner-...apk` نسخه مستقل همکار فروش است و هم‌زمان کنار نسخه مشتری نصب می‌شود.
 
 API پیش‌فرض `https://b.nivorali.com` است و با Gradle property به نام `NIVORA_API_BASE_URL` قابل تغییر است.
 

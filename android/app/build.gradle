@@ -17,6 +17,21 @@ android {
         buildConfigField 'String', 'API_BASE_URL', '"' + apiUrl + '"'
         buildConfigField 'String', 'NEURALMESH_PUBLIC_KEY_SPKI', '"' + neuralMeshPublicKey + '"'
     }
+    flavorDimensions 'audience'
+    productFlavors {
+        customer {
+            dimension 'audience'
+            buildConfigField 'String', 'APP_AUDIENCE', '"customer"'
+            resValue 'string', 'app_name', 'Nivora'
+        }
+        partner {
+            dimension 'audience'
+            applicationIdSuffix '.partner'
+            versionNameSuffix '-partner'
+            buildConfigField 'String', 'APP_AUDIENCE', '"partner"'
+            resValue 'string', 'app_name', 'Nivora Partner'
+        }
+    }
     def releaseStore = System.getenv('NIVORA_KEYSTORE_PATH')
     def releaseStorePassword = System.getenv('NIVORA_KEYSTORE_PASSWORD')
     def releaseKeyAlias = System.getenv('NIVORA_KEY_ALIAS')

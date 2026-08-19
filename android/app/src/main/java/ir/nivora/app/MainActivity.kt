@@ -102,7 +102,9 @@ class MainActivity : ComponentActivity(), NivoraActions {
         val storedState = vpnPreferences.getString("state", "disconnected") ?: "disconnected"
         val correctedState = if (storedState in setOf("connected", "connecting") && !NivoraVpnService.isCoreRunning()) "disconnected" else storedState
         if (correctedState != storedState) vpnPreferences.edit().putString("state", correctedState).remove("error").apply()
-        val signedIn = session.token() != null
+        val expectedRole = if (BuildConfig.APP_AUDIENCE == "partner") "reseller" else "customer"
+        val signedIn = session.token() != null && session.role() == expectedRole
+        if (!signedIn && session.token() != null) session.clear()
         state = state.copy(signedIn = signedIn, loading = signedIn, role = session.role(), vpnState = correctedState, vpnError = friendlyVpnError(vpnPreferences.getString("error", null)), smartRoute = vpnPreferences.getString("smart_route", null))
         setContent {
             NivoraTheme {

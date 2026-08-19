@@ -14,10 +14,10 @@ $env:NIVORA_KEY_PASSWORD = $credential.GetNetworkCredential().Password
 $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
 Push-Location $PSScriptRoot
 try {
-    & .\gradlew.bat :app:assembleRelease
+    & .\gradlew.bat :app:assembleCustomerRelease :app:assemblePartnerRelease
     if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
     if (!$BuildOnly) {
-        Get-ChildItem app\build\outputs\apk\release\*.apk | Select-Object FullName,Length
+        Get-ChildItem app\build\outputs\apk\*\release\*.apk | Select-Object FullName,Length
     }
 } finally {
     Pop-Location

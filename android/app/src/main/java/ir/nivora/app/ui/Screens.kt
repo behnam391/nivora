@@ -69,7 +69,8 @@ fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
 
 @Composable
 private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
-    var loginRole by rememberSaveable { mutableStateOf(LoginRole.CUSTOMER) }
+    val partnerApp = BuildConfig.APP_AUDIENCE == "partner"
+    var loginRole by rememberSaveable { mutableStateOf(if (partnerApp) LoginRole.RESELLER else LoginRole.CUSTOMER) }
     var registerMode by rememberSaveable { mutableStateOf(false) }
     var recoveryOpen by rememberSaveable { mutableStateOf(false) }
     var name by rememberSaveable { mutableStateOf("") }
@@ -109,18 +110,13 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
                 elevation = CardDefaults.cardElevation(12.dp)
             ) {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
-                    Text(if (registerMode) "ساخت حساب جدید" else if (loginRole == LoginRole.RESELLER) "ورود همکار فروش" else "خوش آمدید", style = MaterialTheme.typography.headlineMedium)
+                    Text(if (registerMode) "ساخت حساب جدید" else if (partnerApp) "Nivora Partner" else "خوش آمدید", style = MaterialTheme.typography.headlineMedium)
                     Text(
-                        if (registerMode) "حساب Nivora را در چند ثانیه بسازید." else if (loginRole == LoginRole.RESELLER) "مشتریان، فروش‌ها و تمدیدها را مدیریت کنید." else "برای مدیریت و اتصال اشتراک وارد شوید.",
+                        if (registerMode) "حساب Nivora را در چند ثانیه بسازید." else if (partnerApp) "مشتریان، فروش‌ها و تمدیدها را مدیریت کنید." else "برای مدیریت و اتصال اشتراک وارد شوید.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    Text("نوع حساب", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp)).padding(4.dp)) {
-                        AuthTab("مشتری", loginRole == LoginRole.CUSTOMER) { loginRole = LoginRole.CUSTOMER; validation = null }
-                        AuthTab("همکار فروش", loginRole == LoginRole.RESELLER) { loginRole = LoginRole.RESELLER; registerMode = false; validation = null }
-                    }
-                    if (loginRole == LoginRole.CUSTOMER) Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp)).padding(4.dp)) {
+                    if (!partnerApp) Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp)).padding(4.dp)) {
                         AuthTab("ورود", !registerMode) { registerMode = false; validation = null }
                         AuthTab("ثبت‌نام", registerMode) { registerMode = true; validation = null }
                     } else {
@@ -174,7 +170,7 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
                         else {
                             Icon(if (registerMode) Icons.Rounded.PersonAdd else Icons.AutoMirrored.Rounded.Login, null)
                             Spacer(Modifier.width(8.dp))
-                            Text(if (registerMode) "ساخت حساب" else if (loginRole == LoginRole.RESELLER) "ورود به مرکز همکاری" else "ورود به Nivora")
+                            Text(if (registerMode) "ساخت حساب" else if (partnerApp) "ورود به مرکز همکاری" else "ورود به Nivora")
                         }
                     }
                     if (!registerMode && loginRole == LoginRole.CUSTOMER) TextButton(onClick = { recoveryOpen = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
