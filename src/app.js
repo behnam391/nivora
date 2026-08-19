@@ -64,6 +64,23 @@ function createOrRestoreResellerCustomer(db, resellerId, body, now = new Date().
   return db.prepare('SELECT * FROM reseller_customers WHERE id=?').get(id);
 }
 
+// A reseller may serve an existing Nivora customer as well as customers they created.
+// Keep a private address-book row for that relationship; this never changes ownership
+// of the customer account or grants control over subscriptions issued by another reseller.
+function attachExistingCustomerToReseller(db, resellerId, account, now = new Date().toISOString()) {
+  const current = db.prepare('SELECT * FROM reseller_customers WHERE reseller_id=? AND account_id=?').get(resellerId, account.id);
+  if (current) return current;
+  const byPhone = db.prepare('SELECT * FROM reseller_customers WHERE reseller_id=? AND phone=?').get(resellerId, account.phone);
+  if (byPhone) {
+    db.prepare('UPDATE reseller_customers SET account_id=?,name=?,status=?,updated_at=? WHERE id=?').run(account.id,account.name,'active',now,byPhone.id);
+    return db.prepare('SELECT * FROM reseller_customers WHERE id=?').get(byPhone.id);
+  }
+  const id = randomUUID();
+  db.prepare("INSERT INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at,account_id) VALUES(?,?,?,?,?,'active',?,?,?)")
+    .run(id,resellerId,account.name,account.phone,'مشتری موجود Nivora',now,now,account.id);
+  return db.prepare('SELECT * FROM reseller_customers WHERE id=?').get(id);
+}
+
 const subscriptionToken = () => randomUUID().replace(/-/g, '');
 
 function publicOrigin(req) {
@@ -416,6 +433,22 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const body=await readJson(req);let password;try{password=hashPassword(body.password)}catch(e){return json(res,400,{error:e.message});}const now=new Date().toISOString();db.prepare('UPDATE accounts SET password_hash=?,password_salt=?,updated_at=? WHERE id=?').run(password.hash,password.salt,now,customer.managed_account_id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(customer.managed_account_id);notify(customer.managed_account_id,'رمز عبور تغییر کرد','رمز حساب شما توسط همکار فروش تغییر داده شد.');audit(account.id,'reset_password','reseller_customer',customer.id);return json(res,200,{reset:true});
         }
         if(req.method==='POST'&&path==='/api/reseller/notifications/read'){db.prepare('UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE account_id=?').run(new Date().toISOString(),account.id);return json(res,200,{success:true});}
+        if(req.method==='GET'&&path==='/api/reseller/customer-directory'){
+          const q=String(url.searchParams.get('q')||'').trim(),like=`%${q}%`;
+          const rows=db.prepare(`SELECT a.id,a.name,a.phone,COALESCE(w.balance_toman,0) balance_toman FROM accounts a LEFT JOIN wallet_accounts w ON w.account_id=a.id WHERE a.role='customer' AND a.status='active' AND (?='' OR a.name LIKE ? OR a.phone LIKE ?) ORDER BY a.updated_at DESC LIMIT 80`).all(q,like,like);
+          return json(res,200,rows);
+        }
+        const resellerWalletTransfer=path.match(/^\/api\/reseller\/customers\/([^/]+)\/wallet$/);
+        if(resellerWalletTransfer&&req.method==='POST'){
+          const target=db.prepare("SELECT id,name,phone FROM accounts WHERE id=? AND role='customer' AND status='active'").get(resellerWalletTransfer[1]);
+          const body=await readJson(req),amount=Number(body.amountToman),note=String(body.note||'شارژ توسط همکار فروش').trim();
+          if(!target)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});if(!Number.isInteger(amount)||amount<=0)return json(res,400,{error:'INVALID_AMOUNT'});
+          const now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{
+            postWalletTransaction(db,{accountId:account.id,amountToman:-amount,type:'transfer_out',reference:`reseller-wallet:${randomUUID()}`,actor:account.id,note:`شارژ کیف پول ${target.phone}`});
+            const credited=postWalletTransaction(db,{accountId:target.id,amountToman:amount,type:'transfer_in',reference:`reseller-wallet:${account.id}`,actor:account.id,note});
+            attachExistingCustomerToReseller(db,account.id,target,now);db.exec('COMMIT');notify(target.id,'کیف پول شارژ شد',`${amount.toLocaleString('fa-IR')} تومان توسط همکار فروش به کیف پول شما افزوده شد.`);audit(account.id,'wallet_transfer','customer',target.id,{amount,note});return json(res,201,{balanceToman:credited.balanceToman});
+          }catch(e){db.exec('ROLLBACK');return json(res,400,{error:e.message});}
+        }
         if(req.method==='GET'&&path==='/api/reseller/tickets'){const tickets=db.prepare(`SELECT t.*,(SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1) last_message FROM support_tickets t WHERE account_id=? ORDER BY updated_at DESC`).all(account.id);return json(res,200,tickets);}
         if(req.method==='POST'&&path==='/api/reseller/tickets'){const b=await readJson(req),subject=String(b.subject||'').trim(),body=String(b.body||'').trim();if(subject.length<3||body.length<3)return json(res,400,{error:'INVALID_TICKET'});const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO support_tickets(id,account_id,subject,status,created_at,updated_at) VALUES(?,?,?,'open',?,?)`).run(id,account.id,subject,now,now);db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),id,body,now);return json(res,201,{id,status:'open'});}
         const resellerTicket=path.match(/^\/api\/reseller\/tickets\/([^/]+)$/);if(resellerTicket&&req.method==='GET'){const ticket=db.prepare('SELECT * FROM support_tickets WHERE id=? AND account_id=?').get(resellerTicket[1],account.id);if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});return json(res,200,{...ticket,messages:db.prepare('SELECT id,sender_role,body,created_at FROM ticket_messages WHERE ticket_id=? ORDER BY created_at').all(ticket.id)});}if(resellerTicket&&req.method==='POST'){const ticket=db.prepare("SELECT * FROM support_tickets WHERE id=? AND account_id=? AND status<>'closed'").get(resellerTicket[1],account.id),b=await readJson(req),body=String(b.body||'').trim();if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});if(body.length<2)return json(res,400,{error:'INVALID_MESSAGE'});const now=new Date().toISOString();db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),ticket.id,body,now);db.prepare("UPDATE support_tickets SET status='open',updated_at=? WHERE id=?").run(now,ticket.id);return json(res,201,{sent:true});}
@@ -457,6 +490,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const b=await readJson(req),plan=db.prepare(`SELECT p.*,r.price_toman reseller_price FROM plans p LEFT JOIN reseller_plan_prices r ON r.plan_id=p.id AND r.reseller_id=? AND r.active=1 WHERE p.id=? AND p.active=1`).get(account.id,b.planId);
           if(!plan)return json(res,400,{error:'INVALID_PURCHASE'});let customer;
           if(b.customerId)customer=db.prepare("SELECT * FROM reseller_customers WHERE id=? AND reseller_id=? AND status='active'").get(b.customerId,account.id);
+          else if(b.customerAccountId){const existing=db.prepare("SELECT id,name,phone FROM accounts WHERE id=? AND role='customer' AND status='active'").get(b.customerAccountId);if(existing)customer=attachExistingCustomerToReseller(db,account.id,existing);}
           else try{customer=createOrRestoreResellerCustomer(db,account.id,b);}catch{return json(res,400,{error:'INVALID_CUSTOMER'});}
           if(!customer)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});
           const location=selectLocationForPlan(db,plan.id);if(!location)return json(res,409,{error:'NO_CAPACITY'});
