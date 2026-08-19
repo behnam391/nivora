@@ -118,17 +118,20 @@ namespace NivoraWindows {
         void BuildDashboard() {
             Controls.Clear(); ClientSize = new Size(930, 650); MinimumSize = new Size(930, 650);
             dashboard.Dock = DockStyle.Fill; dashboard.BackColor = Color.FromArgb(6, 29, 24); dashboard.Controls.Clear(); Controls.Add(dashboard);
-            var header = new Panel { Dock = DockStyle.Top, Height = 86, BackColor = Color.FromArgb(10, 52, 43) }; dashboard.Controls.Add(header);
+            var header = new Panel { Dock = DockStyle.Top, Height = 86, BackColor = Color.FromArgb(10, 52, 43) };
             var brand = new Label { Text = "NIVORA", ForeColor = Color.FromArgb(53, 225, 172), Font = new Font("Segoe UI", 23, FontStyle.Bold), AutoSize = true, Location = new Point(34, 21) }; header.Controls.Add(brand);
             var subtitle = new Label { Text = "داشبورد مشتری · ویندوز", ForeColor = Color.FromArgb(176, 210, 199), Font = new Font("Segoe UI", 9), AutoSize = true, Location = new Point(38, 55) }; header.Controls.Add(subtitle);
             var refresh = NavButton("↻  تازه‌سازی"); refresh.Location = new Point(678, 25); refresh.Click += async (s, e) => { try { SetStatus("در حال تازه‌سازی…"); await LoadSubscriptions(); ShowHome(); SetStatus("اطلاعات به‌روز شد."); } catch { SetStatus("به‌روزرسانی ناموفق بود.", true); } }; header.Controls.Add(refresh);
             var exit = NavButton("خروج"); exit.Location = new Point(812, 25); exit.Width = 82; exit.Click += (s, e) => { StopConnection(false); DeleteToken(); Application.Restart(); }; header.Controls.Add(exit);
-            var side = new Panel { Dock = DockStyle.Left, Width = 184, BackColor = Color.FromArgb(9, 42, 35), Padding = new Padding(16, 24, 16, 16) }; dashboard.Controls.Add(side);
+            var side = new Panel { Dock = DockStyle.Left, Width = 184, BackColor = Color.FromArgb(9, 42, 35), Padding = new Padding(16, 24, 16, 16) };
             var home = MenuButton("خانه و اتصال"); home.Click += (s, e) => ShowHome(); side.Controls.Add(home);
             var wallet = MenuButton("کیف پول"); wallet.Top = 70; wallet.Click += (s, e) => ShowWallet(); side.Controls.Add(wallet);
             var support = MenuButton("پشتیبانی"); support.Top = 124; support.Click += (s, e) => ShowSupport(); side.Controls.Add(support);
             var account = new Label { Text = "حساب مشتری\n" + (items.Count.ToString() + " اشتراک فعال"), ForeColor = Color.FromArgb(177, 211, 201), TextAlign = ContentAlignment.MiddleCenter, Dock = DockStyle.Bottom, Height = 64, Font = new Font("Segoe UI", 9) }; side.Controls.Add(account);
-            content.Dock = DockStyle.Fill; content.BackColor = Color.FromArgb(6, 29, 24); dashboard.Controls.Add(content); ShowHome();
+            // Dock order is reverse z-order in WinForms: add fill first so it occupies
+            // only the space remaining after the side menu and header.
+            content.Dock = DockStyle.Fill; content.BackColor = Color.FromArgb(6, 29, 24);
+            dashboard.Controls.Add(content); dashboard.Controls.Add(side); dashboard.Controls.Add(header); ShowHome();
         }
 
         Button NavButton(string text) { return new Button { Text = text, FlatStyle = FlatStyle.Flat, FlatAppearance = { BorderSize = 0 }, BackColor = Color.FromArgb(20, 71, 60), ForeColor = Color.White, Font = new Font("Segoe UI", 10, FontStyle.Bold), Width = 152, Height = 44, TextAlign = ContentAlignment.MiddleRight }; }
