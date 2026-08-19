@@ -283,6 +283,21 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_reset_codes_account ON password_reset_codes(account_id,created_at DESC)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_reseller_customers_account ON reseller_customers(account_id) WHERE account_id IS NOT NULL');
   db.exec(`CREATE TABLE IF NOT EXISTS telegram_recovery_sessions (chat_id TEXT PRIMARY KEY,account_id TEXT REFERENCES accounts(id),verified_phone TEXT,state TEXT NOT NULL DEFAULT 'waiting_contact',expires_at TEXT NOT NULL,created_at TEXT NOT NULL)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS reseller_debts (
+    id TEXT PRIMARY KEY,
+    reseller_id TEXT NOT NULL REFERENCES accounts(id),
+    customer_account_id TEXT NOT NULL REFERENCES accounts(id),
+    amount_toman INTEGER NOT NULL CHECK(amount_toman > 0),
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','payment_reported','settled','cancelled')),
+    created_at TEXT NOT NULL,
+    payment_reported_at TEXT,
+    settled_at TEXT,
+    settled_by TEXT,
+    updated_at TEXT NOT NULL
+  )`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_debts_customer ON reseller_debts(customer_account_id,status,created_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_debts_reseller ON reseller_debts(reseller_id,status,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_customers_owner ON reseller_customers(reseller_id,status,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_location_endpoints_location ON location_endpoints(location_id,active,priority)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_service_locations_node ON service_locations(panel_node_id)');
