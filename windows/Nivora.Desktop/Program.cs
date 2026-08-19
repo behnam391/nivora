@@ -29,9 +29,12 @@ namespace NivoraDesktop {
             try {
                 var env = await CoreWebView2Environment.CreateAsync(null, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Nivora", "WebView"));
                 await view.EnsureCoreWebView2Async(env);
-                view.CoreWebView2.SetVirtualHostNameToFolderMapping("nivora.local", Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui"), CoreWebView2HostResourceAccessKind.Allow);
+                view.CoreWebView2.Settings.IsScriptEnabled = true;
+                view.CoreWebView2.Settings.IsWebMessageEnabled = true;
                 view.CoreWebView2.WebMessageReceived += async (s,e) => await Message(e.TryGetWebMessageAsString());
-                view.CoreWebView2.Navigate("https://nivora.local/index.html");
+                // The interface is fully self-contained. NavigateToString avoids a blank
+                // page on older WebView2 runtimes that fail virtual-host mappings.
+                view.CoreWebView2.NavigateToString(File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui", "index.html"), Encoding.UTF8));
             } catch (Exception ex) { MessageBox.Show("مرورگر داخلی ویندوز در دسترس نیست. Microsoft Edge WebView2 Runtime را نصب کنید.\n\n" + ex.Message, "Nivora"); }
         }
         async System.Threading.Tasks.Task Message(string raw) {
