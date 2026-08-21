@@ -111,6 +111,15 @@ test('3X-UI provisioner adds CDN transports with the same identity and empty flo
   assert.equal(calls[1].body.client.limitIp,0);
 });
 
+test('3X-UI provisioner can disable the source-IP limiter for multi-route subscriptions', async () => {
+  const calls=[];
+  const transport=async request=>{calls.push(request);return {success:true,obj:request.body?.client||{}}};
+  const provision=createThreeXuiProvisioner({baseUrl:'https://panel.test',apiToken:'token',inboundId:1,visionInboundIds:[2],cdnInboundIds:[7],disableIpLimit:true,subscriptionBaseUrl:'https://sub.test/nivo'},transport);
+  await provision({id:'abcdef12-test',phone:'09121234567',plan_name:'Smart',traffic_gb:20,duration_days:30,device_limit:3});
+  assert.equal(calls[0].body.client.limitIp,0);
+  assert.equal(calls[1].body.client.limitIp,0);
+});
+
 test('3X-UI provisioner creates client then builds the public subscription URL', async () => {
   const calls = [];
   const transport = async request => {

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 const GB = 1024 ** 3;
 const DAY = 24 * 60 * 60 * 1000;
 
-export function buildClientPayload(order, inboundId, extraInboundIds = []) {
+export function buildClientPayload(order, inboundId, extraInboundIds = [], limitIp = order.device_limit) {
   const safePhone = String(order.phone).replace(/\D/g, '');
   const suffix = String(order.id).replace(/-/g, '').slice(0, 8);
   const extras = Array.isArray(extraInboundIds) ? extraInboundIds : [extraInboundIds];
@@ -18,7 +18,7 @@ export function buildClientPayload(order, inboundId, extraInboundIds = []) {
       totalGB: Number(order.traffic_gb) * GB,
       expiryTime: -(Number(order.duration_days) * DAY),
       tgId: 0,
-      limitIp: Number(order.device_limit),
+      limitIp: Number(limitIp),
       enable: true,
       flow: 'xtls-rprx-vision'
       ,subId: randomUUID()
@@ -31,8 +31,7 @@ export function buildCompatibleClientPayload(client, inboundIds, flow = '', limi
   return {
     // A Cloudflare edge may legitimately change its source IP during one
     // customer session. Applying 3X-UI's source-IP limiter there creates
-    // false sharing detections and intermittent disconnects. Device limits
-    // remain enforced on direct Reality inbounds; CDN fallbacks are exempt.
+    // false sharing detections and intermittent disconnects.
     client: { ...client, flow, limitIp: Number(limitIp) },
     inboundIds: [...new Set((Array.isArray(inboundIds) ? inboundIds : [inboundIds])
       .map(Number).filter(value => Number.isInteger(value) && value > 0))]
@@ -83,6 +82,12 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
   // client record with the same UUID and subId, but an empty flow.
   const cdnInboundIds = String(config.cdnInboundIds || process.env.PANEL_CDN_INBOUND_IDS || '')
     .split(',').map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value > 0);
+  // A single Nivora subscription is intentionally present in more than one
+  // inbound. X-UI counts those parallel transports as separate source IPs,
+  // including Cloudflare edges, so an IP limiter breaks automatic fallback.
+  // Keep it opt-in: deployments that do not use multi-route subscriptions can
+  // retain their legacy device limit.
+  const disableIpLimit = config.disableIpLimit ?? process.env.PANEL_DISABLE_IP_LIMIT === 'true';
   const subscriptionBaseUrl = config.subscriptionBaseUrl || process.env.PANEL_SUBSCRIPTION_BASE_URL;
   const rejectUnauthorized = config.rejectUnauthorized ?? process.env.PANEL_TLS_REJECT_UNAUTHORIZED !== 'false';
   if (!baseUrl || !apiToken || !inboundId || !subscriptionBaseUrl) throw new Error('3X-UI provisioning configuration is incomplete');
@@ -95,7 +100,7 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
   };
 
   const provision = async order => {
-    const payload = buildClientPayload(order, inboundId, extraInboundIds);
+    const payload = buildClientPayload(order, inboundId, extraInboundIds, disableIpLimit ? 0 : order.device_limit);
     const added = await call('POST', 'clients/add', payload);
     let client = added?.client || added;
     if (!client?.subId) client = payload.client;
