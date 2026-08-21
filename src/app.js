@@ -317,15 +317,22 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
       const publicSubscriptionMatch = path.match(/^\/sub\/([a-f0-9]{32})$/i);
       if (req.method === 'GET' && publicSubscriptionMatch) {
-        const subscription = db.prepare(`SELECT s.upstream_subscription_url,s.subscription_url,o.location_id
+        const subscription = db.prepare(`SELECT s.upstream_subscription_url,s.subscription_url,o.location_id,l.panel_node_id
           FROM subscriptions s JOIN orders o ON o.id=s.order_id
+          LEFT JOIN service_locations l ON l.id=o.location_id
           WHERE s.access_token=? AND s.status='active'`).get(publicSubscriptionMatch[1]);
         if (!subscription) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_FOUND'); }
         const upstream = subscription.upstream_subscription_url || subscription.subscription_url;
         if (!upstream) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_READY'); }
         const endpoints = subscription.location_id ? db.prepare(`SELECT label,host,port,mode,server_name,priority,active FROM location_endpoints WHERE location_id=? AND active=1 ORDER BY priority,created_at`).all(subscription.location_id) : [];
         try {
-          const raw = await fetchSubscriptionText(upstream, { rejectUnauthorized: process.env.PANEL_TLS_REJECT_UNAUTHORIZED !== 'false' });
+          // A separately registered x-ui node can legitimately use its own
+          // self-signed subscription listener.  The public Nivora link stays
+          // TLS-protected; only the server-to-node hop is relaxed for that node.
+          const rejectUnauthorized = subscription.panel_node_id
+            ? false
+            : process.env.PANEL_TLS_REJECT_UNAUTHORIZED !== 'false';
+          const raw = await fetchSubscriptionText(upstream, { rejectUnauthorized });
           const rendered = buildMultiEndpointSubscription(raw, endpoints.map(endpoint => ({...endpoint,active:Boolean(endpoint.active)})));
           res.writeHead(200, {
             'content-type':'text/plain; charset=utf-8',
