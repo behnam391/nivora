@@ -27,9 +27,13 @@ export function buildClientPayload(order, inboundId, extraInboundIds = []) {
   };
 }
 
-export function buildCompatibleClientPayload(client, inboundIds, flow = '') {
+export function buildCompatibleClientPayload(client, inboundIds, flow = '', limitIp = client.limitIp) {
   return {
-    client: { ...client, flow },
+    // A Cloudflare edge may legitimately change its source IP during one
+    // customer session. Applying 3X-UI's source-IP limiter there creates
+    // false sharing detections and intermittent disconnects. Device limits
+    // remain enforced on direct Reality inbounds; CDN fallbacks are exempt.
+    client: { ...client, flow, limitIp: Number(limitIp) },
     inboundIds: [...new Set((Array.isArray(inboundIds) ? inboundIds : [inboundIds])
       .map(Number).filter(value => Number.isInteger(value) && value > 0))]
   };
@@ -96,7 +100,7 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
     let client = added?.client || added;
     if (!client?.subId) client = payload.client;
     if (cdnInboundIds.length) {
-      await call('POST', 'clients/add', buildCompatibleClientPayload(client, cdnInboundIds));
+      await call('POST', 'clients/add', buildCompatibleClientPayload(client, cdnInboundIds, '', 0));
     }
     if (!client?.subId) {
       try {

@@ -98,6 +98,7 @@ test('3X-UI payload uses binary gigabytes and starts expiry after first use', ()
   assert.deepEqual(buildClientPayload({ id:'87654321-abcd', phone:'09121234567', plan_name:'CDN', traffic_gb:10, duration_days:30, device_limit:1, panel_inbound_id:4, panel_cdn_inbound_id:9 }, 1).inboundIds, [4,9]);
   const compatible=buildCompatibleClientPayload(payload.client,[7,6,7]);
   assert.deepEqual(compatible.inboundIds,[7,6]);assert.equal(compatible.client.flow,'');assert.equal(compatible.client.id,payload.client.id);assert.equal(compatible.client.subId,payload.client.subId);
+  assert.equal(buildCompatibleClientPayload(payload.client,[7], '', 0).client.limitIp,0);
 });
 
 test('3X-UI provisioner adds CDN transports with the same identity and empty flow', async () => {
@@ -107,6 +108,7 @@ test('3X-UI provisioner adds CDN transports with the same identity and empty flo
   await provision({id:'abcdef12-test',phone:'09121234567',plan_name:'Smart',traffic_gb:20,duration_days:30,device_limit:1});
   assert.equal(calls.length,2);assert.deepEqual(calls[1].body.inboundIds,[7,6]);
   assert.equal(calls[1].body.client.id,calls[0].body.client.id);assert.equal(calls[1].body.client.subId,calls[0].body.client.subId);assert.equal(calls[1].body.client.flow,'');
+  assert.equal(calls[1].body.client.limitIp,0);
 });
 
 test('3X-UI provisioner creates client then builds the public subscription URL', async () => {
