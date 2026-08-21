@@ -14,6 +14,7 @@ import net from 'node:net';
 import { createHash, randomInt, randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto';
 import { sendSms } from './sms.js';
 import { createTelegramRecovery } from './telegram-bot.js';
+import { createThreeXuiProvisioner } from './providers/three-x-ui.js';
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -139,6 +140,25 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   const decrypt=value=>{try{const [a,b,c]=value.split('.'),iv=Buffer.from(a,'base64url'),dec=createDecipheriv('aes-256-gcm',settingsKey,iv);dec.setAuthTag(Buffer.from(b,'base64url'));return Buffer.concat([dec.update(Buffer.from(c,'base64url')),dec.final()]).toString('utf8')}catch{return ''}};
   const telegramConfig=()=>({enabled:settingGet('telegram_enabled')==='true',token:decrypt(settingGet('telegram_token')||'')||process.env.TELEGRAM_BOT_TOKEN,secret:decrypt(settingGet('telegram_secret')||'')||process.env.TELEGRAM_WEBHOOK_SECRET,username:settingGet('telegram_username')||'',channel:settingGet('telegram_channel')||'',latestReleaseUrl:settingGet('telegram_latest_release_url')||'',adminIds:(settingGet('telegram_admin_ids')||'').split(',').map(x=>x.trim()).filter(Boolean)});
   const telegramRecovery=createTelegramRecovery(db,{getConfig:telegramConfig});
+  const nodeProvisioners = new Map();
+  const provisionerForLocation = location => {
+    if (!location?.panel_node_id) return provisioner;
+    const node = db.prepare('SELECT * FROM panel_nodes WHERE id=? AND active=1').get(location.panel_node_id);
+    const apiToken = node && decrypt(node.api_token_encrypted);
+    if (!node || !apiToken || !node.subscription_base_url) return null;
+    const fingerprint = [node.id,node.base_url,node.subscription_base_url,node.vision_inbound_ids,node.cdn_inbound_ids,node.panel_inbound_id,location.panel_inbound_id,location.panel_cdn_inbound_id].join('|');
+    if (!nodeProvisioners.has(fingerprint)) nodeProvisioners.set(fingerprint, createThreeXuiProvisioner({
+      baseUrl: node.base_url,
+      apiToken,
+      inboundId: location.panel_inbound_id,
+      visionInboundIds: node.vision_inbound_ids,
+      cdnInboundIds: node.cdn_inbound_ids || (location.panel_cdn_inbound_id ? String(location.panel_cdn_inbound_id) : ''),
+      subscriptionBaseUrl: node.subscription_base_url,
+      rejectUnauthorized: false,
+      disableIpLimit: true
+    }));
+    return nodeProvisioners.get(fingerprint);
+  };
   const guard=createRequestGuard();
   const autoReviewConfig = loadAutoReviewConfig();
   const subscriptionRow = id => db.prepare('SELECT * FROM subscriptions WHERE id=?').get(id);
@@ -150,11 +170,13 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     const subscriptionId = randomUUID();
     if (order.order_kind === 'renewal') {
       const parent = db.prepare(`SELECT s.panel_client_id,s.subscription_url,s.upstream_subscription_url,s.access_token subscription_access_token FROM subscriptions s WHERE s.order_id=? AND s.status='active'`).get(order.parent_order_id);
-      if (!parent || !provisioner?.renew) return { ok: false, code: 'RENEW_TARGET_UNAVAILABLE', note: 'Renewal target unavailable' };
+      const renewalLocation = db.prepare('SELECT * FROM service_locations WHERE id=?').get(order.location_id);
+      const renewalProvisioner = provisionerForLocation(renewalLocation);
+      if (!parent || !renewalProvisioner?.renew) return { ok: false, code: 'RENEW_TARGET_UNAVAILABLE', note: 'Renewal target unavailable' };
       db.prepare(`INSERT INTO subscriptions(id,order_id,status,panel_client_id,subscription_url,upstream_subscription_url,created_at) VALUES(?,?,'pending_provision',?,?,?,?)`).run(subscriptionId, order.id, parent.panel_client_id, parent.subscription_url, parent.upstream_subscription_url || parent.subscription_url, now);
       audit(actor, 'approve', 'renewal_order', order.id);
       try {
-        await provisioner.renew({ panelClientId: parent.panel_client_id, addDays: order.duration_days, addTrafficGb: order.traffic_gb });
+        await renewalProvisioner.renew({ panelClientId: parent.panel_client_id, addDays: order.duration_days, addTrafficGb: order.traffic_gb });
         db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(), subscriptionId);
         const row = subscriptionRow(subscriptionId); row.subscription_access_token = parent.subscription_access_token;
         return { ok: true, subscription: row };
@@ -170,9 +192,10 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     const accessToken = subscriptionToken();
     db.prepare(`INSERT INTO subscriptions(id,order_id,status,access_token,created_at) VALUES(?,?,'pending_provision',?,?)`).run(subscriptionId, order.id, accessToken, now);
     audit(actor, 'approve', 'order', order.id);
-    if (provisioner) {
+    const selectedProvisioner = provisionerForLocation(location);
+    if (selectedProvisioner) {
       try {
-        const result = await provisioner(order);
+        const result = await selectedProvisioner(order);
         db.prepare(`UPDATE subscriptions SET status='active',panel_client_id=?,subscription_url=?,upstream_subscription_url=?,activated_at=? WHERE id=?`).run(result.panelClientId, result.subscriptionUrl, result.subscriptionUrl, new Date().toISOString(), subscriptionId);
       } catch (e) {
         db.prepare(`UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?`).run(String(e.message || e), subscriptionId);
@@ -634,12 +657,14 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           (SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=l.id AND e.active=1 AND e.health_status='online') online_endpoint_count
           FROM service_locations l LEFT JOIN panel_nodes n ON n.id=l.panel_node_id LEFT JOIN plan_locations pl ON pl.location_id=l.id GROUP BY l.id ORDER BY l.active DESC,l.name`).all();return json(res,200,rows);
       }
-      const nodeFromBody=b=>({name:String(b.name||'').trim().slice(0,80),provider:String(b.provider||'').trim().slice(0,80),panelType:String(b.panelType||'3x-ui').trim().slice(0,30),baseUrl:String(b.baseUrl||'').trim().replace(/\/$/,'').slice(0,500),apiToken:String(b.apiToken||'').trim(),active:b.active!==false});
-      const validNode=node=>node.name.length>=2&&node.panelType==='3x-ui'&&(!node.baseUrl||(()=>{try{const u=new URL(node.baseUrl);return u.protocol==='https:'||u.protocol==='http:'}catch{return false}})());
-      if(req.method==='GET'&&path==='/api/admin/panel-nodes'){const rows=db.prepare('SELECT id,name,provider,panel_type,base_url,api_token_encrypted,active,created_at,updated_at FROM panel_nodes ORDER BY active DESC,name').all();return json(res,200,rows.map(n=>({id:n.id,name:n.name,provider:n.provider,panelType:n.panel_type,baseUrl:n.base_url,tokenConfigured:Boolean(decrypt(n.api_token_encrypted)),active:Boolean(n.active),createdAt:n.created_at,updatedAt:n.updated_at,locationCount:db.prepare('SELECT COUNT(*) count FROM service_locations WHERE panel_node_id=?').get(n.id).count})));}
-      if(req.method==='POST'&&path==='/api/admin/panel-nodes'){const n=nodeFromBody(await readJson(req));if(!validNode(n))return json(res,400,{error:'INVALID_PANEL_NODE'});const id=randomUUID(),now=new Date().toISOString();db.prepare('INSERT INTO panel_nodes(id,name,provider,panel_type,base_url,api_token_encrypted,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(id,n.name,n.provider,n.panelType,n.baseUrl,n.apiToken?encrypt(n.apiToken):'',n.active?1:0,now,now);audit('admin','create','panel_node',id,{name:n.name,baseUrl:n.baseUrl});return json(res,201,{id});}
+      const inboundList=value=>String(value||'').split(',').map(x=>Number(x.trim())).filter(x=>Number.isInteger(x)&&x>0).filter((x,i,a)=>a.indexOf(x)===i).join(',');
+      const nodeFromBody=b=>({name:String(b.name||'').trim().slice(0,80),provider:String(b.provider||'').trim().slice(0,80),panelType:String(b.panelType||'3x-ui').trim().slice(0,30),baseUrl:String(b.baseUrl||'').trim().replace(/\/$/,'').slice(0,500),subscriptionBaseUrl:String(b.subscriptionBaseUrl||'').trim().replace(/\/$/,'').slice(0,500),visionInboundIds:inboundList(b.visionInboundIds),cdnInboundIds:inboundList(b.cdnInboundIds),apiToken:String(b.apiToken||'').trim(),active:b.active!==false});
+      const validUrl=value=>{try{const u=new URL(value);return u.protocol==='https:'||u.protocol==='http:'}catch{return false}};
+      const validNode=node=>node.name.length>=2&&node.panelType==='3x-ui'&&(!node.baseUrl||validUrl(node.baseUrl))&&(!node.subscriptionBaseUrl||validUrl(node.subscriptionBaseUrl));
+      if(req.method==='GET'&&path==='/api/admin/panel-nodes'){const rows=db.prepare('SELECT id,name,provider,panel_type,base_url,subscription_base_url,vision_inbound_ids,cdn_inbound_ids,api_token_encrypted,active,created_at,updated_at FROM panel_nodes ORDER BY active DESC,name').all();return json(res,200,rows.map(n=>({id:n.id,name:n.name,provider:n.provider,panelType:n.panel_type,baseUrl:n.base_url,subscriptionBaseUrl:n.subscription_base_url,visionInboundIds:n.vision_inbound_ids,cdnInboundIds:n.cdn_inbound_ids,tokenConfigured:Boolean(decrypt(n.api_token_encrypted)),ready:Boolean(n.base_url&&n.subscription_base_url&&decrypt(n.api_token_encrypted)),active:Boolean(n.active),createdAt:n.created_at,updatedAt:n.updated_at,locationCount:db.prepare('SELECT COUNT(*) count FROM service_locations WHERE panel_node_id=?').get(n.id).count})));}
+      if(req.method==='POST'&&path==='/api/admin/panel-nodes'){const n=nodeFromBody(await readJson(req));if(!validNode(n))return json(res,400,{error:'INVALID_PANEL_NODE'});const id=randomUUID(),now=new Date().toISOString();db.prepare('INSERT INTO panel_nodes(id,name,provider,panel_type,base_url,subscription_base_url,vision_inbound_ids,cdn_inbound_ids,api_token_encrypted,active,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(id,n.name,n.provider,n.panelType,n.baseUrl,n.subscriptionBaseUrl,n.visionInboundIds,n.cdnInboundIds,n.apiToken?encrypt(n.apiToken):'',n.active?1:0,now,now);audit('admin','create','panel_node',id,{name:n.name,baseUrl:n.baseUrl});return json(res,201,{id});}
       const panelNodeMatch=path.match(/^\/api\/admin\/panel-nodes\/([^/]+)$/);
-      if(req.method==='PATCH'&&panelNodeMatch){const old=db.prepare('SELECT * FROM panel_nodes WHERE id=?').get(panelNodeMatch[1]);if(!old)return json(res,404,{error:'PANEL_NODE_NOT_FOUND'});const raw=await readJson(req),n=nodeFromBody({...old,name:raw.name??old.name,provider:raw.provider??old.provider,panelType:raw.panelType??old.panel_type,baseUrl:raw.baseUrl??old.base_url,apiToken:raw.apiToken??'',active:raw.active??Boolean(old.active)});if(!validNode(n))return json(res,400,{error:'INVALID_PANEL_NODE'});db.prepare('UPDATE panel_nodes SET name=?,provider=?,panel_type=?,base_url=?,api_token_encrypted=?,active=?,updated_at=? WHERE id=?').run(n.name,n.provider,n.panelType,n.baseUrl,n.apiToken?encrypt(n.apiToken):old.api_token_encrypted,n.active?1:0,new Date().toISOString(),old.id);audit('admin','update','panel_node',old.id,{name:n.name,baseUrl:n.baseUrl});return json(res,200,{id:old.id});}
+      if(req.method==='PATCH'&&panelNodeMatch){const old=db.prepare('SELECT * FROM panel_nodes WHERE id=?').get(panelNodeMatch[1]);if(!old)return json(res,404,{error:'PANEL_NODE_NOT_FOUND'});const raw=await readJson(req),n=nodeFromBody({...old,name:raw.name??old.name,provider:raw.provider??old.provider,panelType:raw.panelType??old.panel_type,baseUrl:raw.baseUrl??old.base_url,subscriptionBaseUrl:raw.subscriptionBaseUrl??old.subscription_base_url,visionInboundIds:raw.visionInboundIds??old.vision_inbound_ids,cdnInboundIds:raw.cdnInboundIds??old.cdn_inbound_ids,apiToken:raw.apiToken??'',active:raw.active??Boolean(old.active)});if(!validNode(n))return json(res,400,{error:'INVALID_PANEL_NODE'});db.prepare('UPDATE panel_nodes SET name=?,provider=?,panel_type=?,base_url=?,subscription_base_url=?,vision_inbound_ids=?,cdn_inbound_ids=?,api_token_encrypted=?,active=?,updated_at=? WHERE id=?').run(n.name,n.provider,n.panelType,n.baseUrl,n.subscriptionBaseUrl,n.visionInboundIds,n.cdnInboundIds,n.apiToken?encrypt(n.apiToken):old.api_token_encrypted,n.active?1:0,new Date().toISOString(),old.id);audit('admin','update','panel_node',old.id,{name:n.name,baseUrl:n.baseUrl});return json(res,200,{id:old.id});}
       if(req.method==='DELETE'&&panelNodeMatch){const count=db.prepare('SELECT COUNT(*) count FROM service_locations WHERE panel_node_id=?').get(panelNodeMatch[1]).count;if(count)return json(res,409,{error:'PANEL_NODE_IN_USE'});db.prepare('DELETE FROM panel_nodes WHERE id=?').run(panelNodeMatch[1]);audit('admin','delete','panel_node',panelNodeMatch[1]);return json(res,200,{deleted:true});}
       if(req.method==='POST'&&path==='/api/admin/locations'){
         const b=await readJson(req),country=String(b.countryCode||'').trim().toUpperCase();if(!b.name?.trim()||!/^[A-Z]{2}$/.test(country))return json(res,400,{error:'INVALID_LOCATION'});
