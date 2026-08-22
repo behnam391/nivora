@@ -1,0 +1,16 @@
+# Nivora Turbo test route — direct UDP only, separate from the Reality service.
+listen: :8443
+tls:
+  cert: /var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/b.nivorali.com/b.nivorali.com.crt
+  key: /var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/b.nivorali.com/b.nivorali.com.key
+auth:
+  type: password
+  password: __NIVORA_TURBO_PASSWORD__
+congestion:
+  type: bbr
+  bbrProfile: conservative
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.cloudflare.com/
+    rewriteHost: true
