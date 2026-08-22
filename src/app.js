@@ -333,10 +333,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             ? false
             : process.env.PANEL_TLS_REJECT_UNAUTHORIZED !== 'false';
           const raw = await fetchSubscriptionText(upstream, { rejectUnauthorized });
-          // Registered production nodes use the stable profile. Experimental
-          // XHTTP/gRPC/WS rows stay in their own panel for lab testing but are
-          // never handed to a paying customer's automatic route selector.
-          const productionRaw = subscription.panel_node_id ? keepStableRealityRoutes(raw) : raw;
+          // The customer-facing profile is intentionally limited to proven
+          // Reality+Vision TCP routes. Experimental XHTTP/gRPC/WS rows remain
+          // available in the panel for lab work, but never reach the automatic
+          // selector where a closed port could look "fast" and then fail.
+          const productionRaw = keepStableRealityRoutes(raw);
           const rendered = buildMultiEndpointSubscription(productionRaw, endpoints.map(endpoint => ({...endpoint,active:Boolean(endpoint.active)})));
           res.writeHead(200, {
             'content-type':'text/plain; charset=utf-8',
