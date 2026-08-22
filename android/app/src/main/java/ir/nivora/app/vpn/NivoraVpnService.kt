@@ -132,7 +132,12 @@ class NivoraVpnService : VpnService(), DialerController {
         if (outbounds.length() == 0) throw IllegalStateException("SUBSCRIPTION_EMPTY")
         sanitizeOutbounds(outbounds)
         val smartRoute = configureSmartRouting(config, outbounds, shareLink.isNullOrBlank())
-        val dnsServer = resolveUnderlyingDns()
+        // Bootstrap DNS is used only by libXray before the tunnel is ready.
+        // Application DNS must never be sent to the Iranian access provider:
+        // filtered resolvers commonly return private sinkhole addresses for
+        // Instagram/YouTube even when the proxy itself is perfectly healthy.
+        val bootstrapDns = resolveUnderlyingDns()
+        val tunnelDns = "1.1.1.1"
         config.put(
             "dns",
             JSONObject()
@@ -146,8 +151,8 @@ class NivoraVpnService : VpnService(), DialerController {
                 .put(
                     "settings",
                     JSONObject()
-                        .put("rewriteNetwork", "udp")
-                        .put("rewriteAddress", dnsServer)
+                        .put("rewriteNetwork", "tcp")
+                        .put("rewriteAddress", tunnelDns)
                         .put("rewritePort", 53)
                         .put("rules", JSONArray().put(JSONObject().put("action", "direct")))
                 )
@@ -201,7 +206,7 @@ class NivoraVpnService : VpnService(), DialerController {
         ensureCurrent(runId)
 
         LibXray.registerDialerController(this)
-        LibXray.setDNS(this, "$dnsServer:53")
+        LibXray.setDNS(this, "$bootstrapDns:53")
         val run = JSONObject()
             .put("apiVersion", 1)
             .put("method", "runXrayFromJson")
@@ -310,10 +315,10 @@ class NivoraVpnService : VpnService(), DialerController {
     }
 
     /**
-     * Public UDP DNS is filtered on some Iranian access networks. Capture an
-     * IPv4 resolver from a validated non-VPN network before establishing the
-     * TUN so libXray's protected resolver follows the actual Wi-Fi/cellular
-     * connection. The address is deliberately never written to logs.
+     * Capture an IPv4 resolver from the validated underlying network before
+     * establishing the TUN. This is bootstrap-only: libXray may need it to
+     * resolve the proxy endpoint. User traffic uses the protected tunnel DNS
+     * configured above, so filtered provider answers never reach applications.
      */
     @Suppress("DEPRECATION")
     private fun resolveUnderlyingDns(): String {
