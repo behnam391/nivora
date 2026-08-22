@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -204,7 +205,7 @@ fun ConnectionHero(
                 ) {
                     Box(Modifier.size((76 * ringScale).dp).border(1.dp, glow.copy(ringAlpha), CircleShape))
                     Box(Modifier.size((60 * ringScale).dp).border(1.dp, Color(0xFF61D8FF).copy(ringAlpha * .7f), CircleShape))
-                    if (connecting) CircularProgressIndicator(color = NivoraGreen, strokeWidth = 4.dp, modifier = Modifier.size(42.dp))
+                    if (connecting) FreedomLinkGlyph(Modifier.size(48.dp))
                     else Icon(Icons.Rounded.PowerSettingsNew, if (connected) "قطع اتصال" else "اتصال", tint = if (connected) NivoraInk else Color.White, modifier = Modifier.size(34.dp))
                 }
                 Spacer(Modifier.height(10.dp))
@@ -224,7 +225,7 @@ fun ConnectionHero(
                     )
                 } else if (connecting) {
                     Text(
-                        "در حال ارزیابی مسیرهای امن شبکه…",
+                        "در حال ساخت مسیر آزاد و امن برای شبکه شما…",
                         color = Color(0xFFC9C3E5),
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(top = 5.dp)
@@ -239,6 +240,30 @@ fun ConnectionHero(
                     DarkMetric(Icons.Rounded.Lock, "Reality", null)
                 }
             }
+        }
+    }
+}
+
+/** A tiny Canvas-only connection animation: no GIF, image asset, or permanent work. */
+@Composable
+private fun FreedomLinkGlyph(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "freedom-link")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1500), RepeatMode.Restart),
+        label = "freedom-link-phase"
+    )
+    Canvas(modifier) {
+        val radius = size.minDimension * .38f
+        val center = Offset(size.width / 2, size.height / 2)
+        drawCircle(Color(0xFFB7ADFF).copy(.20f), radius, center, style = androidx.compose.ui.graphics.drawscope.Stroke(width = size.minDimension * .045f))
+        drawCircle(Color(0xFF8E7CFF), size.minDimension * .15f, center)
+        drawCircle(Color.White.copy(.9f), size.minDimension * .055f, center)
+        repeat(3) { index ->
+            val angle = (phase + index / 3f) * (Math.PI * 2).toFloat() - (Math.PI / 2).toFloat()
+            val point = Offset(center.x + kotlin.math.cos(angle) * radius, center.y + kotlin.math.sin(angle) * radius)
+            drawCircle(if (index == 0) Color(0xFF61D8FF) else Color(0xFFC7BFFF), size.minDimension * .075f, point)
         }
     }
 }
