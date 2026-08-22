@@ -14,14 +14,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-val NivoraGreen = Color(0xFF22D49B)
-val NivoraGreenDark = Color(0xFF0BA579)
-val NivoraInk = Color(0xFF071C16)
-val NivoraInkSoft = Color(0xFF12372C)
-val NivoraMint = Color(0xFFE9FAF4)
-val NivoraBackground = Color(0xFFF5F8F7)
-val NivoraLine = Color(0xFFDCE8E4)
-val NivoraMuted = Color(0xFF667C74)
+// Kept under the old names so the app stays consistent internally. The visual
+// language is now midnight / electric violet rather than the previous green UI.
+val NivoraGreen = Color(0xFF8E7CFF)
+val NivoraGreenDark = Color(0xFF6754E8)
+val NivoraInk = Color(0xFF0C0A1C)
+val NivoraInkSoft = Color(0xFF1B1738)
+val NivoraMint = Color(0xFFF0EEFF)
+val NivoraBackground = Color(0xFFF8F7FF)
+val NivoraLine = Color(0xFFE2DFFF)
+val NivoraMuted = Color(0xFF6F6A86)
 val NivoraDanger = Color(0xFFE44F5A)
 val NivoraWarning = Color(0xFFF0A836)
 
@@ -36,7 +38,7 @@ private val LightColors = lightColorScheme(
     onBackground = NivoraInk,
     surface = Color.White,
     onSurface = NivoraInk,
-    surfaceVariant = Color(0xFFEDF3F1),
+    surfaceVariant = Color(0xFFF0EFF8),
     onSurfaceVariant = NivoraMuted,
     outline = NivoraLine,
     error = NivoraDanger
@@ -46,16 +48,16 @@ private val DarkColors = darkColorScheme(
     primary = NivoraGreen,
     onPrimary = NivoraInk,
     primaryContainer = NivoraInkSoft,
-    onPrimaryContainer = Color(0xFFD9FFF1),
-    secondary = Color(0xFF68E6BC),
+    onPrimaryContainer = Color(0xFFE8E4FF),
+    secondary = Color(0xFF62D4FF),
     onSecondary = NivoraInk,
-    background = Color(0xFF06120F),
-    onBackground = Color(0xFFE5F2ED),
-    surface = Color(0xFF0D211B),
-    onSurface = Color(0xFFE5F2ED),
-    surfaceVariant = Color(0xFF173129),
-    onSurfaceVariant = Color(0xFFA8BDB5),
-    outline = Color(0xFF29483E),
+    background = Color(0xFF0A0916),
+    onBackground = Color(0xFFF0EFFF),
+    surface = Color(0xFF151229),
+    onSurface = Color(0xFFF0EFFF),
+    surfaceVariant = Color(0xFF211D3D),
+    onSurfaceVariant = Color(0xFFB6B0CC),
+    outline = Color(0xFF393358),
     error = Color(0xFFFF7C84)
 )
 

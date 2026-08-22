@@ -2,10 +2,14 @@ package ir.nivora.app.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -24,8 +28,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -33,7 +35,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.nivora.app.data.Plan
 import ir.nivora.app.data.Subscription
-import ir.nivora.app.R
 import java.text.NumberFormat
 import java.time.Instant
 import java.time.ZoneId
@@ -62,12 +63,12 @@ fun countryFlag(code: String?): String = when (code?.trim()?.uppercase(Locale.US
 @Composable
 fun NivoraLogo(modifier: Modifier = Modifier, compact: Boolean = false, onDark: Boolean = false) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Image(
-            painter = painterResource(R.drawable.nivora_logo_v3),
-            contentDescription = "Nivora",
-            modifier = Modifier.size(if (compact) 40.dp else 57.dp),
-            contentScale = ContentScale.Fit
-        )
+        Box(
+            Modifier.size(if (compact) 40.dp else 57.dp)
+                .background(if (onDark) Color.White.copy(.08f) else MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(if (compact) 13.dp else 18.dp))
+                .padding(if (compact) 6.dp else 8.dp),
+            contentAlignment = Alignment.Center
+        ) { NivoraMark(Modifier.fillMaxSize()) }
         Column {
             Text("NIVORA", color = if (onDark) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = if (compact) 19.sp else 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
             if (!compact) Text("اینترنت امن، ساده و سریع", style = MaterialTheme.typography.bodyMedium, color = if (onDark) Color(0xFFB9D0C8) else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -95,7 +96,7 @@ fun NivoraMark(modifier: Modifier = Modifier) {
             cubicTo(.34f * w, .79f * h, .29f * w, .84f * h, .22f * w, .84f * h)
             close()
         }
-        drawPath(mark, brush = Brush.linearGradient(listOf(Color(0xFF7CF2CD), NivoraGreen, Color(0xFF07976D))))
+        drawPath(mark, brush = Brush.linearGradient(listOf(Color(0xFF5DE1FF), NivoraGreen, Color(0xFFC38BFF))))
         val highlight = Path().apply {
             moveTo(.34f * w, .37f * h)
             lineTo(.45f * w, .50f * h)
@@ -103,7 +104,7 @@ fun NivoraMark(modifier: Modifier = Modifier) {
             cubicTo(.45f * w, .78f * h, .40f * w, .82f * h, .34f * w, .83f * h)
             close()
         }
-        drawPath(highlight, Color(0xFFCEFFF0).copy(alpha = .55f))
+        drawPath(highlight, Color(0xFFF2EDFF).copy(alpha = .62f))
     }
 }
 
@@ -146,8 +147,11 @@ fun ConnectionHero(
 ) {
     val connected = state == "connected"
     val connecting = state == "connecting"
-    val glow by animateColorAsState(if (connected) NivoraGreen else Color(0xFF31584B), label = "connection-glow")
+    val glow by animateColorAsState(if (connected) NivoraGreen else Color(0xFF4B4380), label = "connection-glow")
     val powerScale by animateFloatAsState(if (connected) 1.04f else 1f, label = "power-scale")
+    val orbit = rememberInfiniteTransition(label = "connection-orbit")
+    val ringScale by orbit.animateFloat(1f, if (connecting) 1.36f else 1.12f, infiniteRepeatable(tween(if (connecting) 900 else 1800), RepeatMode.Reverse), label = "ring-scale")
+    val ringAlpha by orbit.animateFloat(if (connecting) .62f else .22f, 0.02f, infiniteRepeatable(tween(if (connecting) 900 else 1800), RepeatMode.Reverse), label = "ring-alpha")
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(30.dp),
@@ -198,6 +202,8 @@ fun ConnectionHero(
                         .clickable(enabled = !connecting, onClick = onToggle),
                     contentAlignment = Alignment.Center
                 ) {
+                    Box(Modifier.size((76 * ringScale).dp).border(1.dp, glow.copy(ringAlpha), CircleShape))
+                    Box(Modifier.size((60 * ringScale).dp).border(1.dp, Color(0xFF61D8FF).copy(ringAlpha * .7f), CircleShape))
                     if (connecting) CircularProgressIndicator(color = NivoraGreen, strokeWidth = 4.dp, modifier = Modifier.size(42.dp))
                     else Icon(Icons.Rounded.PowerSettingsNew, if (connected) "قطع اتصال" else "اتصال", tint = if (connected) NivoraInk else Color.White, modifier = Modifier.size(34.dp))
                 }
@@ -218,8 +224,8 @@ fun ConnectionHero(
                     )
                 } else if (connecting) {
                     Text(
-                        "در حال انتخاب بهترین مسیر برای این شبکه…",
-                        color = Color(0xFF9DB9AF),
+                        "در حال ارزیابی مسیرهای امن شبکه…",
+                        color = Color(0xFFC9C3E5),
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.padding(top = 5.dp)
                     )

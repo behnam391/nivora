@@ -91,10 +91,10 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(NivoraInk, Color(0xFF0A2A21), NivoraInk)))) {
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(NivoraInk, Color(0xFF171331), NivoraInk)))) {
         // Two quiet color pools create depth without a bitmap, blur, or an animation loop.
-        Box(Modifier.align(Alignment.TopEnd).offset(x = 82.dp, y = (-74).dp).size(270.dp).background(NivoraGreen.copy(.10f), CircleShape))
-        Box(Modifier.align(Alignment.CenterStart).offset(x = (-145).dp, y = 170.dp).size(260.dp).background(Color(0xFF3977FF).copy(.055f), CircleShape))
+        Box(Modifier.align(Alignment.TopEnd).offset(x = 82.dp, y = (-74).dp).size(270.dp).background(NivoraGreen.copy(.17f), CircleShape))
+        Box(Modifier.align(Alignment.CenterStart).offset(x = (-145).dp, y = 170.dp).size(260.dp).background(Color(0xFF36C8FF).copy(.10f), CircleShape))
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -516,6 +516,8 @@ private fun HomeScreen(
     onRenew: (Subscription) -> Unit
 ) {
     val account = state.account ?: return
+    var subscriptionsOpen by rememberSaveable { mutableStateOf(false) }
+    val selectedSubscription = state.selectedSubscription ?: state.activeSubscriptions.firstOrNull()
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp),
@@ -543,7 +545,12 @@ private fun HomeScreen(
         }
         item {
             Column(Modifier.padding(horizontal = 20.dp)) {
-                SectionHeader("اشتراک‌های من", "برای اتصال، یکی را انتخاب کنید", if (state.activeSubscriptions.isEmpty()) "خرید پلن" else null, if (state.activeSubscriptions.isEmpty()) onPlans else null)
+                SectionHeader(
+                    "اشتراک‌های من",
+                    if (state.activeSubscriptions.isEmpty()) "برای شروع یک پلن انتخاب کنید" else "${faNumber(state.activeSubscriptions.size)} اشتراک در حساب شما",
+                    if (state.activeSubscriptions.isEmpty()) "خرید پلن" else if (subscriptionsOpen) "بستن فهرست" else "مدیریت همه",
+                    if (state.activeSubscriptions.isEmpty()) onPlans else { { subscriptionsOpen = !subscriptionsOpen } }
+                )
             }
         }
         if (state.activeSubscriptions.isEmpty()) {
@@ -553,11 +560,18 @@ private fun HomeScreen(
                 }
             }
         } else {
-            items(state.activeSubscriptions, key = { it.id }) { subscription ->
+            selectedSubscription?.let { subscription ->
+                item(key = "selected-${subscription.id}") {
+                    Box(Modifier.padding(horizontal = 20.dp)) {
+                        SubscriptionCard(subscription, true, { actions.selectSubscription(subscription) }, { onRenew(subscription) })
+                    }
+                }
+            }
+            if (subscriptionsOpen) items(state.activeSubscriptions.filter { it.id != selectedSubscription?.id }, key = { it.id }) { subscription ->
                 Box(Modifier.padding(horizontal = 20.dp)) {
                     SubscriptionCard(
                         subscription,
-                        state.selectedSubscription?.id == subscription.id,
+                        false,
                         { actions.selectSubscription(subscription) },
                         { onRenew(subscription) }
                     )
