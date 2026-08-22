@@ -105,6 +105,26 @@ export function buildMultiEndpointSubscription(raw, endpoints) {
   return source.base64 ? encodeBase64(rendered) : rendered;
 }
 
+// A node may expose experimental transports alongside its production routes.
+// For the standard Nivora profile we publish only TCP+REALITY+Vision entries:
+// these are light, do not depend on a CDN and can be actively probed by the
+// Android selector before it starts the tunnel.
+export function keepStableRealityRoutes(raw) {
+  const source = decodeSubscription(raw);
+  const links = source.text.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+  const stable = links.filter(link => {
+    if (!link.toLowerCase().startsWith('vless://')) return false;
+    try {
+      const parsed = new URL(link);
+      return parsed.searchParams.get('security')?.toLowerCase() === 'reality' &&
+        (parsed.searchParams.get('type') || 'tcp').toLowerCase() === 'tcp' &&
+        parsed.searchParams.get('flow') === 'xtls-rprx-vision';
+    } catch { return false; }
+  });
+  const rendered = stable.length ? stable.join('\n') : source.text;
+  return source.base64 ? encodeBase64(rendered) : rendered;
+}
+
 export function fetchSubscriptionText(target, { timeoutMs = 15_000, rejectUnauthorized = true, redirects = 3 } = {}) {
   const url = target instanceof URL ? target : new URL(target);
   if (!['http:', 'https:'].includes(url.protocol)) return Promise.reject(new Error('UNSUPPORTED_SUBSCRIPTION_PROTOCOL'));

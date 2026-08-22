@@ -7,7 +7,7 @@ import { accountFromRequest, createSession, hashPassword, verifyPassword } from 
 import { selectLocationForPlan } from './capacity.js';
 import { createRequestGuard } from './security.js';
 import { enrichSubscription, readPanelStats } from './subscription-stats.js';
-import { buildMultiEndpointSubscription, fetchCleanIpSource, fetchSubscriptionText, measureCloudflareEndpoint, measureTcpEndpoint, parseCleanIpList } from './multi-endpoint.js';
+import { buildMultiEndpointSubscription, fetchCleanIpSource, fetchSubscriptionText, keepStableRealityRoutes, measureCloudflareEndpoint, measureTcpEndpoint, parseCleanIpList } from './multi-endpoint.js';
 import { evaluateOrder, sweepPendingOrders, ingestBankMessage, loadAutoReviewConfig } from './auto-review.js';
 import { extractReceiptFields } from './receipt-ocr.js';
 import net from 'node:net';
@@ -333,7 +333,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             ? false
             : process.env.PANEL_TLS_REJECT_UNAUTHORIZED !== 'false';
           const raw = await fetchSubscriptionText(upstream, { rejectUnauthorized });
-          const rendered = buildMultiEndpointSubscription(raw, endpoints.map(endpoint => ({...endpoint,active:Boolean(endpoint.active)})));
+          // Registered production nodes use the stable profile. Experimental
+          // XHTTP/gRPC/WS rows stay in their own panel for lab testing but are
+          // never handed to a paying customer's automatic route selector.
+          const productionRaw = subscription.panel_node_id ? keepStableRealityRoutes(raw) : raw;
+          const rendered = buildMultiEndpointSubscription(productionRaw, endpoints.map(endpoint => ({...endpoint,active:Boolean(endpoint.active)})));
           res.writeHead(200, {
             'content-type':'text/plain; charset=utf-8',
             'cache-control':'private, no-store',
