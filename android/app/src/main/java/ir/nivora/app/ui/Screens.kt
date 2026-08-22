@@ -91,25 +91,24 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
         }
     }
 
-    Box(
-        Modifier.fillMaxSize().background(
-            Brush.verticalGradient(listOf(NivoraInk, Color(0xFF0B3B2E), MaterialTheme.colorScheme.background))
-        )
-    ) {
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(NivoraInk, Color(0xFF0A2A21), NivoraInk)))) {
+        // Two quiet color pools create depth without a bitmap, blur, or an animation loop.
+        Box(Modifier.align(Alignment.TopEnd).offset(x = 82.dp, y = (-74).dp).size(270.dp).background(NivoraGreen.copy(.10f), CircleShape))
+        Box(Modifier.align(Alignment.CenterStart).offset(x = (-145).dp, y = 170.dp).size(260.dp).background(Color(0xFF3977FF).copy(.055f), CircleShape))
         Column(
-            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 30.dp),
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(12.dp))
             NivoraLogo(modifier = Modifier.fillMaxWidth(), compact = false, onDark = true)
-            Spacer(Modifier.height(30.dp))
+            Spacer(Modifier.height(24.dp))
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(30.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(12.dp)
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White.copy(.96f)),
+                elevation = CardDefaults.cardElevation(8.dp)
             ) {
-                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
+                Column(Modifier.padding(21.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
                     Text(if (registerMode) "ساخت حساب جدید" else if (partnerApp) "Nivora Partner" else "خوش آمدید", style = MaterialTheme.typography.headlineMedium)
                     Text(
                         if (registerMode) "حساب Nivora را در چند ثانیه بسازید." else if (partnerApp) "مشتریان، فروش‌ها و تمدیدها را مدیریت کنید." else "برای مدیریت و اتصال اشتراک وارد شوید.",
@@ -178,7 +177,7 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
                     }
                 }
             }
-            Spacer(Modifier.height(22.dp))
+            Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.VerifiedUser, null, tint = Color(0xFFB9D0C8), modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(7.dp))

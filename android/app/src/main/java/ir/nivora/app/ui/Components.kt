@@ -15,6 +15,7 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -149,7 +150,7 @@ fun ConnectionHero(
     val powerScale by animateFloatAsState(if (connected) 1.04f else 1f, label = "power-scale")
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(30.dp),
         colors = CardDefaults.cardColors(containerColor = NivoraInk),
         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
     ) {
@@ -162,7 +163,7 @@ fun ConnectionHero(
             )
         ) {
             Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 19.dp, vertical = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -185,22 +186,22 @@ fun ConnectionHero(
                         dark = true
                     )
                 }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(12.dp))
                 Box(
                     modifier = Modifier
-                        .size((96 * powerScale).dp)
-                        .shadow(24.dp, CircleShape, ambientColor = glow.copy(.55f), spotColor = glow.copy(.55f))
+                        .size((82 * powerScale).dp)
+                        .shadow(18.dp, CircleShape, ambientColor = glow.copy(.48f), spotColor = glow.copy(.48f))
                         .background(glow.copy(.18f), CircleShape)
                         .border(1.dp, glow.copy(.62f), CircleShape)
-                        .padding(10.dp)
+                        .padding(8.dp)
                         .background(if (connected) NivoraGreen else Color(0xFF17382E), CircleShape)
                         .clickable(enabled = !connecting, onClick = onToggle),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (connecting) CircularProgressIndicator(color = NivoraGreen, strokeWidth = 4.dp, modifier = Modifier.size(48.dp))
-                    else Icon(Icons.Rounded.PowerSettingsNew, if (connected) "قطع اتصال" else "اتصال", tint = if (connected) NivoraInk else Color.White, modifier = Modifier.size(40.dp))
+                    if (connecting) CircularProgressIndicator(color = NivoraGreen, strokeWidth = 4.dp, modifier = Modifier.size(42.dp))
+                    else Icon(Icons.Rounded.PowerSettingsNew, if (connected) "قطع اتصال" else "اتصال", tint = if (connected) NivoraInk else Color.White, modifier = Modifier.size(34.dp))
                 }
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(10.dp))
                 Text(
                     subscription?.let { "${countryFlag(it.countryCode)}  ${it.locationName ?: it.planName}" } ?: "اشتراک فعالی انتخاب نشده",
                     color = Color.White,
@@ -213,20 +214,20 @@ fun ConnectionHero(
                         "مسیر هوشمند: $smartRoute",
                         color = Color(0xFF8EF0CF),
                         style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 7.dp)
+                        modifier = Modifier.padding(top = 5.dp)
                     )
                 } else if (connecting) {
                     Text(
                         "در حال انتخاب بهترین مسیر برای این شبکه…",
                         color = Color(0xFF9DB9AF),
                         style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 7.dp)
+                        modifier = Modifier.padding(top = 5.dp)
                     )
                 }
                 if (state == "error" && !error.isNullOrBlank()) {
                     Text(error, color = Color(0xFFFFA9AE), style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp))
                 }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(9.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     DarkMetric(Icons.Rounded.Speed, if (pingBusy) "…" else pingMs?.let { "$it ms" } ?: "تست پینگ", onPing)
                     DarkMetric(Icons.Rounded.Lock, "Reality", null)
@@ -270,43 +271,41 @@ fun SubscriptionCard(
     onSelect: () -> Unit,
     onRenew: () -> Unit
 ) {
+    var expanded by androidx.compose.runtime.saveable.rememberSaveable(subscription.id) { androidx.compose.runtime.mutableStateOf(false) }
     val progress = (subscription.usagePercent / 100.0).toFloat().coerceIn(0f, 1f)
     Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onSelect),
-        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = if (selected) CardDefaults.outlinedCardBorder().copy(brush = Brush.linearGradient(listOf(NivoraGreenDark, NivoraGreen))) else CardDefaults.outlinedCardBorder()
     ) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 15.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.padding(horizontal = 15.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(Modifier.fillMaxWidth().clickable { onSelect(); expanded = !expanded }, verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
-                    Text(countryFlag(subscription.countryCode), fontSize = 24.sp)
+                    Text(countryFlag(subscription.countryCode), fontSize = 23.sp)
                 }
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(11.dp))
                 Column(Modifier.weight(1f)) {
                     Text(subscription.planName, style = MaterialTheme.typography.titleMedium)
-                    Text(subscription.locationName ?: "انتخاب خودکار", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-                    if (subscription.routeCount > 1) Text("${faNumber(subscription.routeCount)} مسیر هوشمند", color = NivoraGreenDark, style = MaterialTheme.typography.labelMedium)
+                    Text(subscription.locationName ?: "انتخاب خودکار", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
                 }
                 if (selected) StatusPill("انتخاب‌شده", NivoraGreenDark)
+                Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, if (expanded) "بستن جزئیات" else "نمایش جزئیات", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("مصرف ${gb(subscription.usedBytes)} از ${gb(subscription.totalBytes)} گیگ", style = MaterialTheme.typography.bodyMedium)
-                Text("${faNumber(subscription.usagePercent)}٪", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Text("${gb(subscription.usedBytes)} / ${gb(subscription.totalBytes)} گیگ", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${faNumber(subscription.usagePercent)}٪ مصرف", style = MaterialTheme.typography.labelMedium, color = if (progress > .85f) NivoraDanger else NivoraGreenDark)
             }
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-                color = if (progress > .85f) NivoraDanger else NivoraGreen,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant
-            )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SubscriptionMetric(Icons.Rounded.CalendarMonth, if (subscription.startsOnFirstUse) "از اولین اتصال" else "${faNumber(subscription.remainingDays)} روز")
-                SubscriptionMetric(Icons.Rounded.Devices, "${faNumber(subscription.deviceLimit)} دستگاه")
-                SubscriptionMetric(Icons.Rounded.DataUsage, "${faNumber(subscription.trafficGb)} گیگ")
+            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape), color = if (progress > .85f) NivoraDanger else NivoraGreen, trackColor = MaterialTheme.colorScheme.surfaceVariant)
+            if (expanded) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SubscriptionMetric(Icons.Rounded.CalendarMonth, if (subscription.startsOnFirstUse) "شروع نشده" else "${faNumber(subscription.remainingDays)} روز")
+                    SubscriptionMetric(Icons.Rounded.Devices, "${faNumber(subscription.deviceLimit)} دستگاه")
+                    SubscriptionMetric(Icons.Rounded.DataUsage, "${faNumber(subscription.trafficGb)} گیگ")
+                }
+                if (subscription.routeCount > 1) Text("${faNumber(subscription.routeCount)} مسیر هوشمند برای این اشتراک فعال است", color = NivoraGreenDark, style = MaterialTheme.typography.labelMedium)
+                Button(onClick = onRenew, modifier = Modifier.fillMaxWidth().height(40.dp)) { Icon(Icons.Rounded.Autorenew, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("تمدید اشتراک") }
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(.65f))
-            Button(onClick = onRenew, modifier = Modifier.fillMaxWidth().height(42.dp)) { Icon(Icons.Rounded.Autorenew, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("تمدید اشتراک") }
         }
     }
 }
