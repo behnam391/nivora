@@ -132,6 +132,16 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   ).run(actor, action, type, id, details && JSON.stringify(details), new Date().toISOString());
   const notify = (accountId,title,body) => db.prepare('INSERT INTO notifications(id,account_id,title,body,created_at) VALUES(?,?,?,?,?)').run(randomUUID(),accountId,title,body,new Date().toISOString());
   const normalizePhone = value => String(value || '').replace(/[\s\-()]/g, '').replace(/^\+98/, '0').replace(/^0098/, '0');
+  const deviceHash = req => {
+    const id = String(req.headers['x-nivora-device'] || '').trim();
+    return /^[a-zA-Z0-9_-]{20,160}$/.test(id) ? createHash('sha256').update(id).digest('hex') : '';
+  };
+  const claimCustomerDevice = (account, req) => {
+    const hash = deviceHash(req);
+    if (!hash) return;
+    if (account.device_binding_hash && account.device_binding_hash !== hash) throw new Error('DEVICE_ALREADY_BOUND');
+    if (!account.device_binding_hash) db.prepare('UPDATE accounts SET device_binding_hash=?,device_bound_at=?,updated_at=? WHERE id=?').run(hash,new Date().toISOString(),new Date().toISOString(),account.id);
+  };
   const codeHash = code => createHash('sha256').update(String(code)).digest('hex');
   const settingGet=key=>db.prepare('SELECT value FROM app_settings WHERE key=?').get(key)?.value;
   const settingSet=(key,value)=>db.prepare(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).run(key,String(value),new Date().toISOString());
@@ -317,11 +327,14 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
       const publicSubscriptionMatch = path.match(/^\/sub\/([a-f0-9]{32})$/i);
       if (req.method === 'GET' && publicSubscriptionMatch) {
-        const subscription = db.prepare(`SELECT s.upstream_subscription_url,s.subscription_url,o.location_id,l.panel_node_id
+        const subscription = db.prepare(`SELECT s.upstream_subscription_url,s.subscription_url,o.location_id,o.account_id,l.panel_node_id
           FROM subscriptions s JOIN orders o ON o.id=s.order_id
           LEFT JOIN service_locations l ON l.id=o.location_id
           WHERE s.access_token=? AND s.status='active'`).get(publicSubscriptionMatch[1]);
         if (!subscription) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_FOUND'); }
+        const account = accountFromRequest(db, req);
+        const subscriptionAccount = subscription.account_id && db.prepare('SELECT role,device_binding_hash FROM accounts WHERE id=?').get(subscription.account_id);
+        if (process.env.ENFORCE_DEVICE_GATEWAY === 'true' && subscriptionAccount?.device_binding_hash && (!account || account.role !== 'customer' || account.id !== subscription.account_id)) { res.writeHead(401, {'content-type':'text/plain; charset=utf-8'}); return res.end('AUTH_REQUIRED'); }
         const upstream = subscription.upstream_subscription_url || subscription.subscription_url;
         if (!upstream) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_READY'); }
         const endpoints = subscription.location_id ? db.prepare(`SELECT label,host,port,mode,server_name,priority,active FROM location_endpoints WHERE location_id=? AND active=1 ORDER BY priority,created_at`).all(subscription.location_id) : [];
@@ -368,11 +381,16 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='POST'&&path==='/api/customer/register'){
         const b=await readJson(req),phone=normalizePhone(b.phone);if(!b.name?.trim()||!/^09\d{9}$/.test(phone))return json(res,400,{error:'INVALID_ACCOUNT'});
         let password;try{password=hashPassword(b.password)}catch(e){return json(res,400,{error:e.message});}
-        const id=randomUUID(),now=new Date().toISOString();try{db.prepare(`INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt) VALUES(?,?,?,'customer','active',0,?,?,?,?)`).run(id,phone,b.name.trim(),now,now,password.hash,password.salt);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(randomUUID(),id,now);}catch{return json(res,409,{error:'PHONE_ALREADY_EXISTS'});}
+        const id=randomUUID(),now=new Date().toISOString(),bound=deviceHash(req);try{db.prepare(`INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt,device_binding_hash,device_bound_at) VALUES(?,?,?,'customer','active',0,?,?,?,?,?,?)`).run(id,phone,b.name.trim(),now,now,password.hash,password.salt,bound||null,bound?now:null);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(randomUUID(),id,now);}catch{return json(res,409,{error:'PHONE_ALREADY_EXISTS'});}
         const session=createSession(db,id);audit(phone,'register','account',id);return json(res,201,{...session,account:{id,name:b.name.trim(),phone}});
       }
       if(req.method==='POST'&&path==='/api/customer/login'){
-        const b=await readJson(req),account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(b.phone);if(!account||!verifyPassword(b.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});const session=createSession(db,account.id);return json(res,200,{...session,account:{id:account.id,name:account.name,phone:account.phone}});
+        const b=await readJson(req),account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(b.phone);if(!account||!verifyPassword(b.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});try{claimCustomerDevice(account,req)}catch(e){return json(res,403,{error:e.message})}const session=createSession(db,account.id);return json(res,200,{...session,account:{id:account.id,name:account.name,phone:account.phone}});
+      }
+      if(req.method==='POST'&&path==='/api/customer/device/bind'){
+        const account=accountFromRequest(db,req);if(!account||account.role!=='customer')return json(res,401,{error:'UNAUTHORIZED'});
+        try{claimCustomerDevice(account,req)}catch(e){return json(res,403,{error:e.message})}
+        return json(res,200,{bound:true});
       }
       if(req.method==='POST'&&path==='/api/customer/password-reset/request'){
         const b=await readJson(req),phone=normalizePhone(b.phone);if(!/^09\d{9}$/.test(phone))return json(res,400,{error:'INVALID_PHONE'});
@@ -387,7 +405,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const b=await readJson(req),phone=normalizePhone(b.phone),row=db.prepare(`SELECT c.*,a.phone FROM password_reset_codes c JOIN accounts a ON a.id=c.account_id WHERE c.id=? AND a.phone=? AND c.consumed_at IS NULL`).get(b.resetId,phone);
         if(!row||row.expires_at<=new Date().toISOString()||row.attempts>=5)return json(res,400,{error:'RESET_CODE_INVALID'});
         if(row.code_hash!==codeHash(String(b.code||''))){db.prepare('UPDATE password_reset_codes SET attempts=attempts+1 WHERE id=?').run(row.id);return json(res,400,{error:'RESET_CODE_INVALID'});}
-        let password;try{password=hashPassword(b.newPassword)}catch(e){return json(res,400,{error:e.message});}const now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE accounts SET password_hash=?,password_salt=?,updated_at=? WHERE id=?').run(password.hash,password.salt,now,row.account_id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(row.account_id);db.prepare('UPDATE password_reset_codes SET consumed_at=? WHERE id=?').run(now,row.id);db.exec('COMMIT');}catch{db.exec('ROLLBACK');return json(res,500,{error:'PASSWORD_RESET_FAILED'});}audit(phone,'confirm','password_reset_code',row.id);return json(res,200,{reset:true});
+        let password;try{password=hashPassword(b.newPassword)}catch(e){return json(res,400,{error:e.message});}const now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE accounts SET password_hash=?,password_salt=?,device_binding_hash=NULL,device_bound_at=NULL,updated_at=? WHERE id=?').run(password.hash,password.salt,now,row.account_id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(row.account_id);db.prepare('UPDATE password_reset_codes SET consumed_at=? WHERE id=?').run(now,row.id);db.exec('COMMIT');}catch{db.exec('ROLLBACK');return json(res,500,{error:'PASSWORD_RESET_FAILED'});}audit(phone,'confirm','password_reset_code',row.id);return json(res,200,{reset:true});
       }
       if(req.method==='POST'&&path==='/api/customer/password-reset-requests'){
         const b=await readJson(req),phone=String(b.phone||'').trim();

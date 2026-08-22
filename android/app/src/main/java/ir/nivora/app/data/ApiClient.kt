@@ -6,7 +6,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import android.util.Base64
 
-class ApiClient(private val baseUrl: String) {
+class ApiClient(private val baseUrl: String, private val deviceId: String = "") {
     private data class RawResponse(val status: Int, val body: String)
 
     // JSONObject represents a JSON null as the literal text "null" on some Android versions.
@@ -49,6 +49,7 @@ class ApiClient(private val baseUrl: String) {
             useCaches = false
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Accept-Language", "fa-IR")
+            if (deviceId.isNotBlank()) setRequestProperty("X-Nivora-Device", deviceId)
             if (token != null) setRequestProperty("Authorization", "Bearer $token")
             if (body != null) {
                 doOutput = true
@@ -83,6 +84,8 @@ class ApiClient(private val baseUrl: String) {
     fun login(phone: String, password: String, role: String) = session(
         request(if (role == "reseller") "/api/reseller/login" else "/api/customer/login", "POST", body = JSONObject().put("phone", phone).put("password", password)), role
     )
+
+    fun bindDevice(token: String) { request("/api/customer/device/bind", "POST", token = token) }
 
     fun register(name: String, phone: String, password: String) = session(
         request(

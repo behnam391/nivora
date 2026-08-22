@@ -38,9 +38,14 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 
 class MainActivity : ComponentActivity(), NivoraActions {
-    private val api = ApiClient(BuildConfig.API_BASE_URL)
+    private val deviceId by lazy {
+        getSharedPreferences("nivora_device", MODE_PRIVATE).getString("id", null)
+            ?: UUID.randomUUID().toString().replace("-", "").also { getSharedPreferences("nivora_device", MODE_PRIVATE).edit().putString("id", it).apply() }
+    }
+    private val api by lazy { ApiClient(BuildConfig.API_BASE_URL, deviceId) }
     private val handler = Handler(Looper.getMainLooper())
     private val noticeIds = AtomicLong()
     private lateinit var session: SecureSessionStore
@@ -375,6 +380,8 @@ class MainActivity : ComponentActivity(), NivoraActions {
         startForegroundService(
             Intent(this, NivoraVpnService::class.java)
                 .putExtra(NivoraVpnService.EXTRA_URL, url)
+                .putExtra(NivoraVpnService.EXTRA_SESSION_TOKEN, session.token())
+                .putExtra(NivoraVpnService.EXTRA_DEVICE_ID, deviceId)
                 .putExtra(NivoraVpnService.EXTRA_LABEL, state.selectedSubscription?.locationName ?: state.selectedSubscription?.planName)
         )
     }
@@ -394,6 +401,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
                     val resellerPlans = api.resellerPlans(token)
                     DashboardPayload(reseller = reseller, resellerPlans = resellerPlans, tickets = api.tickets(token,"reseller"))
                 } else {
+                    api.bindDevice(token)
                     val account = api.account(token)
                     val plans = api.plans()
                     val tickets = api.tickets(token)

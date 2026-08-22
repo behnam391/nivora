@@ -18,5 +18,9 @@ export function createSession(db, accountId, days = Number(process.env.SESSION_D
 export function accountFromRequest(db, req) {
   const raw=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];if(!raw)return null;
   const hash=createHash('sha256').update(raw).digest('hex');
-  return db.prepare(`SELECT a.* FROM account_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.expires_at>? AND a.status='active'`).get(hash,new Date().toISOString())||null;
+  const account = db.prepare(`SELECT a.* FROM account_sessions s JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.expires_at>? AND a.status='active'`).get(hash,new Date().toISOString())||null;
+  if (process.env.ENFORCE_DEVICE_GATEWAY !== 'true' || !account || account.role !== 'customer' || !account.device_binding_hash) return account;
+  const deviceId = String(req.headers['x-nivora-device'] || '');
+  const deviceHash = createHash('sha256').update(deviceId).digest('hex');
+  return deviceId && deviceHash === account.device_binding_hash ? account : null;
 }

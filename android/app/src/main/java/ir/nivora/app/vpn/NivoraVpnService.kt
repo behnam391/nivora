@@ -29,6 +29,8 @@ import kotlin.concurrent.thread
 class NivoraVpnService : VpnService(), DialerController {
     companion object {
         const val EXTRA_URL = "subscription_url"
+        const val EXTRA_SESSION_TOKEN = "session_token"
+        const val EXTRA_DEVICE_ID = "device_id"
         const val EXTRA_SHARE_LINK = "share_link"
         const val EXTRA_RUN_ID = "network_lab_run_id"
         const val EXTRA_STATE = "vpn_state"
@@ -66,6 +68,8 @@ class NivoraVpnService : VpnService(), DialerController {
             return START_NOT_STICKY
         }
         val url = intent?.getStringExtra(EXTRA_URL)
+        val sessionToken = intent?.getStringExtra(EXTRA_SESSION_TOKEN)
+        val deviceId = intent?.getStringExtra(EXTRA_DEVICE_ID)
         val shareLink = intent?.getStringExtra(EXTRA_SHARE_LINK)
         activeRunId = intent?.getStringExtra(EXTRA_RUN_ID)
         if (url.isNullOrBlank() && shareLink.isNullOrBlank()) {
@@ -80,7 +84,7 @@ class NivoraVpnService : VpnService(), DialerController {
         showNotification("در حال برقراری اتصال امن…", label, connected = false)
         thread(name = "nivora-xray") {
             try {
-                startTunnel(url, shareLink, label, runId)
+                startTunnel(url, shareLink, sessionToken, deviceId, label, runId)
             } catch (error: Throwable) {
                 if (generation.get() != runId) return@thread
                 Log.e("NivoraVpnService", "VPN tunnel failed: ${error.javaClass.simpleName}")
@@ -93,7 +97,7 @@ class NivoraVpnService : VpnService(), DialerController {
         return START_STICKY
     }
 
-    private fun startTunnel(url: String?, shareLink: String?, label: String, runId: Int) {
+    private fun startTunnel(url: String?, shareLink: String?, sessionToken: String?, deviceId: String?, label: String, runId: Int) {
         stopCore()
         ensureCurrent(runId)
         val raw = if (!shareLink.isNullOrBlank()) shareLink else {
@@ -102,6 +106,8 @@ class NivoraVpnService : VpnService(), DialerController {
                 readTimeout = 20_000
                 useCaches = false
                 setRequestProperty("Accept", "text/plain")
+                if (!sessionToken.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $sessionToken")
+                if (!deviceId.isNullOrBlank()) setRequestProperty("X-Nivora-Device", deviceId)
             }
             try {
                 if (connection.responseCode !in 200..299) throw IllegalStateException("SUBSCRIPTION_UNAVAILABLE")

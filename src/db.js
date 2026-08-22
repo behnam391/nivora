@@ -279,6 +279,8 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   const accountColumns = db.prepare('PRAGMA table_info(accounts)').all().map(c => c.name);
   if (!accountColumns.includes('password_hash')) db.exec('ALTER TABLE accounts ADD COLUMN password_hash TEXT');
   if (!accountColumns.includes('password_salt')) db.exec('ALTER TABLE accounts ADD COLUMN password_salt TEXT');
+  if (!accountColumns.includes('device_binding_hash')) db.exec('ALTER TABLE accounts ADD COLUMN device_binding_hash TEXT');
+  if (!accountColumns.includes('device_bound_at')) db.exec('ALTER TABLE accounts ADD COLUMN device_bound_at TEXT');
   if (!accountColumns.includes('managed_by_reseller_id')) db.exec('ALTER TABLE accounts ADD COLUMN managed_by_reseller_id TEXT REFERENCES accounts(id)');
   const resellerCustomerColumns = db.prepare('PRAGMA table_info(reseller_customers)').all().map(c => c.name);
   if (!resellerCustomerColumns.includes('account_id')) db.exec('ALTER TABLE reseller_customers ADD COLUMN account_id TEXT REFERENCES accounts(id)');

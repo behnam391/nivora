@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -22,6 +23,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.nivora.app.data.Plan
 import ir.nivora.app.data.Subscription
+import ir.nivora.app.R
 import java.text.NumberFormat
 import java.time.Instant
 import java.time.ZoneId
@@ -57,7 +61,12 @@ fun countryFlag(code: String?): String = when (code?.trim()?.uppercase(Locale.US
 @Composable
 fun NivoraLogo(modifier: Modifier = Modifier, compact: Boolean = false, onDark: Boolean = false) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        NivoraMark(Modifier.size(if (compact) 40.dp else 57.dp))
+        Image(
+            painter = painterResource(R.drawable.nivora_logo_v3),
+            contentDescription = "Nivora",
+            modifier = Modifier.size(if (compact) 40.dp else 57.dp),
+            contentScale = ContentScale.Fit
+        )
         Column {
             Text("NIVORA", color = if (onDark) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = if (compact) 19.sp else 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
             if (!compact) Text("اینترنت امن، ساده و سریع", style = MaterialTheme.typography.bodyMedium, color = if (onDark) Color(0xFFB9D0C8) else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -100,7 +109,7 @@ fun NivoraMark(modifier: Modifier = Modifier) {
 @Composable
 fun AppTopBar(name: String, unread: Int, refreshing: Boolean, onRefresh: () -> Unit, onNotifications: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -140,7 +149,7 @@ fun ConnectionHero(
     val powerScale by animateFloatAsState(if (connected) 1.04f else 1f, label = "power-scale")
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(32.dp),
+        shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(containerColor = NivoraInk),
         elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
     ) {
@@ -153,7 +162,7 @@ fun ConnectionHero(
             )
         ) {
             Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 28.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -176,22 +185,22 @@ fun ConnectionHero(
                         dark = true
                     )
                 }
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(16.dp))
                 Box(
                     modifier = Modifier
-                        .size((126 * powerScale).dp)
-                        .shadow(36.dp, CircleShape, ambientColor = glow.copy(.65f), spotColor = glow.copy(.65f))
+                        .size((96 * powerScale).dp)
+                        .shadow(24.dp, CircleShape, ambientColor = glow.copy(.55f), spotColor = glow.copy(.55f))
                         .background(glow.copy(.18f), CircleShape)
                         .border(1.dp, glow.copy(.62f), CircleShape)
-                        .padding(13.dp)
+                        .padding(10.dp)
                         .background(if (connected) NivoraGreen else Color(0xFF17382E), CircleShape)
                         .clickable(enabled = !connecting, onClick = onToggle),
                     contentAlignment = Alignment.Center
                 ) {
                     if (connecting) CircularProgressIndicator(color = NivoraGreen, strokeWidth = 4.dp, modifier = Modifier.size(48.dp))
-                    else Icon(Icons.Rounded.PowerSettingsNew, if (connected) "قطع اتصال" else "اتصال", tint = if (connected) NivoraInk else Color.White, modifier = Modifier.size(50.dp))
+                    else Icon(Icons.Rounded.PowerSettingsNew, if (connected) "قطع اتصال" else "اتصال", tint = if (connected) NivoraInk else Color.White, modifier = Modifier.size(40.dp))
                 }
-                Spacer(Modifier.height(22.dp))
+                Spacer(Modifier.height(14.dp))
                 Text(
                     subscription?.let { "${countryFlag(it.countryCode)}  ${it.locationName ?: it.planName}" } ?: "اشتراک فعالی انتخاب نشده",
                     color = Color.White,
@@ -217,7 +226,7 @@ fun ConnectionHero(
                 if (state == "error" && !error.isNullOrBlank()) {
                     Text(error, color = Color(0xFFFFA9AE), style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp))
                 }
-                Spacer(Modifier.height(18.dp))
+                Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     DarkMetric(Icons.Rounded.Speed, if (pingBusy) "…" else pingMs?.let { "$it ms" } ?: "تست پینگ", onPing)
                     DarkMetric(Icons.Rounded.Lock, "Reality", null)
@@ -259,7 +268,6 @@ fun SubscriptionCard(
     subscription: Subscription,
     selected: Boolean,
     onSelect: () -> Unit,
-    onCopy: () -> Unit,
     onRenew: () -> Unit
 ) {
     val progress = (subscription.usagePercent / 100.0).toFloat().coerceIn(0f, 1f)
@@ -269,7 +277,7 @@ fun SubscriptionCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = if (selected) CardDefaults.outlinedCardBorder().copy(brush = Brush.linearGradient(listOf(NivoraGreenDark, NivoraGreen))) else CardDefaults.outlinedCardBorder()
     ) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 15.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
                     Text(countryFlag(subscription.countryCode), fontSize = 24.sp)
@@ -298,10 +306,7 @@ fun SubscriptionCard(
                 SubscriptionMetric(Icons.Rounded.DataUsage, "${faNumber(subscription.trafficGb)} گیگ")
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(.65f))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onCopy, modifier = Modifier.weight(1f)) { Icon(Icons.Rounded.ContentCopy, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("کپی لینک") }
-                Button(onClick = onRenew, modifier = Modifier.weight(1f)) { Icon(Icons.Rounded.Autorenew, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("تمدید") }
-            }
+            Button(onClick = onRenew, modifier = Modifier.fillMaxWidth().height(42.dp)) { Icon(Icons.Rounded.Autorenew, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("تمدید اشتراک") }
         }
     }
 }
