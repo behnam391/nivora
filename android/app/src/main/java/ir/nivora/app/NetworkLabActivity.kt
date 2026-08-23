@@ -277,7 +277,18 @@ class NetworkLabActivity : ComponentActivity() {
         } catch (_: IOException) {
             disconnects++; Log.w("NeuralMeshLab", "profile=${profile.id} round=$round metric=$metric outcome=IO"); null
         }
-        val http204 = capture("http204") { headerLatency(policy.http204Url, policy.requestTimeoutMs, expected204 = true) }
+        // Iranian providers may reset one benchmark host (most commonly
+        // Google's gstatic 204) while the tunnel and the rest of the Internet
+        // are usable. Require all independent probes to fail before rejecting
+        // the round, rather than making one Google endpoint a single point of
+        // failure.
+        val http204 = capture("http204") {
+            headerLatency(policy.http204Url, policy.requestTimeoutMs, expected204 = true)
+        } ?: capture("youtube-bootstrap") {
+            headerLatency(policy.youtube204Url, policy.requestTimeoutMs, expected204 = true)
+        } ?: capture("instagram-bootstrap") {
+            headerLatency(policy.instagramUrl, policy.requestTimeoutMs)
+        }
         if (http204 == null) {
             if (!NivoraVpnService.isCoreRunning()) disconnects++
             stopVpn()
