@@ -89,7 +89,7 @@ object NeuralMeshManifestVerifier {
         val expiresAt = json.getString("expiresAt")
         require(java.time.Instant.parse(expiresAt).toEpochMilli() > nowMs) { "MANIFEST_EXPIRED" }
         val profilesJson = json.getJSONArray("profiles")
-        require(profilesJson.length() == 3) { "MANIFEST_PROFILE_COUNT" }
+        require(profilesJson.length() in 3..8) { "MANIFEST_PROFILE_COUNT" }
         val profiles = buildList {
             for (index in 0 until profilesJson.length()) profilesJson.getJSONObject(index).let { profile ->
                 val uri = profile.getString("uri")
@@ -97,7 +97,7 @@ object NeuralMeshManifestVerifier {
                 add(NeuralMeshProfile(profile.getString("id"), profile.getString("name"), profile.getString("transport"), uri))
             }
         }
-        require(profiles.map(NeuralMeshProfile::id).distinct().size == 3) { "MANIFEST_PROFILE_ID" }
+        require(profiles.map(NeuralMeshProfile::id).distinct().size == profiles.size) { "MANIFEST_PROFILE_ID" }
         val measurement = json.getJSONObject("measurement")
         val scoring = json.getJSONObject("scoring")
         val weights = scoring.getJSONObject("weights")

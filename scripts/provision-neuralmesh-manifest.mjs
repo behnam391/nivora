@@ -92,6 +92,24 @@ function buildEdgeTlsLink(internalLink) {
   return edge.toString();
 }
 
+function buildWebSocketTlsLink(internalLink) {
+  const edge = new URL(internalLink);
+  edge.hostname = 'wss-lab.nivorali.com';
+  edge.port = '443';
+  edge.searchParams.set('security', 'tls');
+  edge.searchParams.set('sni', 'wss-lab.nivorali.com');
+  edge.searchParams.set('host', 'wss-lab.nivorali.com');
+  edge.searchParams.set('fp', 'chrome');
+  edge.searchParams.set('type', 'ws');
+  edge.searchParams.set('path', '/nivora-ws-f703f6fcd4');
+  edge.searchParams.set('encryption', 'none');
+  edge.searchParams.delete('pbk');
+  edge.searchParams.delete('sid');
+  edge.searchParams.delete('flow');
+  edge.hash = '#NeuralMesh-VLESS-WSS-CF';
+  return edge.toString();
+}
+
 function updateEnvironment(values) {
   let source = readFileSync(environmentFile, 'utf8');
   for (const [key, value] of Object.entries(values)) {
@@ -139,6 +157,12 @@ const manifest = {
       name: 'XHTTP TLS Edge',
       transport: 'xhttp-stream-up-tls',
       uri: buildEdgeTlsLink(selectByPort(links, 50053))
+    },
+    {
+      id: 'vless-wss-cloudflare',
+      name: 'VLESS WSS Cloudflare',
+      transport: 'websocket-tls-cloudflare',
+      uri: buildWebSocketTlsLink(selectByPort(links, 8443))
     }
   ],
   measurement: {
@@ -169,7 +193,7 @@ const manifest = {
 };
 
 if (new Set(manifest.profiles.map(profile => new URL(profile.uri).username)).size !== 1) {
-  throw new Error('The three test profiles do not share one identity');
+  throw new Error('The test profiles do not share one identity');
 }
 
 const publicKeySpkiBase64 = ensureSigningKey();

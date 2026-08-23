@@ -161,8 +161,9 @@ class NetworkLabActivity : ComponentActivity() {
             }.onSuccess { value -> runOnUiThread {
                 manifest = value
                 loading = false
-                status = "سه مسیر آزمایشی معتبر آماده‌اند"
+                status = "${value.profiles.size} مسیر آزمایشی معتبر آماده‌اند"
             } }.onFailure { failure -> runOnUiThread {
+                Log.e("NivoraNetworkLab", "Manifest validation failed", failure)
                 loading = false
                 error = when ((failure as? ApiException)?.status) {
                     401 -> "توکن آزمایش پذیرفته نشد."
@@ -383,6 +384,7 @@ private fun profileLabel(profile: NeuralMeshProfile): String = when (profile.id)
     "reality-vision-8443" -> "Reality Vision"
     "xhttp-reality-2095" -> "XHTTP Reality"
     "xhttp-tls-edge" -> "XHTTP TLS Edge"
+    "vless-wss-cloudflare" -> "VLESS WSS Cloudflare"
     else -> profile.name
 }
 
@@ -410,7 +412,7 @@ private fun NetworkLabScreen(
 ) {
     var token by rememberSaveable { mutableStateOf("") }
     var operatorMenu by remember { mutableStateOf(false) }
-    val totalSteps = manifest?.let { it.profiles.size * it.measurement.rounds } ?: 9
+    val totalSteps = manifest?.let { it.profiles.size * it.measurement.rounds } ?: 12
     Scaffold(topBar = {
         TopAppBar(
             title = { Column { Text("Network Lab", fontWeight = FontWeight.Black); Text("NeuralMesh v1", style = MaterialTheme.typography.labelMedium) } },
@@ -478,13 +480,13 @@ private fun NetworkLabScreen(
                     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer), shape = RoundedCornerShape(20.dp)) {
                         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
                             Icon(Icons.Rounded.DataUsage, null); Spacer(Modifier.width(10.dp))
-                            Text("این اجرا سه مسیر را هرکدام سه بار بررسی می‌کند و حدود ${manifest.measurement.estimatedTotalBytes / 1_000_000} مگابایت مصرف دارد. فقط مقصدهای ثابت آزمایش می‌شوند و داده شخصی ذخیره نمی‌شود.", modifier = Modifier.weight(1f))
+                            Text("این اجرا ${manifest.profiles.size} مسیر را هرکدام ${manifest.measurement.rounds} بار بررسی می‌کند و حدود ${manifest.measurement.estimatedTotalBytes / 1_000_000} مگابایت مصرف دارد. فقط مقصدهای ثابت آزمایش می‌شوند و داده شخصی ذخیره نمی‌شود.", modifier = Modifier.weight(1f))
                         }
                     }
                 }
                 item {
                     if (running) OutlinedButton(onClick = onCancel, Modifier.fillMaxWidth()) { Icon(Icons.Rounded.StopCircle, null); Spacer(Modifier.width(8.dp)); Text("توقف آزمایش") }
-                    else Button(onClick = onRun, enabled = !loading, modifier = Modifier.fillMaxWidth().height(54.dp)) { Icon(Icons.Rounded.PlayArrow, null); Spacer(Modifier.width(8.dp)); Text("شروع آزمایش ۴۵ مگابایتی") }
+                    else Button(onClick = onRun, enabled = !loading, modifier = Modifier.fillMaxWidth().height(54.dp)) { Icon(Icons.Rounded.PlayArrow, null); Spacer(Modifier.width(8.dp)); Text("شروع آزمایش هوشمند") }
                 }
                 if (results.isNotEmpty()) item { Text("نتیجه مسیرها", style = MaterialTheme.typography.headlineSmall) }
                 items(results, key = { it.profile.id }) { result -> ResultCard(result) }

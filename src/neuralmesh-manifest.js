@@ -32,7 +32,7 @@ export function validateNeuralMeshPayload(payload, now = new Date()) {
   const issuedAt = asDateMs(payload.issuedAt), expiresAt = asDateMs(payload.expiresAt);
   if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt) throw new Error('INVALID_MANIFEST_WINDOW');
   if (expiresAt <= now.getTime()) throw new Error('MANIFEST_EXPIRED');
-  if (!Array.isArray(payload.profiles) || payload.profiles.length !== 3) throw new Error('INVALID_MANIFEST_PROFILES');
+  if (!Array.isArray(payload.profiles) || payload.profiles.length < 3 || payload.profiles.length > 8) throw new Error('INVALID_MANIFEST_PROFILES');
   const ids = new Set();
   for (const profile of payload.profiles) {
     if (!profile || typeof profile !== 'object') throw new Error('INVALID_MANIFEST_PROFILE');
