@@ -385,6 +385,8 @@ private fun profileLabel(profile: NeuralMeshProfile): String = when (profile.id)
     "xhttp-reality-2095" -> "XHTTP Reality"
     "xhttp-tls-edge" -> "XHTTP TLS Edge"
     "vless-wss-cloudflare" -> "VLESS WSS Cloudflare"
+    "vless-grpc-cloudflare" -> "VLESS gRPC Cloudflare"
+    "vless-httpupgrade-cloudflare" -> "VLESS HTTPUpgrade Cloudflare"
     else -> profile.name
 }
 

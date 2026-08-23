@@ -76,37 +76,20 @@ function selectByPort(links, port) {
   return matches[0];
 }
 
-function buildEdgeTlsLink(internalLink) {
-  const edge = new URL(internalLink);
-  edge.hostname = 'edge.nivorali.com';
-  edge.port = '443';
-  edge.searchParams.set('security', 'tls');
-  edge.searchParams.set('sni', 'edge.nivorali.com');
-  edge.searchParams.set('host', 'edge.nivorali.com');
-  edge.searchParams.set('alpn', 'h2');
-  edge.searchParams.set('fp', 'chrome');
-  edge.searchParams.delete('pbk');
-  edge.searchParams.delete('sid');
-  edge.searchParams.delete('flow');
-  edge.hash = '#NeuralMesh-XHTTP-TLS-EDGE';
-  return edge.toString();
-}
-
-function buildWebSocketTlsLink(internalLink) {
+function buildEdgeTlsLink(internalLink, { type, hash, alpn = 'h2' }) {
   const edge = new URL(internalLink);
   edge.hostname = 'wss-lab.nivorali.com';
   edge.port = '443';
   edge.searchParams.set('security', 'tls');
   edge.searchParams.set('sni', 'wss-lab.nivorali.com');
   edge.searchParams.set('host', 'wss-lab.nivorali.com');
+  edge.searchParams.set('alpn', alpn);
   edge.searchParams.set('fp', 'chrome');
-  edge.searchParams.set('type', 'ws');
-  edge.searchParams.set('path', '/nivora-ws-f703f6fcd4');
-  edge.searchParams.set('encryption', 'none');
+  edge.searchParams.set('type', type);
   edge.searchParams.delete('pbk');
   edge.searchParams.delete('sid');
   edge.searchParams.delete('flow');
-  edge.hash = '#NeuralMesh-VLESS-WSS-CF';
+  edge.hash = hash;
   return edge.toString();
 }
 
@@ -156,19 +139,43 @@ const manifest = {
       id: 'xhttp-tls-edge',
       name: 'XHTTP TLS Edge',
       transport: 'xhttp-stream-up-tls',
-      uri: buildEdgeTlsLink(selectByPort(links, 50053))
+      uri: buildEdgeTlsLink(selectByPort(links, 50053), {
+        type: 'xhttp',
+        hash: '#NeuralMesh-XHTTP-TLS-CF'
+      })
     },
     {
       id: 'vless-wss-cloudflare',
       name: 'VLESS WSS Cloudflare',
       transport: 'websocket-tls-cloudflare',
-      uri: buildWebSocketTlsLink(selectByPort(links, 8443))
+      uri: buildEdgeTlsLink(selectByPort(links, 2082), {
+        type: 'ws',
+        hash: '#NeuralMesh-VLESS-WSS-CF', alpn: 'http/1.1'
+      })
+    },
+    {
+      id: 'vless-grpc-cloudflare',
+      name: 'VLESS gRPC Cloudflare',
+      transport: 'grpc-tls-cloudflare',
+      uri: buildEdgeTlsLink(selectByPort(links, 50051), {
+        type: 'grpc',
+        hash: '#NeuralMesh-VLESS-GRPC-CF'
+      })
+    },
+    {
+      id: 'vless-httpupgrade-cloudflare',
+      name: 'VLESS HTTPUpgrade Cloudflare',
+      transport: 'httpupgrade-tls-cloudflare',
+      uri: buildEdgeTlsLink(selectByPort(links, 50052), {
+        type: 'httpupgrade',
+        hash: '#NeuralMesh-VLESS-HTTPUPGRADE-CF', alpn: 'http/1.1'
+      })
     }
   ],
   measurement: {
     rounds: 3,
     downloadBytes: 5_000_000,
-    estimatedTotalBytes: 45_000_000,
+    estimatedTotalBytes: 90_000_000,
     http204Url: 'https://www.gstatic.com/generate_204',
     downloadUrl: 'https://speed.cloudflare.com/__down?bytes=5000000',
     instagramUrl: 'https://www.instagram.com/',
