@@ -134,7 +134,10 @@ class NivoraVpnService : VpnService(), DialerController {
         // filtered resolvers commonly return private sinkhole addresses for
         // Instagram/YouTube even when the proxy itself is perfectly healthy.
         val bootstrapDns = resolveUnderlyingDns()
-        val tunnelDns = "8.8.8.8"
+        // Cloudflare's resolver has proved more consistently reachable from
+        // both current Nivora locations than Google port 53 on Iranian mobile
+        // networks. It is still carried inside the selected proxy route.
+        val tunnelDns = "1.1.1.1"
         config.put(
             "dns",
             JSONObject()
@@ -311,12 +314,14 @@ class NivoraVpnService : VpnService(), DialerController {
         val remembered = if (remember) memory.read(networkKey) else null
         val signatures = candidates.associate { (index, _) -> index to SmartRouteMemory.signature(outbounds.getJSONObject(index)) }
         val rememberedIndex = remembered?.winner?.let { signature -> signatures.entries.firstOrNull { it.value == signature }?.key }
-        // A route remembered yesterday may be degraded or filtered today.
-        // Probe every advertised endpoint on each connection and use memory
-        // only when the live reachability check cannot produce a result.
-        val fastest = NetworkTools.fastest(candidates.mapNotNull { it.second }, timeoutMs = 2_800)
-        val selectedIndex = fastest?.let { result -> candidates.firstOrNull { it.second == result.endpoint }?.first }
-            ?: rememberedIndex
+        // Reuse the winner learned for this exact network immediately. Xray's
+        // observatory keeps checking alternatives after startup, so a full
+        // pre-flight race on every connection only makes the customer wait.
+        val fastest = if (rememberedIndex == null) {
+            NetworkTools.fastest(candidates.mapNotNull { it.second }, timeoutMs = 1_200)
+        } else null
+        val selectedIndex = rememberedIndex
+            ?: fastest?.let { result -> candidates.firstOrNull { it.second == result.endpoint }?.first }
             ?: candidates.firstOrNull()?.first ?: 0
         val selectedLabel = candidates.firstOrNull { it.first == selectedIndex }
             ?.let { SmartRouteMemory.label(outbounds.getJSONObject(it.first)) }

@@ -38,6 +38,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CompletableFuture
 import java.util.UUID
 
 class MainActivity : ComponentActivity(), NivoraActions {
@@ -397,15 +398,16 @@ class MainActivity : ComponentActivity(), NivoraActions {
         background(
             work = {
                 if (state.role == "reseller") {
-                    val reseller = api.resellerAccount(token)
-                    val resellerPlans = api.resellerPlans(token)
-                    DashboardPayload(reseller = reseller, resellerPlans = resellerPlans, tickets = api.tickets(token,"reseller"))
+                    val reseller = CompletableFuture.supplyAsync { api.resellerAccount(token) }
+                    val resellerPlans = CompletableFuture.supplyAsync { api.resellerPlans(token) }
+                    val tickets = CompletableFuture.supplyAsync { api.tickets(token,"reseller") }
+                    DashboardPayload(reseller = reseller.join(), resellerPlans = resellerPlans.join(), tickets = tickets.join())
                 } else {
                     api.bindDevice(token)
-                    val account = api.account(token)
-                    val plans = api.plans()
-                    val tickets = api.tickets(token)
-                    DashboardPayload(account = account, plans = plans, tickets = tickets)
+                    val account = CompletableFuture.supplyAsync { api.account(token) }
+                    val plans = CompletableFuture.supplyAsync { api.plans() }
+                    val tickets = CompletableFuture.supplyAsync { api.tickets(token) }
+                    DashboardPayload(account = account.join(), plans = plans.join(), tickets = tickets.join())
                 }
             },
             success = { payload ->

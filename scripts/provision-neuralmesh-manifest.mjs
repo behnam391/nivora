@@ -173,19 +173,19 @@ const manifest = {
     }
   ],
   measurement: {
-    rounds: 3,
-    downloadBytes: 5_000_000,
-    estimatedTotalBytes: 90_000_000,
+    rounds: 1,
+    downloadBytes: 1_000_000,
+    estimatedTotalBytes: 6_000_000,
     http204Url: 'https://www.gstatic.com/generate_204',
     downloadUrl: 'https://speed.cloudflare.com/__down?bytes=5000000',
     instagramUrl: 'https://www.instagram.com/',
     youtube204Url: 'https://www.youtube.com/generate_204',
-    connectTimeoutMs: 20_000,
-    requestTimeoutMs: 20_000
+    connectTimeoutMs: 8_000,
+    requestTimeoutMs: 8_000
   },
   scoring: {
     lowerIsBetter: true,
-    minimumSuccessfulRounds: 2,
+    minimumSuccessfulRounds: 1,
     weights: {
       tunnelConnect: 0.25,
       http204: 0.20,

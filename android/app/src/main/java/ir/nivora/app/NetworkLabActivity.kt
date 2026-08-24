@@ -228,7 +228,7 @@ class NetworkLabActivity : ComponentActivity() {
                 running = false
                 status = when {
                     cancelled.get() -> "آزمایش متوقف شد"
-                    ranked.isEmpty() -> "هیچ مسیر پایداری حداقل دو دور موفق نداشت"
+                    ranked.isEmpty() -> "هیچ مسیر پایداری در بررسی سریع پیدا نشد"
                     else -> "برنده ${operator} روی $networkType: ${profileLabel(ranked.first().profile)}"
                 }
             }
@@ -237,7 +237,7 @@ class NetworkLabActivity : ComponentActivity() {
 
     private fun runRound(profile: NeuralMeshProfile, round: Int, policy: NeuralMeshMeasurementPolicy): NeuralMeshRound {
         stopVpn()
-        Thread.sleep(700)
+        Thread.sleep(250)
         signals.clear()
         if (cancelled.get()) return failedRound(profile, round, "CANCELLED")
         val runId = UUID.randomUUID().toString()
