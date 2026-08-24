@@ -117,6 +117,22 @@ const validEndpoint = endpoint => endpoint.label.length >= 2 && endpoint.host.le
   Number.isInteger(endpoint.priority) && endpoint.priority >= 0 && endpoint.priority <= 10_000;
 
 export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', adminUsername = process.env.ADMIN_USERNAME || '', adminPasswordSalt = process.env.ADMIN_PASSWORD_SALT || '', adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || '', provisioner = null, neuralMeshManifest = null } = {}) {
+  // 3x-ui subscription rendering is deterministic but its HTTPS endpoint can
+  // be slow. Keep a short-lived in-memory copy so cold devices do not queue on
+  // the panel; server-side client expiry/traffic enforcement remains intact.
+  const upstreamSubscriptionCache=new Map();
+  const cachedUpstream=async(upstream,options)=>{
+    const key=`${upstream}|${options.rejectUnauthorized}`;
+    const cached=upstreamSubscriptionCache.get(key);
+    if(cached&&Date.now()-cached.at<60_000)return cached.raw;
+    const raw=await fetchSubscriptionText(upstream,options);
+    upstreamSubscriptionCache.set(key,{raw,at:Date.now()});
+    if(upstreamSubscriptionCache.size>500){
+      const oldest=[...upstreamSubscriptionCache.entries()].sort((a,b)=>a[1].at-b[1].at).slice(0,100);
+      oldest.forEach(([cacheKey])=>upstreamSubscriptionCache.delete(cacheKey));
+    }
+    return raw;
+  };
   const adminSessionHours=Math.min(72,Math.max(1,Number(process.env.ADMIN_SESSION_HOURS)||12));
   const savedAdmin=Object.fromEntries(db.prepare("SELECT key,value FROM app_settings WHERE key IN ('admin_username','admin_password_salt','admin_password_hash','admin_session_version')").all().map(row=>[row.key,row.value]));
   let activeAdminUsername=savedAdmin.admin_username||adminUsername;
@@ -345,16 +361,19 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const rejectUnauthorized = subscription.panel_node_id
             ? false
             : process.env.PANEL_TLS_REJECT_UNAUTHORIZED !== 'false';
-          const raw = await fetchSubscriptionText(upstream, { rejectUnauthorized });
+          const raw = await cachedUpstream(upstream, { rejectUnauthorized });
           // The customer-facing profile is intentionally limited to proven
           // Reality+Vision TCP routes. Experimental XHTTP/gRPC/WS rows remain
           // available in the panel for lab work, but never reach the automatic
           // selector where a closed port could look "fast" and then fail.
           const productionRaw = keepStableRealityRoutes(raw);
           const rendered = buildMultiEndpointSubscription(productionRaw, endpoints.map(endpoint => ({...endpoint,active:Boolean(endpoint.active)})));
+          const etag=`"${createHash('sha256').update(rendered).digest('base64url')}"`;
+          if(req.headers['if-none-match']===etag){res.writeHead(304,{etag,'cache-control':'private, max-age=60'});return res.end();}
           res.writeHead(200, {
             'content-type':'text/plain; charset=utf-8',
-            'cache-control':'private, no-store',
+            'cache-control':'private, max-age=60',
+            etag,
             'x-nivora-routes':String(endpoints.length)
           });
           return res.end(rendered);

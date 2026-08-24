@@ -40,6 +40,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CompletableFuture
 import java.util.UUID
+import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity(), NivoraActions {
     private val deviceId by lazy {
@@ -362,6 +363,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
     override fun logout() {
         startService(Intent(this, NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP))
         session.clear()
+        SubscriptionBundleStore(this).clear()
         WorkManager.getInstance(this).cancelUniqueWork("nivora-notification-poll")
         selection.edit().clear().apply()
         state = NivoraUiState(vpnState = "disconnected")
@@ -434,6 +436,15 @@ class MainActivity : ComponentActivity(), NivoraActions {
                     selectedSubscriptionId = selectedId,
                     loadError = null
                 )
+                // Warm the encrypted bundle cache after the UI is already
+                // usable. The connect button can then start without waiting
+                // for Nivora and 3x-ui to complete a live round trip.
+                active.firstOrNull { it.id == selectedId }?.url?.let { subscriptionUrl ->
+                    thread(name = "nivora-bundle-prefetch") {
+                        runCatching { api.subscription(subscriptionUrl, token) }
+                            .onSuccess { SubscriptionBundleStore(this@MainActivity).save(subscriptionUrl, it) }
+                    }
+                }
             },
             failure = { error ->
                 if ((error as? ApiException)?.code == "UNAUTHORIZED") {

@@ -69,6 +69,9 @@ class SmartRouteMemory(context: Context) {
 
         private fun endpoint(outbound: JSONObject): Pair<String, Int> {
             val settings = outbound.optJSONObject("settings") ?: return "" to 0
+            val flatAddress = settings.optString("address").ifBlank { settings.optString("server") }
+            val flatPort = settings.optInt("port")
+            if (flatAddress.isNotBlank() && flatPort > 0) return flatAddress to flatPort
             for (key in listOf("vnext", "servers")) {
                 val server = settings.optJSONArray(key)?.optJSONObject(0) ?: continue
                 return server.optString("address").ifBlank { server.optString("server") } to server.optInt("port")

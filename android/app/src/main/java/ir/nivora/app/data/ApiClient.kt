@@ -193,11 +193,14 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         )
     }
 
-    fun subscription(url: String): String {
+    fun subscription(url: String, token: String? = null): String {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 12_000
-            readTimeout = 20_000
+            connectTimeout = 6_000
+            readTimeout = 8_000
             useCaches = false
+            setRequestProperty("Accept", "text/plain")
+            if (!token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")
+            if (deviceId.isNotBlank()) setRequestProperty("X-Nivora-Device", deviceId)
         }
         return try {
             if (connection.responseCode !in 200..299) throw ApiException("SUBSCRIPTION_UNAVAILABLE", connection.responseCode)

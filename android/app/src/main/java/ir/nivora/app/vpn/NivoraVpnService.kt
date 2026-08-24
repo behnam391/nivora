@@ -14,6 +14,7 @@ import ir.nivora.app.R
 import ir.nivora.app.data.NetworkTools
 import ir.nivora.app.data.ServiceEndpoint
 import ir.nivora.app.data.SmartRouteMemory
+import ir.nivora.app.data.SubscriptionBundleStore
 import libXray.DialerController
 import libXray.LibXray
 import org.json.JSONArray
@@ -22,6 +23,7 @@ import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.URL
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 class NivoraVpnService : VpnService(), DialerController {
@@ -40,14 +42,11 @@ class NivoraVpnService : VpnService(), DialerController {
         private const val CHANNEL_ID = "nivora_vpn"
         private const val NOTIFICATION_ID = 71
 
-        fun isCoreRunning(): Boolean = runCatching {
-            val response = JSONObject(
-                LibXray.invoke(
-                    JSONObject().put("apiVersion", 1).put("method", "getXrayState").put("payload", JSONObject()).toString()
-                )
-            )
-            response.optJSONObject("data")?.optBoolean("running") == true
-        }.getOrDefault(false)
+        private val coreRunning = AtomicBoolean(false)
+
+        // Never load the 90+ MB native core on MainActivity's UI thread just
+        // to render the first frame. The service owns the authoritative state.
+        fun isCoreRunning(): Boolean = coreRunning.get()
     }
 
     private val generation = AtomicInteger()
@@ -98,21 +97,14 @@ class NivoraVpnService : VpnService(), DialerController {
     private fun startTunnel(url: String?, shareLink: String?, sessionToken: String?, deviceId: String?, label: String, runId: Int) {
         stopCore()
         ensureCurrent(runId)
-        val raw = if (!shareLink.isNullOrBlank()) shareLink else {
-            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15_000
-                readTimeout = 20_000
-                useCaches = false
-                setRequestProperty("Accept", "text/plain")
-                if (!sessionToken.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $sessionToken")
-                if (!deviceId.isNullOrBlank()) setRequestProperty("X-Nivora-Device", deviceId)
-            }
-            try {
-                if (connection.responseCode !in 200..299) throw IllegalStateException("SUBSCRIPTION_UNAVAILABLE")
-                connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            } finally {
-                connection.disconnect()
-            }
+        val bundleStore = SubscriptionBundleStore(this)
+        val cached = if (url.isNullOrBlank()) null else bundleStore.read(url)
+        val raw = shareLink?.takeIf { it.isNotBlank() }
+            ?: cached
+            ?: fetchBundle(url!!, sessionToken, deviceId).also { bundleStore.save(url, it) }
+        if (cached != null && !url.isNullOrBlank()) thread(name = "nivora-bundle-refresh") {
+            runCatching { fetchBundle(url, sessionToken, deviceId) }
+                .onSuccess { bundleStore.save(url, it) }
         }
         ensureCurrent(runId)
         if (raw.isBlank()) throw IllegalStateException("SUBSCRIPTION_EMPTY")
@@ -231,6 +223,7 @@ class NivoraVpnService : VpnService(), DialerController {
             .put("payload", JSONObject().put("configJSON", config.toString()))
         val result = JSONObject(LibXray.invoke(run.toString()))
         if (!result.optBoolean("success")) throw IllegalStateException("XRAY_START_FAILED")
+        coreRunning.set(true)
         ensureCurrent(runId)
         // Network Lab performs its own end-to-end probes and scoring. Report
         // the core as ready immediately so its shorter connection deadline is
@@ -250,6 +243,21 @@ class NivoraVpnService : VpnService(), DialerController {
         }.apply()
         state("connected", null, smartRoute.label)
         showNotification("متصل و محافظت‌شده", smartRoute.label?.let { "$label · $it" } ?: label, connected = true)
+    }
+
+    private fun fetchBundle(url: String, sessionToken: String?, deviceId: String?): String {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 6_000
+            readTimeout = 8_000
+            useCaches = false
+            setRequestProperty("Accept", "text/plain")
+            if (!sessionToken.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $sessionToken")
+            if (!deviceId.isNullOrBlank()) setRequestProperty("X-Nivora-Device", deviceId)
+        }
+        return try {
+            if (connection.responseCode !in 200..299) throw IllegalStateException("SUBSCRIPTION_UNAVAILABLE")
+            connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        } finally { connection.disconnect() }
     }
 
     /**
@@ -477,6 +485,7 @@ class NivoraVpnService : VpnService(), DialerController {
             LibXray.invoke(JSONObject().put("apiVersion", 1).put("method", "stopXray").put("payload", JSONObject()).toString())
         }
         runCatching { LibXray.resetDNS() }
+        coreRunning.set(false)
     }
 
     private fun shutdown(markDisconnected: Boolean) {
