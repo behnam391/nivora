@@ -94,7 +94,9 @@ function buildEdgeTlsLink(internalLink, { type, hash, alpn = 'h2' }) {
 }
 
 function hysteriaTurboProfile() {
-  const raw = String(process.env.NIVORA_TURBO_SHARE_URI || '').trim();
+  const uriFile = String(process.env.NIVORA_TURBO_SHARE_URI_FILE || '').trim();
+  if (uriFile) assertRestrictedFile(uriFile, 'NIVORA_TURBO_SHARE_URI_FILE');
+  const raw = String(process.env.NIVORA_TURBO_SHARE_URI || (uriFile ? readFileSync(uriFile, 'utf8') : '')).trim();
   if (!raw) return null;
   let uri;
   try { uri = new URL(raw); } catch { throw new Error('NIVORA_TURBO_SHARE_URI is invalid'); }
@@ -229,12 +231,16 @@ if (new Set(vlessProfiles.map(profile => new URL(profile.uri).username)).size !=
 const publicKeySpkiBase64 = ensureSigningKey();
 atomicWrite(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, 0o600);
 restrictToServiceUser([manifestFile, privateKeyFile, publicKeyFile]);
-updateEnvironment({
+const environmentUpdates = {
   NEURALMESH_MANIFEST_TOKEN_HASH: tokenHash,
   NEURALMESH_MANIFEST_FILE: manifestFile,
   NEURALMESH_SIGNING_KEY_FILE: privateKeyFile,
   NEURALMESH_MANIFEST_KEY_ID: keyId
-});
+};
+if (process.env.NIVORA_TURBO_SHARE_URI_FILE) {
+  environmentUpdates.NIVORA_TURBO_SHARE_URI_FILE = process.env.NIVORA_TURBO_SHARE_URI_FILE;
+}
+updateEnvironment(environmentUpdates);
 
 console.log(JSON.stringify({
   configured: true,
