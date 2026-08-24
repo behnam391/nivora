@@ -93,6 +93,25 @@ function buildEdgeTlsLink(internalLink, { type, hash, alpn = 'h2' }) {
   return edge.toString();
 }
 
+function hysteriaTurboProfile() {
+  const raw = String(process.env.NIVORA_TURBO_SHARE_URI || '').trim();
+  if (!raw) return null;
+  let uri;
+  try { uri = new URL(raw); } catch { throw new Error('NIVORA_TURBO_SHARE_URI is invalid'); }
+  if (!['hysteria2:', 'hy2:'].includes(uri.protocol) || !uri.username || !uri.hostname || !uri.port) {
+    throw new Error('NIVORA_TURBO_SHARE_URI must be a complete Hysteria2 URI');
+  }
+  if (!uri.searchParams.get('sni') || !uri.searchParams.get('obfs') || !uri.searchParams.get('obfs-password')) {
+    throw new Error('NIVORA_TURBO_SHARE_URI is missing TLS or obfuscation parameters');
+  }
+  return {
+    id: 'hysteria2-turbo-7443',
+    name: 'Hysteria2 Turbo Finland',
+    transport: 'hysteria2-udp-bbr',
+    uri: uri.toString()
+  };
+}
+
 function updateEnvironment(values) {
   let source = readFileSync(environmentFile, 'utf8');
   for (const [key, value] of Object.entries(values)) {
@@ -118,64 +137,67 @@ function restrictToServiceUser(paths) {
 const links = await fetchTestLinks();
 const now = new Date();
 const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+const turboProfile = hysteriaTurboProfile();
+const profiles = [
+  {
+    id: 'reality-vision-8443',
+    name: 'Reality Vision Direct',
+    transport: 'tcp-reality-vision',
+    uri: selectByPort(links, 8443)
+  },
+  {
+    id: 'xhttp-reality-2095',
+    name: 'XHTTP Reality Direct',
+    transport: 'xhttp-reality',
+    uri: selectByPort(links, 2095)
+  },
+  {
+    id: 'xhttp-tls-edge',
+    name: 'XHTTP TLS Edge',
+    transport: 'xhttp-stream-up-tls',
+    uri: buildEdgeTlsLink(selectByPort(links, 50053), {
+      type: 'xhttp',
+      hash: '#NeuralMesh-XHTTP-TLS-CF'
+    })
+  },
+  {
+    id: 'vless-wss-cloudflare',
+    name: 'VLESS WSS Cloudflare',
+    transport: 'websocket-tls-cloudflare',
+    uri: buildEdgeTlsLink(selectByPort(links, 2082), {
+      type: 'ws',
+      hash: '#NeuralMesh-VLESS-WSS-CF', alpn: 'http/1.1'
+    })
+  },
+  {
+    id: 'vless-grpc-cloudflare',
+    name: 'VLESS gRPC Cloudflare',
+    transport: 'grpc-tls-cloudflare',
+    uri: buildEdgeTlsLink(selectByPort(links, 50051), {
+      type: 'grpc',
+      hash: '#NeuralMesh-VLESS-GRPC-CF'
+    })
+  },
+  {
+    id: 'vless-httpupgrade-cloudflare',
+    name: 'VLESS HTTPUpgrade Cloudflare',
+    transport: 'httpupgrade-tls-cloudflare',
+    uri: buildEdgeTlsLink(selectByPort(links, 50052), {
+      type: 'httpupgrade',
+      hash: '#NeuralMesh-VLESS-HTTPUPGRADE-CF', alpn: 'http/1.1'
+    })
+  },
+  ...(turboProfile ? [turboProfile] : [])
+];
 const manifest = {
   version: 1,
   issuedAt: now.toISOString(),
   expiresAt: expiresAt.toISOString(),
-  profiles: [
-    {
-      id: 'reality-vision-8443',
-      name: 'Reality Vision Direct',
-      transport: 'tcp-reality-vision',
-      uri: selectByPort(links, 8443)
-    },
-    {
-      id: 'xhttp-reality-2095',
-      name: 'XHTTP Reality Direct',
-      transport: 'xhttp-reality',
-      uri: selectByPort(links, 2095)
-    },
-    {
-      id: 'xhttp-tls-edge',
-      name: 'XHTTP TLS Edge',
-      transport: 'xhttp-stream-up-tls',
-      uri: buildEdgeTlsLink(selectByPort(links, 50053), {
-        type: 'xhttp',
-        hash: '#NeuralMesh-XHTTP-TLS-CF'
-      })
-    },
-    {
-      id: 'vless-wss-cloudflare',
-      name: 'VLESS WSS Cloudflare',
-      transport: 'websocket-tls-cloudflare',
-      uri: buildEdgeTlsLink(selectByPort(links, 2082), {
-        type: 'ws',
-        hash: '#NeuralMesh-VLESS-WSS-CF', alpn: 'http/1.1'
-      })
-    },
-    {
-      id: 'vless-grpc-cloudflare',
-      name: 'VLESS gRPC Cloudflare',
-      transport: 'grpc-tls-cloudflare',
-      uri: buildEdgeTlsLink(selectByPort(links, 50051), {
-        type: 'grpc',
-        hash: '#NeuralMesh-VLESS-GRPC-CF'
-      })
-    },
-    {
-      id: 'vless-httpupgrade-cloudflare',
-      name: 'VLESS HTTPUpgrade Cloudflare',
-      transport: 'httpupgrade-tls-cloudflare',
-      uri: buildEdgeTlsLink(selectByPort(links, 50052), {
-        type: 'httpupgrade',
-        hash: '#NeuralMesh-VLESS-HTTPUPGRADE-CF', alpn: 'http/1.1'
-      })
-    }
-  ],
+  profiles,
   measurement: {
     rounds: 1,
     downloadBytes: 1_000_000,
-    estimatedTotalBytes: 6_000_000,
+    estimatedTotalBytes: profiles.length * 1_000_000,
     http204Url: 'https://www.gstatic.com/generate_204',
     downloadUrl: 'https://speed.cloudflare.com/__down?bytes=5000000',
     instagramUrl: 'https://www.instagram.com/',
@@ -199,7 +221,8 @@ const manifest = {
   }
 };
 
-if (new Set(manifest.profiles.map(profile => new URL(profile.uri).username)).size !== 1) {
+const vlessProfiles = manifest.profiles.filter(profile => profile.uri.startsWith('vless://'));
+if (new Set(vlessProfiles.map(profile => new URL(profile.uri).username)).size !== 1) {
   throw new Error('The test profiles do not share one identity');
 }
 

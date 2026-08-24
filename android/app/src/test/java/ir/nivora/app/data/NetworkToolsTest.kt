@@ -53,4 +53,12 @@ class NetworkToolsTest {
             NetworkTools.endpointFromSubscription(raw)
         )
     }
+
+    @Test
+    fun neuralMeshAllowsOnlyExplicitTunnelSchemes() {
+        assertEquals(true, isSupportedNeuralMeshProfileUri("hysteria2://secret@node.nivorali.com:7443/?sni=b.nivorali.com"))
+        assertEquals(true, isSupportedNeuralMeshProfileUri("vless://id@node.nivorali.com:443?security=reality"))
+        assertEquals(false, isSupportedNeuralMeshProfileUri("https://node.nivorali.com:443/profile"))
+        assertEquals(false, isSupportedNeuralMeshProfileUri("hysteria2://missing-port.nivorali.com"))
+    }
 }

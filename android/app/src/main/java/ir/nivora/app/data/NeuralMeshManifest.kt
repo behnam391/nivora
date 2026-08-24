@@ -5,6 +5,7 @@ import org.json.JSONObject
 import java.security.KeyFactory
 import java.security.Signature
 import java.security.spec.X509EncodedKeySpec
+import java.net.URI
 import kotlin.math.max
 
 data class NeuralMeshProfile(
@@ -93,7 +94,7 @@ object NeuralMeshManifestVerifier {
         val profiles = buildList {
             for (index in 0 until profilesJson.length()) profilesJson.getJSONObject(index).let { profile ->
                 val uri = profile.getString("uri")
-                require(uri.startsWith("vless://")) { "MANIFEST_PROFILE_URI" }
+                require(isSupportedNeuralMeshProfileUri(uri)) { "MANIFEST_PROFILE_URI" }
                 add(NeuralMeshProfile(profile.getString("id"), profile.getString("name"), profile.getString("transport"), uri))
             }
         }
@@ -135,6 +136,12 @@ object NeuralMeshManifestVerifier {
 
     private fun decodeUrl(value: String): ByteArray = Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
 }
+
+internal fun isSupportedNeuralMeshProfileUri(value: String): Boolean = runCatching {
+    val uri = URI(value)
+    uri.scheme?.lowercase() in setOf("vless", "hysteria2", "hy2") &&
+        !uri.host.isNullOrBlank() && uri.port in 1..65535
+}.getOrDefault(false)
 
 object NeuralMeshScorer {
     fun result(profile: NeuralMeshProfile, rounds: List<NeuralMeshRound>, policy: NeuralMeshScoringPolicy): NeuralMeshResult {

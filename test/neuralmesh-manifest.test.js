@@ -67,6 +67,26 @@ test('NeuralMesh signature detects payload tampering', async t => {
   assert.throws(() => verifyNeuralMeshEnvelope(envelope, keys.publicKey, now), /BAD_SIGNATURE/);
 });
 
+test('NeuralMesh manifest accepts Hysteria2 and rejects unknown share schemes', () => {
+  const withHysteria = payload();
+  withHysteria.profiles.push({
+    id: 'hysteria2-turbo',
+    name: 'Hysteria2 Turbo',
+    transport: 'hysteria2-udp-bbr',
+    uri: 'hysteria2://temporary-auth@example.test:7443/?sni=example.test&obfs=salamander&obfs-password=test'
+  });
+  const service = createNeuralMeshManifestService({
+    tokenHash,
+    privateKey: keys.privateKey,
+    readManifest: () => withHysteria,
+    now: () => now
+  });
+  assert.equal(service.respond(`Bearer ${token}`).status, 200);
+
+  withHysteria.profiles[3].uri = 'https://example.test:7443/profile';
+  assert.equal(service.respond(`Bearer ${token}`).status, 503);
+});
+
 test('health endpoint checks the database without exposing configuration', async t => {
   const { server, base } = await start(); t.after(() => server.close());
   const response = await fetch(`${base}/api/health`);

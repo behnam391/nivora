@@ -46,7 +46,7 @@ object NetworkTools {
         // A raw TCP connect is meaningful for TCP/HTTP based Xray transports.
         // UDP transports are kept in the subscription but ranked by Xray's
         // observatory after the tunnel starts instead of being marked dead here.
-        val unique = endpoints.distinct().filter { it.transport !in setOf("hysteria2", "hy2", "tuic", "quic") }.take(12)
+        val unique = endpoints.distinct().filter { it.transport !in setOf("hysteria", "hysteria2", "hy2", "tuic", "quic") }.take(12)
         if (unique.isEmpty()) return null
         val executor = Executors.newFixedThreadPool(unique.size.coerceAtMost(4))
         return try {

@@ -10,6 +10,7 @@ import { readFileSync, statSync } from 'node:fs';
 
 const TOKEN_HASH_PATTERN = /^[a-f0-9]{64}$/i;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const ALLOWED_PROFILE_SCHEMES = new Set(['vless:', 'hysteria2:', 'hy2:']);
 
 const asDateMs = value => ISO_DATE_PATTERN.test(String(value || '')) ? Date.parse(value) : Number.NaN;
 
@@ -39,7 +40,11 @@ export function validateNeuralMeshPayload(payload, now = new Date()) {
     if (!/^[a-z0-9-]{3,40}$/.test(String(profile.id || '')) || ids.has(profile.id)) throw new Error('INVALID_MANIFEST_PROFILE_ID');
     ids.add(profile.id);
     if (!String(profile.name || '').trim() || !String(profile.transport || '').trim()) throw new Error('INVALID_MANIFEST_PROFILE');
-    if (!String(profile.uri || '').startsWith('vless://')) throw new Error('INVALID_MANIFEST_PROFILE_URI');
+    let profileUrl;
+    try { profileUrl = new URL(String(profile.uri || '')); } catch { throw new Error('INVALID_MANIFEST_PROFILE_URI'); }
+    if (!ALLOWED_PROFILE_SCHEMES.has(profileUrl.protocol) || !profileUrl.hostname || !profileUrl.port) {
+      throw new Error('INVALID_MANIFEST_PROFILE_URI');
+    }
   }
   const measurement = payload.measurement;
   if (!measurement || !Number.isInteger(measurement.rounds) || measurement.rounds < 1 || measurement.rounds > 10) throw new Error('INVALID_MEASUREMENT_POLICY');

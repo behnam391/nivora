@@ -382,6 +382,7 @@ class NetworkLabActivity : ComponentActivity() {
 
 private fun profileLabel(profile: NeuralMeshProfile): String = when (profile.id) {
     "reality-vision-8443" -> "Reality Vision"
+    "hysteria2-turbo-7443" -> "Hysteria2 Turbo"
     "xhttp-reality-2095" -> "XHTTP Reality"
     "xhttp-tls-edge" -> "XHTTP TLS Edge"
     "vless-wss-cloudflare" -> "VLESS WSS Cloudflare"
