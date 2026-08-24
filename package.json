@@ -9,6 +9,7 @@
     "backup": "node --env-file-if-exists=.env scripts/backup.js",
     "restore": "node --env-file-if-exists=.env scripts/restore-backup.js",
     "purge-subscriptions": "node --env-file-if-exists=.env scripts/purge-subscriptions.js",
+    "hysteria-node": "node --env-file-if-exists=.env scripts/configure-hysteria-node.mjs",
     "tune-reality": "node --env-file-if-exists=.env scripts/tune-reality-routes.mjs"
   },
   "engines": { "node": ">=22.5" }

@@ -192,7 +192,7 @@ class NetworkLabActivity : ComponentActivity() {
         results = emptyList()
         completedSteps = 0
         val networkType = currentNetworkType()
-        val storageKey = "${operator}_$networkType"
+        val storageKey = CustomerConnectPolicy.labStorageKey(operator, networkType)
         val winner = preferences.getString("winner_$storageKey", null)
         val runnerUp = preferences.getString("runner_$storageKey", null)
         val ordered = policy.profiles.sortedBy { profile -> when (profile.id) { winner -> 0; runnerUp -> 1; else -> 2 } }
@@ -359,7 +359,7 @@ class NetworkLabActivity : ComponentActivity() {
     )
 
     private fun stopVpn() {
-        startService(Intent(this, NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP))
+        stopService(Intent(this, NivoraVpnService::class.java))
     }
 
     private fun cancelRun() {

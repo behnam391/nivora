@@ -169,7 +169,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
 
     override fun toggleVpn() {
         if (state.vpnState == "connected" || state.vpnState == "connecting") {
-            startService(Intent(this, NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP))
+            stopService(Intent(this, NivoraVpnService::class.java))
             return
         }
         val subscription = state.selectedSubscription
@@ -361,7 +361,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     override fun logout() {
-        startService(Intent(this, NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP))
+        stopService(Intent(this, NivoraVpnService::class.java))
         session.clear()
         SubscriptionBundleStore(this).clear()
         WorkManager.getInstance(this).cancelUniqueWork("nivora-notification-poll")
@@ -374,7 +374,8 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     private fun startSelectedVpn() {
-        val url = state.selectedSubscription?.url
+        val subscription = state.selectedSubscription ?: return
+        val url = subscription.url
         if (url.isNullOrBlank()) return
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -383,9 +384,10 @@ class MainActivity : ComponentActivity(), NivoraActions {
         startForegroundService(
             Intent(this, NivoraVpnService::class.java)
                 .putExtra(NivoraVpnService.EXTRA_URL, url)
+                .putExtra(NivoraVpnService.EXTRA_SUBSCRIPTION_ID, subscription.id)
                 .putExtra(NivoraVpnService.EXTRA_SESSION_TOKEN, session.token())
                 .putExtra(NivoraVpnService.EXTRA_DEVICE_ID, deviceId)
-                .putExtra(NivoraVpnService.EXTRA_LABEL, state.selectedSubscription?.locationName ?: state.selectedSubscription?.planName)
+                .putExtra(NivoraVpnService.EXTRA_LABEL, subscription.locationName ?: subscription.planName)
         )
     }
 

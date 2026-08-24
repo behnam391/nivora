@@ -16,3 +16,5 @@ android/signing.properties
 android/neuralmesh.properties
 /release/*.apk
 .tmp/
+__pycache__/
+*.pyc

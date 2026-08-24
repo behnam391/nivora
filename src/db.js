@@ -170,6 +170,42 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS hysteria_nodes (
+      id TEXT PRIMARY KEY,
+      location_id TEXT NOT NULL REFERENCES service_locations(id) ON DELETE CASCADE,
+      public_host TEXT NOT NULL,
+      public_port INTEGER NOT NULL CHECK(public_port BETWEEN 1 AND 65535),
+      sni TEXT NOT NULL DEFAULT '',
+      obfs_type TEXT NOT NULL DEFAULT '',
+      obfs_password_encrypted TEXT NOT NULL DEFAULT '',
+      pin_sha256 TEXT NOT NULL DEFAULT '',
+      priority INTEGER NOT NULL DEFAULT 100,
+      node_secret_hash TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS hysteria_tickets (
+      id TEXT PRIMARY KEY,
+      subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+      node_id TEXT NOT NULL REFERENCES hysteria_nodes(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      device_binding_hash TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      client_id TEXT,
+      expires_at TEXT NOT NULL,
+      consumed_at TEXT,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS hysteria_usage_counters (
+      node_id TEXT NOT NULL REFERENCES hysteria_nodes(id) ON DELETE CASCADE,
+      client_id TEXT NOT NULL,
+      last_tx_bytes INTEGER NOT NULL DEFAULT 0,
+      last_rx_bytes INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(node_id, client_id)
+    );
     CREATE TABLE IF NOT EXISTS password_reset_requests (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -264,6 +300,16 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!subscriptionColumns.includes('suspended_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN suspended_at TEXT');
   if (!subscriptionColumns.includes('deleted_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN deleted_at TEXT');
   if (!subscriptionColumns.includes('control_status')) db.exec("ALTER TABLE subscriptions ADD COLUMN control_status TEXT NOT NULL DEFAULT 'active'");
+  if (!subscriptionColumns.includes('hysteria_started_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN hysteria_started_at TEXT');
+  if (!subscriptionColumns.includes('hysteria_expires_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN hysteria_expires_at TEXT');
+  if (!subscriptionColumns.includes('hysteria_duration_days')) db.exec('ALTER TABLE subscriptions ADD COLUMN hysteria_duration_days INTEGER NOT NULL DEFAULT 0');
+  if (!subscriptionColumns.includes('hysteria_traffic_limit_bytes')) db.exec('ALTER TABLE subscriptions ADD COLUMN hysteria_traffic_limit_bytes INTEGER NOT NULL DEFAULT 0');
+  if (!subscriptionColumns.includes('hysteria_used_bytes')) db.exec('ALTER TABLE subscriptions ADD COLUMN hysteria_used_bytes INTEGER NOT NULL DEFAULT 0');
+  const hysteriaNodeColumns = db.prepare('PRAGMA table_info(hysteria_nodes)').all().map(c => c.name);
+  if (!hysteriaNodeColumns.includes('obfs_type')) db.exec("ALTER TABLE hysteria_nodes ADD COLUMN obfs_type TEXT NOT NULL DEFAULT ''");
+  if (!hysteriaNodeColumns.includes('obfs_password_encrypted')) db.exec("ALTER TABLE hysteria_nodes ADD COLUMN obfs_password_encrypted TEXT NOT NULL DEFAULT ''");
+  if (!hysteriaNodeColumns.includes('pin_sha256')) db.exec("ALTER TABLE hysteria_nodes ADD COLUMN pin_sha256 TEXT NOT NULL DEFAULT ''");
+  if (!hysteriaNodeColumns.includes('priority')) db.exec('ALTER TABLE hysteria_nodes ADD COLUMN priority INTEGER NOT NULL DEFAULT 100');
   const locationColumns = db.prepare('PRAGMA table_info(service_locations)').all().map(c => c.name);
   if (!locationColumns.includes('flag_emoji')) db.exec("ALTER TABLE service_locations ADD COLUMN flag_emoji TEXT NOT NULL DEFAULT ''");
   if (!locationColumns.includes('panel_cdn_inbound_id')) db.exec('ALTER TABLE service_locations ADD COLUMN panel_cdn_inbound_id INTEGER');
@@ -311,6 +357,10 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   db.exec('CREATE INDEX IF NOT EXISTS idx_location_endpoints_location ON location_endpoints(location_id,active,priority)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_service_locations_node ON service_locations(panel_node_id)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token) WHERE access_token IS NOT NULL');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_hysteria_nodes_location ON hysteria_nodes(location_id,active)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_hysteria_tickets_subscription ON hysteria_tickets(subscription_id,node_id,expires_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_hysteria_tickets_account ON hysteria_tickets(account_id,expires_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_hysteria_tickets_client ON hysteria_tickets(node_id,client_id,created_at)');
   db.exec('UPDATE subscriptions SET upstream_subscription_url=subscription_url WHERE upstream_subscription_url IS NULL AND subscription_url IS NOT NULL');
   const subscriptionsWithoutToken = db.prepare("SELECT s.id FROM subscriptions s JOIN orders o ON o.id=s.order_id WHERE s.access_token IS NULL AND o.order_kind='purchase'").all();
   const addSubscriptionToken = db.prepare('UPDATE subscriptions SET access_token=? WHERE id=?');

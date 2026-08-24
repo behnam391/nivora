@@ -25,6 +25,7 @@ if [[ -z "$RECOVERY_FILE" ]]; then
   [[ -n "$PANEL_BASE" && -n "$PANEL_TOKEN" && -n "$SUB_BASE" ]] || { echo "Panel URL, API token and subscription URL are required"; exit 1; }
 fi
 ADMIN_TOKEN=$(openssl rand -hex 32)
+HYSTERIA2_TICKET_SECRET=$(openssl rand -hex 32)
 apt-get update
 apt-get install -y ca-certificates curl git openssl caddy
 if ! command -v node >/dev/null || [[ $(node -p 'Number(process.versions.node.split(".")[0])') -lt 22 ]]; then
@@ -59,6 +60,10 @@ ADMIN_USERNAME=$ADMIN_USERNAME
 ADMIN_PASSWORD_SALT=$ADMIN_PASSWORD_SALT
 ADMIN_PASSWORD_HASH=$ADMIN_PASSWORD_HASH
 ADMIN_SESSION_HOURS=12
+HYSTERIA2_TICKET_SECRET=$HYSTERIA2_TICKET_SECRET
+HYSTERIA2_TICKET_TTL_SECONDS=45
+HYSTERIA2_RESUME_SECONDS=43200
+HYSTERIA2_STATS_MAX_AGE_SECONDS=180
 DATABASE_PATH=./data/nivora.db
 BACKUP_DIR=./backups
 BACKUP_KEEP=14

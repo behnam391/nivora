@@ -15,6 +15,7 @@ import { createHash, randomInt, randomBytes, createCipheriv, createDecipheriv, c
 import { sendSms } from './sms.js';
 import { createTelegramRecovery } from './telegram-bot.js';
 import { createThreeXuiProvisioner } from './providers/three-x-ui.js';
+import { createHysteriaTicketService, HysteriaAuthError } from './hysteria-auth.js';
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -116,7 +117,7 @@ const validEndpoint = endpoint => endpoint.label.length >= 2 && endpoint.host.le
   Number.isInteger(endpoint.port) && endpoint.port >= 1 && endpoint.port <= 65535 &&
   Number.isInteger(endpoint.priority) && endpoint.priority >= 0 && endpoint.priority <= 10_000;
 
-export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', adminUsername = process.env.ADMIN_USERNAME || '', adminPasswordSalt = process.env.ADMIN_PASSWORD_SALT || '', adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || '', provisioner = null, neuralMeshManifest = null } = {}) {
+export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', adminUsername = process.env.ADMIN_USERNAME || '', adminPasswordSalt = process.env.ADMIN_PASSWORD_SALT || '', adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || '', provisioner = null, neuralMeshManifest = null, hysteriaTicketSecret = process.env.HYSTERIA2_TICKET_SECRET || '', hysteriaTicketTtlSeconds = process.env.HYSTERIA2_TICKET_TTL_SECONDS || 45, hysteriaResumeSeconds = process.env.HYSTERIA2_RESUME_SECONDS || 43_200, hysteriaStatsMaxAgeSeconds = process.env.HYSTERIA2_STATS_MAX_AGE_SECONDS || 180, panelStatsReader = readPanelStats } = {}) {
   // 3x-ui subscription rendering is deterministic but its HTTPS endpoint can
   // be slow. Keep a short-lived in-memory copy so cold devices do not queue on
   // the panel; server-side client expiry/traffic enforcement remains intact.
@@ -186,6 +187,13 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     return nodeProvisioners.get(fingerprint);
   };
   const guard=createRequestGuard();
+  const hysteriaTickets=createHysteriaTicketService(db,{
+    secret:hysteriaTicketSecret,
+    ttlSeconds:hysteriaTicketTtlSeconds,
+    resumeSeconds:hysteriaResumeSeconds,
+    statsMaxAgeSeconds:hysteriaStatsMaxAgeSeconds,
+    statsReader:panelStatsReader
+  });
   const autoReviewConfig = loadAutoReviewConfig();
   const subscriptionRow = id => db.prepare('SELECT * FROM subscriptions WHERE id=?').get(id);
 
@@ -250,6 +258,28 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if (req.method === 'GET' && path === '/api/health') {
         db.prepare('SELECT 1').get();
         return json(res, 200, { ok: true, service: 'nivora' });
+      }
+      const hysteriaNodeAuth=path.match(/^\/internal\/v1\/hysteria\/auth\/([A-Za-z0-9_.-]{2,80})$/);
+      if(req.method==='POST'&&hysteriaNodeAuth){
+        const nodeSecret=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1]||'';
+        const body=await readJson(req);
+        try{
+          const result=await hysteriaTickets.authenticate({routeId:hysteriaNodeAuth[1],nodeSecret,token:String(body.auth||'')});
+          return json(res,200,result);
+        }catch(error){
+          if(error instanceof HysteriaAuthError){
+            if(error.code==='INVALID_NODE_CREDENTIALS'||error.code==='HYSTERIA2_NOT_CONFIGURED')return json(res,error.status,{error:error.code});
+            return json(res,200,{ok:false,id:''});
+          }
+          throw error;
+        }
+      }
+      const hysteriaNodeUsage=path.match(/^\/internal\/v1\/hysteria\/usage\/([A-Za-z0-9_.-]{2,80})$/);
+      if(req.method==='POST'&&hysteriaNodeUsage){
+        const nodeSecret=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1]||'';
+        const body=await readJson(req);
+        try{return json(res,200,hysteriaTickets.recordUsage({routeId:hysteriaNodeUsage[1],nodeSecret,clients:body.clients}));}
+        catch(error){if(error instanceof HysteriaAuthError)return json(res,error.status,{error:error.code});throw error;}
       }
       if (req.method === 'GET' && path === '/api/neuralmesh/manifest') {
         if (!neuralMeshManifest) return json(res, 503, { error: 'MANIFEST_UNAVAILABLE' });
@@ -435,6 +465,20 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       if(path.startsWith('/api/customer/')){
         const account=accountFromRequest(db,req);if(!account||account.role!=='customer')return json(res,401,{error:'UNAUTHORIZED'});
+        const hysteriaTicket=path.match(/^\/api\/customer\/subscriptions\/([^/]+)\/connect-ticket$/);
+        if(req.method==='POST'&&hysteriaTicket){
+          const hash=deviceHash(req);if(!hash)return json(res,403,{error:'DEVICE_REQUIRED'});
+          try{claimCustomerDevice(account,req);}catch(error){return json(res,403,{error:error.message});}
+          const body=await readJson(req),routeId=String(body.routeId||'auto').trim();
+          if(routeId!=='auto'&&!/^[A-Za-z0-9_.-]{2,80}$/.test(routeId))return json(res,400,{error:'INVALID_HYSTERIA2_ROUTE'});
+          try{
+            const ticket=await hysteriaTickets.issue({orderId:hysteriaTicket[1],accountId:account.id,deviceBindingHash:hash,routeId});
+            return json(res,201,ticket);
+          }catch(error){
+            if(error instanceof HysteriaAuthError)return json(res,error.status,{error:error.code});
+            throw error;
+          }
+        }
         if(req.method==='GET'&&path==='/api/customer/me'){
           const wallet=getWalletStatement(db,account.id,25),panelStats=await readPanelStats();
         const rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.status,o.created_at,o.tracking_token,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.control_status,s.subscription_url,s.access_token subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.flag_emoji,l.city,(SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=o.location_id AND e.active=1) route_count FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.order_kind='purchase' ORDER BY o.created_at DESC LIMIT 100`).all(account.id);

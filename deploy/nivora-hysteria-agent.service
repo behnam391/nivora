@@ -1,0 +1,26 @@
+[Unit]
+Description=Nivora Hysteria authentication and usage agent
+After=network-online.target nivora-hysteria.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/nivora-hysteria-agent.env
+ExecStart=/usr/bin/python3 /usr/local/lib/nivora/nivora-hysteria-agent.py
+User=nivora-hysteria-agent
+Group=nivora-hysteria-agent
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

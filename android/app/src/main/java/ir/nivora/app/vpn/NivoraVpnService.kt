@@ -8,9 +8,14 @@ import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
+import ir.nivora.app.BuildConfig
 import ir.nivora.app.MainActivity
 import ir.nivora.app.R
+import ir.nivora.app.data.ApiClient
+import ir.nivora.app.data.CustomerConnectPolicy
+import ir.nivora.app.data.EphemeralConnectTicket
 import ir.nivora.app.data.NetworkTools
 import ir.nivora.app.data.ServiceEndpoint
 import ir.nivora.app.data.SmartRouteMemory
@@ -22,6 +27,10 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.URL
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -29,6 +38,7 @@ import kotlin.concurrent.thread
 class NivoraVpnService : VpnService(), DialerController {
     companion object {
         const val EXTRA_URL = "subscription_url"
+        const val EXTRA_SUBSCRIPTION_ID = "subscription_id"
         const val EXTRA_SESSION_TOKEN = "session_token"
         const val EXTRA_DEVICE_ID = "device_id"
         const val EXTRA_SHARE_LINK = "share_link"
@@ -41,6 +51,7 @@ class NivoraVpnService : VpnService(), DialerController {
         const val ACTION_STATE = "ir.nivora.app.VPN_STATE"
         private const val CHANNEL_ID = "nivora_vpn"
         private const val NOTIFICATION_ID = 71
+        private const val CONNECT_TICKET_BUDGET_MS = 1_500L
 
         private val coreRunning = AtomicBoolean(false)
 
@@ -58,6 +69,10 @@ class NivoraVpnService : VpnService(), DialerController {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            // A notification action may create a fresh service instance. Enter
+            // foreground immediately before tearing it down so Android 15 never
+            // reports ForegroundServiceDidNotStartInTimeException.
+            showNotification("در حال قطع اتصال…", "", connected = false)
             generation.incrementAndGet()
             terminalError = false
             shutdown(markDisconnected = true)
@@ -65,6 +80,7 @@ class NivoraVpnService : VpnService(), DialerController {
             return START_NOT_STICKY
         }
         val url = intent?.getStringExtra(EXTRA_URL)
+        val subscriptionId = intent?.getStringExtra(EXTRA_SUBSCRIPTION_ID)
         val sessionToken = intent?.getStringExtra(EXTRA_SESSION_TOKEN)
         val deviceId = intent?.getStringExtra(EXTRA_DEVICE_ID)
         val shareLink = intent?.getStringExtra(EXTRA_SHARE_LINK)
@@ -81,7 +97,7 @@ class NivoraVpnService : VpnService(), DialerController {
         showNotification("در حال برقراری اتصال امن…", label, connected = false)
         thread(name = "nivora-xray") {
             try {
-                startTunnel(url, shareLink, sessionToken, deviceId, label, runId)
+                startTunnel(url, subscriptionId, shareLink, sessionToken, deviceId, label, runId)
             } catch (error: Throwable) {
                 if (generation.get() != runId) return@thread
                 Log.e("NivoraVpnService", "VPN tunnel failed: ${error.javaClass.simpleName}")
@@ -94,25 +110,55 @@ class NivoraVpnService : VpnService(), DialerController {
         return START_STICKY
     }
 
-    private fun startTunnel(url: String?, shareLink: String?, sessionToken: String?, deviceId: String?, label: String, runId: Int) {
+    private fun startTunnel(
+        url: String?,
+        subscriptionId: String?,
+        shareLink: String?,
+        sessionToken: String?,
+        deviceId: String?,
+        label: String,
+        runId: Int
+    ) {
         stopCore()
         ensureCurrent(runId)
+        val preferTicketRoute = shareLink.isNullOrBlank() &&
+            !url.isNullOrBlank() &&
+            !subscriptionId.isNullOrBlank() &&
+            !sessionToken.isNullOrBlank() &&
+            !deviceId.isNullOrBlank() &&
+            labPrefersHysteria()
+        val pendingTicket = if (preferTicketRoute) {
+            requestConnectTicket(subscriptionId!!, sessionToken!!, deviceId!!)
+        } else null
         val bundleStore = SubscriptionBundleStore(this)
         val cached = if (url.isNullOrBlank()) null else bundleStore.read(url)
-        val raw = shareLink?.takeIf { it.isNotBlank() }
-            ?: cached
-            ?: fetchBundle(url!!, sessionToken, deviceId).also { bundleStore.save(url, it) }
+        val baseRaw = try {
+            shareLink?.takeIf { it.isNotBlank() }
+                ?: cached
+                ?: fetchBundle(url!!, sessionToken, deviceId).also { bundleStore.save(url, it) }
+        } catch (error: Throwable) {
+            pendingTicket?.cancel()
+            throw error
+        }
         if (cached != null && !url.isNullOrBlank()) thread(name = "nivora-bundle-refresh") {
             runCatching { fetchBundle(url, sessionToken, deviceId) }
                 .onSuccess { bundleStore.save(url, it) }
         }
         ensureCurrent(runId)
-        if (raw.isBlank()) throw IllegalStateException("SUBSCRIPTION_EMPTY")
-        val convert = JSONObject()
-            .put("apiVersion", 1)
-            .put("method", "convertShareLinksToXrayJson")
-            .put("payload", JSONObject().put("text", raw))
-        val converted = JSONObject(LibXray.invoke(convert.toString()))
+        if (baseRaw.isBlank()) {
+            pendingTicket?.cancel()
+            throw IllegalStateException("SUBSCRIPTION_EMPTY")
+        }
+        val ticket = pendingTicket?.await()
+        val ephemeral = CustomerConnectPolicy.attachTicket(baseRaw, ticket, System.currentTimeMillis())
+        var converted = convertShareLinks(ephemeral.raw)
+        var ticketAttached = ephemeral.ticketAttached
+        // A rejected/unsupported ticket must never take down the customer's
+        // established Reality bundle. Retry locally without another network hop.
+        if (!converted.optBoolean("success") && ticketAttached) {
+            converted = convertShareLinks(baseRaw)
+            ticketAttached = false
+        }
         if (!converted.optBoolean("success")) throw IllegalStateException("SUBSCRIPTION_INVALID")
         ensureCurrent(runId)
 
@@ -120,7 +166,12 @@ class NivoraVpnService : VpnService(), DialerController {
         val outbounds = config.getJSONArray("outbounds")
         if (outbounds.length() == 0) throw IllegalStateException("SUBSCRIPTION_EMPTY")
         sanitizeOutbounds(outbounds)
-        val smartRoute = configureSmartRouting(config, outbounds, shareLink.isNullOrBlank())
+        val smartRoute = configureSmartRouting(
+            config,
+            outbounds,
+            remember = shareLink.isNullOrBlank() && !ticketAttached,
+            preferHysteria = ticketAttached
+        )
         // Bootstrap DNS is used only by libXray before the tunnel is ready.
         // Application DNS must never be sent to the Iranian access provider:
         // filtered resolvers commonly return private sinkhole addresses for
@@ -245,6 +296,53 @@ class NivoraVpnService : VpnService(), DialerController {
         showNotification("متصل و محافظت‌شده", smartRoute.label?.let { "$label · $it" } ?: label, connected = true)
     }
 
+    private class PendingConnectTicket(
+        private val executor: ExecutorService,
+        private val future: Future<EphemeralConnectTicket?>,
+        private val deadlineElapsedMs: Long
+    ) {
+        fun await(): EphemeralConnectTicket? = try {
+            val remainingMs = deadlineElapsedMs - SystemClock.elapsedRealtime()
+            when {
+                future.isDone -> runCatching { future.get() }.getOrNull()
+                remainingMs > 0L -> runCatching { future.get(remainingMs, TimeUnit.MILLISECONDS) }.getOrNull()
+                else -> null
+            }
+        } finally {
+            cancel()
+        }
+
+        fun cancel() {
+            future.cancel(true)
+            executor.shutdownNow()
+        }
+    }
+
+    private fun requestConnectTicket(
+        subscriptionId: String,
+        sessionToken: String,
+        deviceId: String
+    ): PendingConnectTicket {
+        val executor = Executors.newSingleThreadExecutor { work ->
+            Thread(work, "nivora-connect-ticket").apply { isDaemon = true }
+        }
+        val deadline = SystemClock.elapsedRealtime() + CONNECT_TICKET_BUDGET_MS
+        val future = executor.submit<EphemeralConnectTicket?> {
+            runCatching {
+                ApiClient(BuildConfig.API_BASE_URL, deviceId).connectTicket(sessionToken, subscriptionId)
+            }.getOrNull()
+        }
+        return PendingConnectTicket(executor, future, deadline)
+    }
+
+    private fun convertShareLinks(raw: String): JSONObject {
+        val request = JSONObject()
+            .put("apiVersion", 1)
+            .put("method", "convertShareLinksToXrayJson")
+            .put("payload", JSONObject().put("text", raw))
+        return JSONObject(LibXray.invoke(request.toString()))
+    }
+
     private fun fetchBundle(url: String, sessionToken: String?, deviceId: String?): String {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 6_000
@@ -309,7 +407,12 @@ class NivoraVpnService : VpnService(), DialerController {
 
     private data class SmartRoute(val rule: JSONObject, val balancers: JSONArray? = null, val label: String? = null)
 
-    private fun configureSmartRouting(config: JSONObject, outbounds: JSONArray, remember: Boolean): SmartRoute {
+    private fun configureSmartRouting(
+        config: JSONObject,
+        outbounds: JSONArray,
+        remember: Boolean,
+        preferHysteria: Boolean = false
+    ): SmartRoute {
         val candidates: List<Pair<Int, ServiceEndpoint?>> = buildList {
             for (index in 0 until outbounds.length()) {
                 val outbound = outbounds.getJSONObject(index)
@@ -321,14 +424,25 @@ class NivoraVpnService : VpnService(), DialerController {
         val memory = SmartRouteMemory(this)
         val remembered = if (remember) memory.read(networkKey) else null
         val signatures = candidates.associate { (index, _) -> index to SmartRouteMemory.signature(outbounds.getJSONObject(index)) }
+        val preferredIndex = if (preferHysteria) {
+            val preferredPosition = CustomerConnectPolicy.firstHysteriaIndex(
+                candidates.map { (index, _) ->
+                val outbound = outbounds.getJSONObject(index)
+                    outbound.optString("protocol") to
+                        outbound.optJSONObject("streamSettings")?.optString("network")
+                }
+            )
+            preferredPosition?.let { position -> candidates.getOrNull(position)?.first }
+        } else null
         val rememberedIndex = remembered?.winner?.let { signature -> signatures.entries.firstOrNull { it.value == signature }?.key }
         // Reuse the winner learned for this exact network immediately. Xray's
         // observatory keeps checking alternatives after startup, so a full
         // pre-flight race on every connection only makes the customer wait.
-        val fastest = if (rememberedIndex == null) {
+        val fastest = if (preferredIndex == null && rememberedIndex == null) {
             NetworkTools.fastest(candidates.mapNotNull { it.second }, timeoutMs = 1_200)
         } else null
-        val selectedIndex = rememberedIndex
+        val selectedIndex = preferredIndex
+            ?: rememberedIndex
             ?: fastest?.let { result -> candidates.firstOrNull { it.second == result.endpoint }?.first }
             ?: candidates.firstOrNull()?.first ?: 0
         val selectedLabel = candidates.firstOrNull { it.first == selectedIndex }
@@ -368,7 +482,23 @@ class NivoraVpnService : VpnService(), DialerController {
         )
     }
 
-    private fun currentNetworkKey(): String {
+    private fun labPrefersHysteria(): Boolean {
+        val preferences = getSharedPreferences("neuralmesh_lab", MODE_PRIVATE)
+        val operator = preferences.getString("operator", "مخابرات") ?: "مخابرات"
+        val capabilities = currentUnderlyingCapabilities()
+        val networkType = when {
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "Wi-Fi"
+            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "Cellular"
+            else -> "Other"
+        }
+        val storageKey = CustomerConnectPolicy.labStorageKey(operator, networkType)
+        return CustomerConnectPolicy.prefersHysteria(
+            autoSelect = preferences.getBoolean("auto_select", true),
+            winnerProfileId = preferences.getString("winner_$storageKey", null)
+        )
+    }
+
+    private fun currentUnderlyingCapabilities(): NetworkCapabilities? {
         val manager = getSystemService(ConnectivityManager::class.java)
         val network = manager.allNetworks.firstOrNull { candidate ->
             val capabilities = manager.getNetworkCapabilities(candidate) ?: return@firstOrNull false
@@ -376,7 +506,11 @@ class NivoraVpnService : VpnService(), DialerController {
                 capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
                 capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
         } ?: manager.activeNetwork
-        val capabilities = network?.let(manager::getNetworkCapabilities)
+        return network?.let(manager::getNetworkCapabilities)
+    }
+
+    private fun currentNetworkKey(): String {
+        val capabilities = currentUnderlyingCapabilities()
         val type = when {
             capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "wifi"
             capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "cellular"

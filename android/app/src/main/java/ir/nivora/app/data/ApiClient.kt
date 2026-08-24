@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import android.util.Base64
 
 class ApiClient(private val baseUrl: String, private val deviceId: String = "") {
@@ -40,12 +41,14 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         path: String,
         method: String = "GET",
         token: String? = null,
-        body: JSONObject? = null
+        body: JSONObject? = null,
+        connectTimeoutMs: Int = 12_000,
+        readTimeoutMs: Int = 20_000
     ): RawResponse {
         val connection = (URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
-            connectTimeout = 12_000
-            readTimeout = 20_000
+            connectTimeout = connectTimeoutMs
+            readTimeout = readTimeoutMs
             useCaches = false
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Accept-Language", "fa-IR")
@@ -75,9 +78,11 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         path: String,
         method: String = "GET",
         token: String? = null,
-        body: JSONObject? = null
+        body: JSONObject? = null,
+        connectTimeoutMs: Int = 12_000,
+        readTimeoutMs: Int = 20_000
     ): JSONObject {
-        val raw = rawRequest(path, method, token, body).body
+        val raw = rawRequest(path, method, token, body, connectTimeoutMs, readTimeoutMs).body
         return runCatching { JSONObject(raw) }.getOrElse { throw ApiException("INVALID_SERVER_RESPONSE", 502) }
     }
 
@@ -208,6 +213,36 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         } finally {
             connection.disconnect()
         }
+    }
+
+    /**
+     * Obtains a credential for this connection only. The caller must not cache
+     * the returned URI or pass it through UI state/Intents.
+     */
+    internal fun connectTicket(
+        token: String,
+        subscriptionId: String,
+        routeId: String = CustomerConnectPolicy.CONNECT_ROUTE_ID
+    ): EphemeralConnectTicket {
+        val encodedId = URLEncoder.encode(subscriptionId, Charsets.UTF_8.name()).replace("+", "%20")
+        val json = request(
+            path = "/api/customer/subscriptions/$encodedId/connect-ticket",
+            method = "POST",
+            token = token,
+            body = JSONObject().put("routeId", routeId),
+            connectTimeoutMs = 1_400,
+            readTimeoutMs = 1_400
+        )
+        val ticket = EphemeralConnectTicket(
+            routeId = json.optString("routeId"),
+            uri = json.optString("uri"),
+            expiresAtEpochMs = CustomerConnectPolicy.expiryEpochMs(json.opt("expiresAt"))
+                ?: throw ApiException("INVALID_SERVER_RESPONSE", 502)
+        )
+        if (!CustomerConnectPolicy.isUsable(ticket, System.currentTimeMillis())) {
+            throw ApiException("INVALID_SERVER_RESPONSE", 502)
+        }
+        return ticket
     }
 
     fun cards(): List<PaymentCard> {
