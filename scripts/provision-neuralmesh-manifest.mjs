@@ -11,6 +11,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  statSync,
   writeFileSync
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -32,6 +33,12 @@ function atomicWrite(path, data, mode) {
   writeFileSync(temporary, data, { mode });
   chmodSync(temporary, mode);
   renameSync(temporary, path);
+}
+
+function assertRestrictedFile(path, label) {
+  const info = statSync(path);
+  if (!info.isFile()) throw new Error(`${label}_NOT_FILE`);
+  if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new Error(`${label}_PERMISSIONS_TOO_OPEN`);
 }
 
 function ensureSigningKey() {
