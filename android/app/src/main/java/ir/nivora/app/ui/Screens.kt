@@ -60,7 +60,10 @@ fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
     }
     CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides LayoutDirection.Rtl) {
         when {
-            !state.signedIn -> AuthScreen(state.actionBusy, actions)
+            !state.signedIn -> Box(Modifier.fillMaxSize()) {
+                AuthScreen(state.actionBusy, actions)
+                SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp))
+            }
             state.loading && state.account == null && state.reseller == null -> FullScreenLoading()
             state.loadError != null && state.account == null && state.reseller == null -> FullScreenError(state.loadError, actions::refresh, actions::logout)
             state.role == "reseller" -> PartnerAppDashboard(state, actions, snackbar)

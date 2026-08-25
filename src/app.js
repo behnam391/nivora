@@ -127,7 +127,7 @@ const validEndpoint = endpoint => endpoint.label.length >= 2 && endpoint.host.le
   Number.isInteger(endpoint.port) && endpoint.port >= 1 && endpoint.port <= 65535 &&
   Number.isInteger(endpoint.priority) && endpoint.priority >= 0 && endpoint.priority <= 10_000;
 
-export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', adminUsername = process.env.ADMIN_USERNAME || '', adminPasswordSalt = process.env.ADMIN_PASSWORD_SALT || '', adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || '', provisioner = null, neuralMeshManifest = null, hysteriaTicketSecret = process.env.HYSTERIA2_TICKET_SECRET || '', hysteriaTicketTtlSeconds = process.env.HYSTERIA2_TICKET_TTL_SECONDS || 45, hysteriaResumeSeconds = process.env.HYSTERIA2_RESUME_SECONDS || 43_200, hysteriaStatsMaxAgeSeconds = process.env.HYSTERIA2_STATS_MAX_AGE_SECONDS || 180, panelStatsReader = readPanelStats } = {}) {
+export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', adminUsername = process.env.ADMIN_USERNAME || '', adminPasswordSalt = process.env.ADMIN_PASSWORD_SALT || '', adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || '', provisioner = null, neuralMeshManifest = null, enforceDeviceGateway = process.env.ENFORCE_DEVICE_GATEWAY === 'true', hysteriaTicketSecret = process.env.HYSTERIA2_TICKET_SECRET || '', hysteriaTicketTtlSeconds = process.env.HYSTERIA2_TICKET_TTL_SECONDS || 45, hysteriaResumeSeconds = process.env.HYSTERIA2_RESUME_SECONDS || 43_200, hysteriaStatsMaxAgeSeconds = process.env.HYSTERIA2_STATS_MAX_AGE_SECONDS || 180, panelStatsReader = readPanelStats } = {}) {
   // 3x-ui subscription rendering is deterministic but its HTTPS endpoint can
   // be slow. Keep a short-lived in-memory copy so cold devices do not queue on
   // the panel; server-side client expiry/traffic enforcement remains intact.
@@ -343,7 +343,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&(path==='/account'||path==='/account/')){const html=await readFile(resolve('public/account.html'));res.writeHead(200,privatePageHeaders);return res.end(html);}
       if(req.method==='GET'&&path==='/account.css'){const css=await readFile(resolve('public/account.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/account-extra.css'){const css=await readFile(resolve('public/account-extra.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
-      if(req.method==='GET'&&path==='/account.js'){const js=await readFile(resolve('public/account.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
+      if(req.method==='GET'&&path==='/account.js'){const js=await readFile(resolve('public/account.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if(req.method==='GET'&&path==='/account-recovery.js'){const js=await readFile(resolve('public/account-recovery.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/web-notifications.js'){const js=await readFile(resolve('public/web-notifications.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if(req.method==='GET'&&path==='/reseller.css'){const css=await readFile(resolve('public/reseller.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
@@ -402,9 +402,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           LEFT JOIN service_locations l ON l.id=o.location_id
           WHERE s.access_token=? AND s.status='active'`).get(publicSubscriptionMatch[1]);
         if (!subscription) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_FOUND'); }
-        const account = accountFromRequest(db, req);
+        const account = accountFromRequest(db, req, { requireDevice:enforceDeviceGateway });
         const subscriptionAccount = subscription.account_id && db.prepare('SELECT role,device_binding_hash FROM accounts WHERE id=?').get(subscription.account_id);
-        if (process.env.ENFORCE_DEVICE_GATEWAY === 'true' && subscriptionAccount?.device_binding_hash && (!account || account.role !== 'customer' || account.id !== subscription.account_id)) { res.writeHead(401, {'content-type':'text/plain; charset=utf-8'}); return res.end('AUTH_REQUIRED'); }
+        if (enforceDeviceGateway && subscriptionAccount?.device_binding_hash && (!account || account.role !== 'customer' || account.id !== subscription.account_id)) { res.writeHead(401, {'content-type':'text/plain; charset=utf-8'}); return res.end('AUTH_REQUIRED'); }
         const upstream = subscription.upstream_subscription_url || subscription.subscription_url;
         if (!upstream) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_READY'); }
         const endpoints = subscription.location_id ? db.prepare(`SELECT label,host,port,mode,server_name,priority,active FROM location_endpoints WHERE location_id=? AND active=1 ORDER BY priority,created_at`).all(subscription.location_id) : [];
@@ -458,7 +458,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const session=createSession(db,id);audit(phone,'register','account',id);return json(res,201,{...session,account:{id,name:b.name.trim(),phone}});
       }
       if(req.method==='POST'&&path==='/api/customer/login'){
-        const b=await readJson(req),account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(b.phone);if(!account||!verifyPassword(b.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});try{claimCustomerDevice(account,req)}catch(e){return json(res,403,{error:e.message})}const session=createSession(db,account.id);return json(res,200,{...session,account:{id:account.id,name:account.name,phone:account.phone}});
+        const b=await readJson(req),phone=normalizePhone(b.phone);if(!/^09\d{9}$/.test(phone)||typeof b.password!=='string')return json(res,401,{error:'INVALID_CREDENTIALS'});const account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(phone);if(!account||!verifyPassword(b.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});try{claimCustomerDevice(account,req)}catch(e){return json(res,403,{error:e.message})}const session=createSession(db,account.id);return json(res,200,{...session,account:{id:account.id,name:account.name,phone:account.phone}});
       }
       if(req.method==='POST'&&path==='/api/customer/device/bind'){
         const account=accountFromRequest(db,req);if(!account||account.role!=='customer')return json(res,401,{error:'UNAUTHORIZED'});
@@ -532,7 +532,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         }
       }
       if(req.method==='POST'&&path==='/api/reseller/login'){
-        const b=await readJson(req),account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='reseller' AND status='active'").get(b.phone);
+        const b=await readJson(req),phone=normalizePhone(b.phone);if(!/^09\d{9}$/.test(phone)||typeof b.password!=='string')return json(res,401,{error:'INVALID_CREDENTIALS'});const account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='reseller' AND status='active'").get(phone);
         if(!account||!verifyPassword(b.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});
         const session=createSession(db,account.id);return json(res,200,{...session,account:{id:account.id,name:account.name,phone:account.phone}});
       }
@@ -848,7 +848,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
       if (req.method === 'GET' && path === '/api/admin/accounts') {
         const role=url.searchParams.get('role');
-        const base=`SELECT a.*,COALESCE(w.balance_toman,0) balance_toman FROM accounts a LEFT JOIN wallet_accounts w ON w.account_id=a.id`;
+        const base=`SELECT a.id,a.phone,a.name,a.role,a.status,a.default_discount_percent,a.created_at,a.updated_at,a.device_bound_at,CASE WHEN a.device_binding_hash IS NULL THEN 0 ELSE 1 END device_bound,COALESCE(w.balance_toman,0) balance_toman FROM accounts a LEFT JOIN wallet_accounts w ON w.account_id=a.id`;
         const rows=role?db.prepare(`${base} WHERE a.role=? ORDER BY a.created_at DESC`).all(role):db.prepare(`${base} ORDER BY a.created_at DESC`).all();
         return json(res,200,rows);
       }
@@ -867,6 +867,12 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(randomUUID(),id,now);
         audit('admin','create','account',id,{role:b.role,phone:b.phone});
         return json(res,201,{id,phone:b.phone,name:b.name.trim(),role:b.role,status:'active',defaultDiscountPercent:Number(b.defaultDiscountPercent)||0});
+      }
+      const accountDeviceResetMatch=path.match(/^\/api\/admin\/accounts\/([^/]+)\/device-reset$/);
+      if(req.method==='POST'&&accountDeviceResetMatch){
+        const account=db.prepare("SELECT id,phone FROM accounts WHERE id=? AND role='customer'").get(accountDeviceResetMatch[1]);if(!account)return json(res,404,{error:'ACCOUNT_NOT_FOUND'});
+        const now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE accounts SET device_binding_hash=NULL,device_bound_at=NULL,updated_at=? WHERE id=?').run(now,account.id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(account.id);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
+        audit('admin','reset_device','account',account.id,{phone:account.phone});notify(account.id,'دستگاه حساب آزاد شد','اکنون می‌توانید حساب را روی گوشی جدید فعال کنید.');return json(res,200,{id:account.id,deviceBound:false,sessionsRevoked:true});
       }
       const accountMatch=path.match(/^\/api\/admin\/accounts\/([^/]+)$/);
       if(req.method==='PATCH'&&accountMatch){

@@ -303,6 +303,34 @@ test('customer password recovery is private, rate-safe and completed by admin', 
   r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:'09121234567',password:'new-password-2'})});assert.equal(r.status,200);
 });
 
+test('customer web login works while device binding remains exclusive and admin can reset it', async t => {
+  const {server,base}=await start({enforceDeviceGateway:true});t.after(()=>server.close());
+  const admin={authorization:'Bearer test-token','content-type':'application/json'};
+  const deviceA='nivora-device-a-1234567890',deviceB='nivora-device-b-0987654321';
+  const credentials={phone:'09121113333',password:'customer-pass-123'};
+  let r=await fetch(`${base}/api/customer/register`,{method:'POST',headers:{'content-type':'application/json','x-nivora-device':deviceA},body:JSON.stringify({name:'مشتری دستگاه',...credentials})});
+  assert.equal(r.status,201);const registration=await r.json();
+
+  r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(credentials)});
+  assert.equal(r.status,200);const webLogin=await r.json();
+  r=await fetch(`${base}/api/customer/me`,{headers:{authorization:`Bearer ${webLogin.token}`}});
+  assert.equal(r.status,200);assert.equal((await r.json()).id,registration.account.id);
+
+  r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json','x-nivora-device':deviceB},body:JSON.stringify(credentials)});
+  assert.equal(r.status,403);assert.equal((await r.json()).error,'DEVICE_ALREADY_BOUND');
+
+  r=await fetch(`${base}/api/admin/accounts?role=customer`,{headers:admin});assert.equal(r.status,200);
+  const customer=(await r.json()).find(account=>account.id===registration.account.id);assert.ok(customer);assert.equal(customer.device_bound,1);assert.ok(customer.device_bound_at);
+  for(const privateField of ['password_hash','password_salt','device_binding_hash'])assert.equal(Object.hasOwn(customer,privateField),false);
+
+  r=await fetch(`${base}/api/admin/accounts/${registration.account.id}/device-reset`,{method:'POST',headers:admin,body:'{}'});
+  assert.equal(r.status,200);assert.deepEqual(await r.json(),{id:registration.account.id,deviceBound:false,sessionsRevoked:true});
+  r=await fetch(`${base}/api/customer/me`,{headers:{authorization:`Bearer ${webLogin.token}`}});assert.equal(r.status,401);
+
+  r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json','x-nivora-device':deviceB},body:JSON.stringify(credentials)});
+  assert.equal(r.status,200);const replacementLogin=await r.json();assert.ok(replacementLogin.token);
+});
+
 test('admin manages locations, plan routing and safe deletion', async t => {
   const {server,base}=await start();t.after(()=>server.close());const admin={authorization:'Bearer test-token','content-type':'application/json'};
   let r=await fetch(`${base}/api/admin/plans`,{method:'POST',headers:admin,body:JSON.stringify({name:'پلن لوکیشن',priceIrr:100000,trafficGb:20,durationDays:30,deviceLimit:1})});const plan=await r.json();
@@ -385,6 +413,11 @@ test('discount limits, support tickets and customer notifications work end to en
 
 test('security headers, health diagnostics and authentication rate limits are enforced', async t => {
   const {server,base}=await start();t.after(()=>server.close());let r=await fetch(`${base}/health`);assert.equal(r.status,200);assert.equal(r.headers.get('x-frame-options'),'DENY');assert.match(r.headers.get('content-security-policy'),/frame-ancestors 'none'/);const health=await r.json();assert.equal(health.database,'ok');
-  for(let i=0;i<10;i++){r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json','x-forwarded-for':'203.0.113.10'},body:JSON.stringify({phone:'09120000000',password:'invalid-pass'})});assert.equal(r.status,401);}
-  r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json','x-forwarded-for':'203.0.113.10'},body:JSON.stringify({phone:'09120000000',password:'invalid-pass'})});assert.equal(r.status,429);assert.ok(Number(r.headers.get('retry-after'))>0);assert.ok(r.headers.get('x-request-id'));
+  const ipHeaders={'content-type':'application/json','x-forwarded-for':'203.0.113.10'};
+  const invalidCustomer=JSON.stringify({phone:'09120000000',password:'invalid-pass'}),invalidReseller=JSON.stringify({phone:'09120000001',password:'invalid-pass'});
+  for(let i=0;i<60;i++){r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:ipHeaders,body:invalidCustomer});assert.equal(r.status,401);}
+  r=await fetch(`${base}/api/reseller/login`,{method:'POST',headers:ipHeaders,body:invalidReseller});assert.equal(r.status,401);assert.equal(r.headers.get('x-ratelimit-remaining'),'59');
+  r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:ipHeaders,body:invalidCustomer});assert.equal(r.status,429);assert.ok(Number(r.headers.get('retry-after'))>0);assert.ok(r.headers.get('x-request-id'));
+  for(let i=1;i<60;i++){r=await fetch(`${base}/api/reseller/login`,{method:'POST',headers:ipHeaders,body:invalidReseller});assert.equal(r.status,401);}
+  r=await fetch(`${base}/api/reseller/login`,{method:'POST',headers:ipHeaders,body:invalidReseller});assert.equal(r.status,429);assert.ok(Number(r.headers.get('retry-after'))>0);
 });

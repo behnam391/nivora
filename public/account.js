@@ -4,7 +4,7 @@ const fa=value=>new Intl.NumberFormat('fa-IR').format(Number(value)||0);
 const date=value=>value?new Date(value).toLocaleString('fa-IR',{dateStyle:'medium',timeStyle:'short'}):'—';
 const esc=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 const safeUrl=value=>{try{const url=new URL(value,location.origin);return ['http:','https:'].includes(url.protocol)?url.href:'#'}catch{return '#'}};
-const errorText=code=>({INSUFFICIENT_BALANCE:'موجودی کیف پول کافی نیست.',PHONE_ALREADY_EXISTS:'این شماره قبلاً ثبت شده است.',INVALID_CREDENTIALS:'شماره یا رمز عبور صحیح نیست.',WEAK_PASSWORD:'رمز باید حداقل ۸ کاراکتر باشد.',NO_CAPACITY:'ظرفیت این پلن تکمیل است.',DISCOUNT_NOT_AVAILABLE:'کد تخفیف معتبر یا قابل استفاده نیست.',PROVISION_FAILED:'ساخت اشتراک ناموفق بود و مبلغ به کیف پول برگشت.',RENEW_FAILED:'تمدید ناموفق بود و مبلغ به کیف پول برگشت.',INVALID_TOPUP:'مبلغ یا اطلاعات رسید کامل نیست.',INVALID_TICKET:'موضوع و پیام را کامل بنویسید.',DEBT_NOT_FOUND:'این بدهی دیگر قابل اعلام پرداخت نیست.',UNAUTHORIZED:'نشست شما منقضی شده است.'}[code]||(/[\u0600-\u06ff]/.test(String(code))?String(code):'عملیات انجام نشد؛ دوباره تلاش کنید.'));
+const errorText=code=>({INSUFFICIENT_BALANCE:'موجودی کیف پول کافی نیست.',PHONE_ALREADY_EXISTS:'این شماره قبلاً ثبت شده است.',INVALID_CREDENTIALS:'شماره یا رمز عبور صحیح نیست.',DEVICE_ALREADY_BOUND:'این حساب روی گوشی دیگری فعال است؛ برای آزادسازی دستگاه با پشتیبانی تماس بگیرید.',RATE_LIMITED:'تعداد تلاش‌ها زیاد بود؛ یک دقیقه صبر کنید و دوباره وارد شوید.',WEAK_PASSWORD:'رمز باید حداقل ۸ کاراکتر باشد.',NO_CAPACITY:'ظرفیت این پلن تکمیل است.',DISCOUNT_NOT_AVAILABLE:'کد تخفیف معتبر یا قابل استفاده نیست.',PROVISION_FAILED:'ساخت اشتراک ناموفق بود و مبلغ به کیف پول برگشت.',RENEW_FAILED:'تمدید ناموفق بود و مبلغ به کیف پول برگشت.',INVALID_TOPUP:'مبلغ یا اطلاعات رسید کامل نیست.',INVALID_TICKET:'موضوع و پیام را کامل بنویسید.',DEBT_NOT_FOUND:'این بدهی دیگر قابل اعلام پرداخت نیست.',UNAUTHORIZED:'نشست شما منقضی شده است.'}[code]||(/[\u0600-\u06ff]/.test(String(code))?String(code):'عملیات انجام نشد؛ دوباره تلاش کنید.'));
 
 let mode='login';
 let token=localStorage.getItem('nivora_customer_token')||'';
@@ -101,7 +101,7 @@ async function openConversation(id){
   catch(error){$('#conversation-messages').innerHTML=empty(errorText(error.message))}
 }
 
-async function load(){
+async function load({afterLogin=false}={}){
   if(loading)return;loading=true;
   try{
     const [account,nextPlans,nextConfig,nextTickets]=await Promise.all([api('/api/customer/me'),api('/api/plans'),api('/api/store-config'),api('/api/customer/tickets')]);
@@ -109,6 +109,7 @@ async function load(){
   }catch(error){
     if(error.message==='UNAUTHORIZED'){token='';localStorage.removeItem('nivora_customer_token');$('#auth').hidden=false;$('#dashboard').hidden=true;$('#logout').hidden=true}
     else toast('ارتباط موقتاً برقرار نشد.',true);
+    if(afterLogin)throw error;
   }finally{loading=false}
 }
 
@@ -120,7 +121,7 @@ async function poll(){
 }
 
 $$('.tabs button').forEach(button=>button.onclick=()=>setMode(button.dataset.mode));
-$('#auth-form').onsubmit=async event=>{event.preventDefault();const button=event.submitter||event.currentTarget.querySelector('[type="submit"]');setBusy(button,true,'در حال ورود…');$('#auth-error').textContent='';try{const data=await api(`/api/customer/${mode}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:$('#name').value.trim(),phone:$('#phone').value.trim(),password:$('#password').value})});token=data.token;localStorage.setItem('nivora_customer_token',token);await window.NivoraNotifications?.enable();await load()}catch(error){$('#auth-error').textContent=errorText(error.message)}finally{setBusy(button,false)}};
+$('#auth-form').onsubmit=async event=>{event.preventDefault();const button=event.submitter||event.currentTarget.querySelector('[type="submit"]');setBusy(button,true,'در حال ورود…');$('#auth-error').textContent='';try{const data=await api(`/api/customer/${mode}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:$('#name').value.trim(),phone:$('#phone').value.trim(),password:$('#password').value})});token=data.token;localStorage.setItem('nivora_customer_token',token);void window.NivoraNotifications?.enable();await load({afterLogin:true})}catch(error){$('#auth-error').textContent=errorText(error.message)}finally{setBusy(button,false)}};
 $('#buy-plan').onclick=openBuy;$$('[data-action="buy"]').forEach(button=>button.onclick=openBuy);
 $('#validate-discount').onclick=async()=>{try{const data=await api('/api/customer/discount/validate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:$('#discount-code').value.trim()})});toast(`کد معتبر است: ${fa(data.percent)} درصد تخفیف`)}catch(error){toast(errorText(error.message),true)}};
 $('#buy-form').onsubmit=async event=>{event.preventDefault();if(!confirm('خرید از کیف پول نهایی شود؟'))return;const button=event.submitter;setBusy(button,true,'در حال ساخت…');$('#buy-error').textContent='';try{const result=await api('/api/customer/wallet/purchase',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({planId:$('#plan').value,discountCode:$('#discount-code').value.trim()})});toast(result.discountToman?`${fa(result.discountToman)} تومان تخفیف اعمال شد.`:'اشتراک ساخته شد.');$('#buy-dialog').close();await load()}catch(error){$('#buy-error').textContent=errorText(error.message)}finally{setBusy(button,false)}};

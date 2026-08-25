@@ -835,6 +835,8 @@ class MainActivity : ComponentActivity(), NivoraActions {
         val code = (resolved as? ApiException)?.code ?: resolved.message.orEmpty()
         return when (code) {
             "INVALID_CREDENTIALS" -> "شماره موبایل یا رمز عبور صحیح نیست"
+            "DEVICE_ALREADY_BOUND" -> "این حساب روی گوشی دیگری فعال است؛ از پشتیبانی بخواهید دستگاه قبلی را آزاد کند"
+            "DEVICE_REQUIRED" -> "شناسه امن دستگاه در دسترس نیست؛ برنامه را دوباره باز کنید"
             "PHONE_ALREADY_EXISTS" -> "این شماره موبایل قبلاً ثبت شده است"
             "INVALID_ACCOUNT", "INVALID_PHONE" -> "اطلاعات واردشده معتبر نیست"
             "WEAK_PASSWORD" -> "رمز عبور باید حداقل ۸ کاراکتر باشد"

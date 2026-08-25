@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { openDatabase } from '../src/db.js';
 import { createApp } from '../src/app.js';
+import { createSession } from '../src/auth.js';
 import { buildMultiEndpointSubscription, decodeSubscription, parseCleanIpList } from '../src/multi-endpoint.js';
 
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -56,4 +58,36 @@ test('public Nivora subscription gateway includes direct and active Cloudflare r
   response=await fetch(`${base}/api/admin/orders/${order.id}/approve`,{method:'POST',headers:admin,body:'{}'});assert.equal(response.status,200);const subscription=await response.json();
   response=await fetch(subscription.subscription_url);assert.equal(response.status,200);assert.equal(response.headers.get('x-nivora-routes'),'1');
   const rendered=await response.text();assert.match(rendered,/@65\.109\.184\.177/);assert.match(rendered,/@104\.16\.0\.1/);assert.match(rendered,/sni=edge\.nivorali\.com/);
+});
+
+test('device-bound subscription gateway requires the matching customer session and device', async t => {
+  const deviceId='nivora-bound-device-0000000001';
+  const direct='vless://12345678-1234-1234-1234-123456789abc@65.109.184.177:443?security=reality&type=tcp&flow=xtls-rprx-vision&sni=www.cloudflare.com&pbk=key#Direct';
+  const upstream=createServer((req,res)=>{res.writeHead(200,{'content-type':'text/plain'});res.end(direct)});
+  await listen(upstream);t.after(()=>upstream.close());
+
+  const db=openDatabase(':memory:');
+  const now=new Date().toISOString();
+  const accountId='account-device-gateway',planId='plan-device-gateway',orderId='order-device-gateway',subscriptionId='subscription-device-gateway';
+  const accessToken='1234567890abcdef1234567890abcdef';
+  const upstreamUrl=`http://127.0.0.1:${upstream.address().port}/sub/source`;
+  const deviceHash=createHash('sha256').update(deviceId).digest('hex');
+  db.prepare(`INSERT INTO plans(id,name,description,price_irr,traffic_gb,duration_days,device_limit,active,created_at,updated_at) VALUES(?,?,'',1000,20,30,1,1,?,?)`).run(planId,'Device gateway',now,now);
+  db.prepare(`INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,device_binding_hash,device_bound_at) VALUES(?,?,?,'customer','active',0,?,?,?,?)`).run(accountId,'09120000002','Bound customer',now,now,deviceHash,now);
+  db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,created_at,account_id,order_kind) VALUES(?,?,?,?, 'approved',?,?,'purchase')`).run(orderId,'Bound customer','09120000002',planId,now,accountId);
+  db.prepare(`INSERT INTO subscriptions(id,order_id,status,subscription_url,upstream_subscription_url,access_token,created_at,activated_at) VALUES(?,?,'active',?,?,?,?,?)`).run(subscriptionId,orderId,upstreamUrl,upstreamUrl,accessToken,now,now);
+  const session=createSession(db,accountId);
+  const server=createServer(createApp(db,{adminToken:'test-token',enforceDeviceGateway:true}));
+  await listen(server);t.after(()=>server.close());
+  const url=`http://127.0.0.1:${server.address().port}/sub/${accessToken}`;
+
+  let response=await fetch(url);
+  assert.equal(response.status,401);
+  response=await fetch(url,{headers:{authorization:`Bearer ${session.token}`}});
+  assert.equal(response.status,401);
+  response=await fetch(url,{headers:{authorization:`Bearer ${session.token}`,'x-nivora-device':'wrong-device-id-00000000000000'}});
+  assert.equal(response.status,401);
+  response=await fetch(url,{headers:{authorization:`Bearer ${session.token}`,'x-nivora-device':deviceId}});
+  assert.equal(response.status,200);
+  assert.equal(await response.text(),direct);
 });
