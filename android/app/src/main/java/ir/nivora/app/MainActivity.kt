@@ -407,11 +407,17 @@ class MainActivity : ComponentActivity(), NivoraActions {
                     val tickets = CompletableFuture.supplyAsync { api.tickets(token,"reseller") }
                     DashboardPayload(reseller = reseller.join(), resellerPlans = resellerPlans.join(), tickets = tickets.join())
                 } else {
-                    api.bindDevice(token)
+                    // Device validation used to add a complete HTTPS round trip
+                    // before any dashboard request could start. Keep the gate,
+                    // but run it alongside the independent account payloads so
+                    // first paint costs one network latency instead of two.
+                    val binding = CompletableFuture.runAsync { api.bindDevice(token) }
                     val account = CompletableFuture.supplyAsync { api.account(token) }
                     val plans = CompletableFuture.supplyAsync { api.plans() }
                     val tickets = CompletableFuture.supplyAsync { api.tickets(token) }
-                    DashboardPayload(account = account.join(), plans = plans.join(), tickets = tickets.join())
+                    val payload = DashboardPayload(account = account.join(), plans = plans.join(), tickets = tickets.join())
+                    binding.join()
+                    payload
                 }
             },
             success = { payload ->

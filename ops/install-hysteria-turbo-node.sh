@@ -13,7 +13,9 @@ VERSION=${HYSTERIA_VERSION:-2.12.2}
 
 test -r "$CERT_FILE"
 test -r "$KEY_FILE"
-install -d -m 700 /etc/hysteria
+if [[ ! -d /etc/hysteria ]]; then
+  install -d -m 700 /etc/hysteria
+fi
 
 tmp_bin=$(mktemp)
 trap 'rm -f "$tmp_bin"' EXIT
@@ -104,6 +106,8 @@ install -d -m 755 /usr/local/lib/nivora
 install -m 755 "$SCRIPT_DIR/nivora-hysteria-agent.py" /usr/local/lib/nivora/nivora-hysteria-agent.py
 install -m 644 "$SCRIPT_DIR/../deploy/nivora-hysteria-agent.service" /etc/systemd/system/nivora-hysteria-agent.service
 chgrp nivora-hysteria-agent /etc/hysteria/nivora-node-secret /etc/hysteria/nivora-stats-secret /etc/hysteria/nivora-turbo-auth
+chgrp nivora-hysteria-agent /etc/hysteria
+chmod 750 /etc/hysteria
 chmod 640 /etc/hysteria/nivora-node-secret /etc/hysteria/nivora-stats-secret /etc/hysteria/nivora-turbo-auth
 cat > /etc/nivora-hysteria-agent.env <<EOF
 NIVORA_CENTRAL_URL=${CENTRAL_URL}

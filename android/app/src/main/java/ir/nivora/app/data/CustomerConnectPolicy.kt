@@ -1,6 +1,7 @@
 package ir.nivora.app.data
 
 import java.net.URI
+import java.security.MessageDigest
 import java.time.Instant
 import java.util.Base64
 
@@ -21,6 +22,36 @@ internal data class EphemeralSubscriptionBundle(
     val raw: String,
     val ticketAttached: Boolean
 )
+
+internal data class ConvertedRouteIdentity(
+    val protocol: String?,
+    val network: String?,
+    val host: String?,
+    val port: Int?,
+    val security: String? = null,
+    val credentialFingerprint: RouteCredentialFingerprint? = null
+)
+
+/**
+ * One-way, in-memory representation of a route credential. Its string form is
+ * deliberately redacted so an identity can never reveal an auth token through
+ * incidental diagnostics or exception formatting.
+ */
+internal class RouteCredentialFingerprint private constructor(private val digest: ByteArray) {
+    fun matches(other: RouteCredentialFingerprint?): Boolean =
+        other != null && MessageDigest.isEqual(digest, other.digest)
+
+    override fun toString(): String = "RouteCredentialFingerprint([REDACTED])"
+
+    companion object {
+        fun fromSecret(secret: String?): RouteCredentialFingerprint? {
+            if (secret.isNullOrEmpty()) return null
+            val digest = MessageDigest.getInstance("SHA-256")
+                .digest(secret.toByteArray(Charsets.UTF_8))
+            return RouteCredentialFingerprint(digest)
+        }
+    }
+}
 
 internal object CustomerConnectPolicy {
     const val CONNECT_ROUTE_ID = "auto"
@@ -77,9 +108,52 @@ internal object CustomerConnectPolicy {
         protocol.orEmpty().lowercase() in setOf("hysteria", "hysteria2", "hy2") ||
             network.orEmpty().lowercase() in setOf("hysteria", "hysteria2", "hy2")
 
+    fun isReality(route: ConvertedRouteIdentity): Boolean =
+        route.security.orEmpty().equals("reality", ignoreCase = true)
+
     fun firstHysteriaIndex(routes: List<Pair<String?, String?>>): Int? =
         routes.indexOfFirst { (protocol, network) -> isHysteria(protocol, network) }
             .takeIf { it >= 0 }
+
+    fun credentialFingerprint(secret: String?): RouteCredentialFingerprint? =
+        RouteCredentialFingerprint.fromSecret(secret)
+
+    /**
+     * A failed fresh-ticket conversion is a verified Reality-only fallback.
+     * Filtering happens before remembered/latency selection so neither an old
+     * Hysteria route nor another legacy transport can silently win the session.
+     */
+    fun eligibleRouteIndexes(
+        routes: List<ConvertedRouteIdentity>,
+        forceReality: Boolean
+    ): Set<Int> = routes.indices.filterTo(linkedSetOf<Int>()) { index ->
+        !forceReality || isReality(routes[index])
+    }
+
+    /**
+     * Match the freshly issued ticket to its converted outbound. Selecting the
+     * first Hysteria route is unsafe once a subscription contains an older HY2
+     * entry for another node.
+     */
+    fun matchingTicketRouteIndex(
+        ticket: EphemeralConnectTicket?,
+        routes: List<ConvertedRouteIdentity>
+    ): Int? {
+        if (ticket == null) return null
+        val uri = runCatching { URI(ticket.uri) }.getOrNull() ?: return null
+        if (uri.scheme?.lowercase() !in setOf("hysteria2", "hy2")) return null
+        val expectedHost = uri.host?.lowercase() ?: return null
+        val expectedPort = uri.port.takeIf { it in 1..65_535 } ?: return null
+        // URI.userInfo is percent-decoded, matching the auth string emitted in
+        // Xray's converted streamSettings.hysteriaSettings object.
+        val expectedCredential = credentialFingerprint(uri.userInfo) ?: return null
+        return routes.indexOfFirst { route ->
+            isHysteria(route.protocol, route.network) &&
+                route.host?.lowercase() == expectedHost &&
+                route.port == expectedPort &&
+                expectedCredential.matches(route.credentialFingerprint)
+        }.takeIf { it >= 0 }
+    }
 
     private fun decodedSubscriptionOrOriginal(raw: String): String {
         val trimmed = raw.trim()

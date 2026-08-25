@@ -230,8 +230,8 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
             method = "POST",
             token = token,
             body = JSONObject().put("routeId", routeId),
-            connectTimeoutMs = 1_400,
-            readTimeoutMs = 1_400
+            connectTimeoutMs = 4_500,
+            readTimeoutMs = 4_500
         )
         val ticket = EphemeralConnectTicket(
             routeId = json.optString("routeId"),

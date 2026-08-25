@@ -14,12 +14,14 @@ import ir.nivora.app.BuildConfig
 import ir.nivora.app.MainActivity
 import ir.nivora.app.R
 import ir.nivora.app.data.ApiClient
+import ir.nivora.app.data.ConvertedRouteIdentity
 import ir.nivora.app.data.CustomerConnectPolicy
 import ir.nivora.app.data.EphemeralConnectTicket
 import ir.nivora.app.data.NetworkTools
 import ir.nivora.app.data.ServiceEndpoint
 import ir.nivora.app.data.SmartRouteMemory
 import ir.nivora.app.data.SubscriptionBundleStore
+import ir.nivora.app.data.VpnRoutingPolicy
 import libXray.DialerController
 import libXray.LibXray
 import org.json.JSONArray
@@ -51,7 +53,7 @@ class NivoraVpnService : VpnService(), DialerController {
         const val ACTION_STATE = "ir.nivora.app.VPN_STATE"
         private const val CHANNEL_ID = "nivora_vpn"
         private const val NOTIFICATION_ID = 71
-        private const val CONNECT_TICKET_BUDGET_MS = 1_500L
+        private const val CONNECT_TICKET_BUDGET_MS = 5_000L
 
         private val coreRunning = AtomicBoolean(false)
 
@@ -153,43 +155,94 @@ class NivoraVpnService : VpnService(), DialerController {
         val ephemeral = CustomerConnectPolicy.attachTicket(baseRaw, ticket, System.currentTimeMillis())
         var converted = convertShareLinks(ephemeral.raw)
         var ticketAttached = ephemeral.ticketAttached
+        var forceRealityFallback = false
         // A rejected/unsupported ticket must never take down the customer's
         // established Reality bundle. Retry locally without another network hop.
         if (!converted.optBoolean("success") && ticketAttached) {
             converted = convertShareLinks(baseRaw)
             ticketAttached = false
+            forceRealityFallback = true
         }
         if (!converted.optBoolean("success")) throw IllegalStateException("SUBSCRIPTION_INVALID")
         ensureCurrent(runId)
 
-        val config = converted.getJSONObject("data")
-        val outbounds = config.getJSONArray("outbounds")
+        var config = converted.getJSONObject("data")
+        var outbounds = config.getJSONArray("outbounds")
         if (outbounds.length() == 0) throw IllegalStateException("SUBSCRIPTION_EMPTY")
         sanitizeOutbounds(outbounds)
+        var preferredHysteriaIndex = if (ticketAttached) {
+            CustomerConnectPolicy.matchingTicketRouteIndex(ticket, routeIdentities(outbounds))
+        } else null
+        // libXray may return a successful conversion while silently omitting an
+        // unsupported URI. Never infer success from the ticket alone: if its
+        // exact endpoint and fresh credential are absent, rebuild the
+        // established Reality bundle.
+        if (ticketAttached && preferredHysteriaIndex == null) {
+            Log.w("NivoraVpnService", "Issued Hysteria ticket was not present after conversion; using Reality")
+            converted = convertShareLinks(baseRaw)
+            if (!converted.optBoolean("success")) throw IllegalStateException("SUBSCRIPTION_INVALID")
+            ticketAttached = false
+            config = converted.getJSONObject("data")
+            outbounds = config.getJSONArray("outbounds")
+            if (outbounds.length() == 0) throw IllegalStateException("SUBSCRIPTION_EMPTY")
+            sanitizeOutbounds(outbounds)
+            preferredHysteriaIndex = null
+            forceRealityFallback = true
+        }
         val smartRoute = configureSmartRouting(
             config,
             outbounds,
             remember = shareLink.isNullOrBlank() && !ticketAttached,
-            preferHysteria = ticketAttached
+            preferredHysteriaIndex = preferredHysteriaIndex,
+            forceReality = forceRealityFallback
         )
         // Bootstrap DNS is used only by libXray before the tunnel is ready.
         // Application DNS must never be sent to the Iranian access provider:
         // filtered resolvers commonly return private sinkhole addresses for
         // Instagram/YouTube even when the proxy itself is perfectly healthy.
         val bootstrapDns = resolveUnderlyingDns()
-        // Cloudflare's resolver has proved more consistently reachable from
-        // both current Nivora locations than Google port 53 on Iranian mobile
-        // networks. It is still carried inside the selected proxy route.
-        val tunnelDns = "1.1.1.1"
-        config.put(
-            "dns",
+        val tunnelDnsTag = "dns-tunnel"
+        val usesTunneledDoh = smartRoute.policy.primaryTransport == VpnRoutingPolicy.PrimaryTransport.HYSTERIA2
+        val dnsConfig = if (usesTunneledDoh) {
             JSONObject()
-                // The TCP DNS session itself travels inside Reality. This
-                // avoids fragile nested HTTPS/DoH handshakes on weak Iranian
-                // networks while still preventing ISP-side DNS leakage.
-                .put("servers", JSONArray().put("tcp://$tunnelDns"))
+                // Remote DoH is tagged into the selected proxy. Unlike plain
+                // DNS-over-TCP, Xray reuses its HTTP/2 connection instead of
+                // paying a new handshake for every query. Parallel resolvers
+                // remove a single-provider cold-start penalty.
+                .put("tag", tunnelDnsTag)
+                .put(
+                    "servers",
+                    JSONArray()
+                        .put(
+                            JSONObject()
+                                .put("address", "https://1.1.1.1/dns-query")
+                                .put("queryStrategy", "UseIPv4")
+                                .put("timeoutMs", 1_500)
+                        )
+                        .put(
+                            JSONObject()
+                                .put("address", "https://8.8.8.8/dns-query")
+                                .put("queryStrategy", "UseIPv4")
+                                .put("timeoutMs", 1_500)
+                        )
+                )
                 .put("queryStrategy", "UseIPv4")
-        )
+                .put("disableCache", false)
+                .put("serveStale", true)
+                .put("serveExpiredTTL", 300)
+                .put("enableParallelQuery", true)
+                .put("disableFallback", false)
+                .put("disableFallbackIfMatch", false)
+                .put("useSystemHosts", false)
+        } else {
+            // TCP DNS remains the conservative fallback for Reality routes.
+            // It is slower per cold query, but avoids nesting two TLS sessions
+            // inside unstable TCP paths and has proved more reliable there.
+            JSONObject()
+                .put("servers", JSONArray().put("tcp://1.1.1.1"))
+                .put("queryStrategy", "UseIPv4")
+        }
+        config.put("dns", dnsConfig)
         outbounds.put(
             JSONObject()
                 .put("tag", "dns-out")
@@ -204,12 +257,18 @@ class NivoraVpnService : VpnService(), DialerController {
                         .put("rules", JSONArray())
                 )
         )
-        outbounds.put(
-            JSONObject()
-                .put("tag", "quic-reject")
-                .put("protocol", "blackhole")
-                .put("settings", JSONObject())
-        )
+        // Reality-over-TCP benefits from an immediate QUIC rejection so apps
+        // fall back to HTTPS instead of waiting on an unusable UDP path.
+        // Hysteria2 is itself a reliable UDP transport; blocking UDP/443 there
+        // delays or breaks Instagram, YouTube and Telegram media/calls.
+        if (smartRoute.policy.rejectUdp443) {
+            outbounds.put(
+                JSONObject()
+                    .put("tag", "quic-reject")
+                    .put("protocol", "blackhole")
+                    .put("settings", JSONObject())
+            )
+        }
         config.put("log", JSONObject().put("loglevel", "warning"))
         config.put("env", JSONObject().put("xray.tun.fd", "0"))
         config.put(
@@ -228,28 +287,33 @@ class NivoraVpnService : VpnService(), DialerController {
             .put("network", "tcp,udp")
             .put("port", "53")
             .put("outboundTag", "dns-out")
-        val quicRule = JSONObject()
+        val quicRule = if (smartRoute.policy.rejectUdp443) JSONObject()
             .put("type", "field")
             .put("inboundTag", JSONArray().put("tun-in"))
             .put("network", "udp")
             .put("port", "443")
-            .put("outboundTag", "quic-reject")
-        // Xray's built-in DNS requests do not carry the TUN inbound tag. If
-        // left to the default dispatcher they always use the first converted
-        // VLESS outbound, even after the smart balancer has selected a healthy
-        // backup. Route tunnel DNS through the same selected path so one
-        // degraded Reality inbound cannot stall DNS for the whole device.
-        val encryptedDnsRule = JSONObject()
-            .put("type", "field")
-            .put("ip", JSONArray().put(tunnelDns))
-            .put("network", "tcp")
-            .put("port", "53")
+            .put("outboundTag", "quic-reject") else null
+        // DNS module traffic must follow the same selected route as customer
+        // traffic. Literal resolver IPs avoid bootstrap recursion.
+        val tunneledDnsRule = JSONObject().put("type", "field")
+            .apply {
+                if (usesTunneledDoh) {
+                    put("inboundTag", JSONArray().put(tunnelDnsTag))
+                } else {
+                    put("ip", JSONArray().put("1.1.1.1"))
+                    put("network", "tcp")
+                    put("port", "53")
+                }
+            }
             .apply {
                 if (smartRoute.balancers != null) put("balancerTag", "smart-route")
                 else put("outboundTag", "proxy")
             }
-        val routing = JSONObject().put("domainStrategy", "IPIfNonMatch")
-            .put("rules", JSONArray().put(dnsRule).put(quicRule).put(encryptedDnsRule).put(smartRoute.rule))
+        val routeRules = JSONArray().put(dnsRule)
+        quicRule?.let(routeRules::put)
+        routeRules.put(tunneledDnsRule).put(smartRoute.rule)
+        val routing = JSONObject().put("domainStrategy", "AsIs")
+            .put("rules", routeRules)
         smartRoute.balancers?.let { routing.put("balancers", it) }
         config.put("routing", routing)
 
@@ -405,35 +469,46 @@ class NivoraVpnService : VpnService(), DialerController {
         }
     }
 
-    private data class SmartRoute(val rule: JSONObject, val balancers: JSONArray? = null, val label: String? = null)
+    private data class SmartRoute(
+        val rule: JSONObject,
+        val balancers: JSONArray? = null,
+        val label: String? = null,
+        val policy: VpnRoutingPolicy
+    )
 
     private fun configureSmartRouting(
         config: JSONObject,
         outbounds: JSONArray,
         remember: Boolean,
-        preferHysteria: Boolean = false
+        preferredHysteriaIndex: Int? = null,
+        forceReality: Boolean = false
     ): SmartRoute {
+        val identities = routeIdentities(outbounds)
+        val eligibleIndexes = CustomerConnectPolicy.eligibleRouteIndexes(identities, forceReality)
+        if (forceReality) {
+            // Make excluded legacy Hysteria routes ineligible even if an old
+            // subscription label happens to start with the balancer selector.
+            identities.indices
+                .filterNot(eligibleIndexes::contains)
+                .forEach { index -> outbounds.getJSONObject(index).put("tag", "standby-hysteria-$index") }
+        }
         val candidates: List<Pair<Int, ServiceEndpoint?>> = buildList {
             for (index in 0 until outbounds.length()) {
                 val outbound = outbounds.getJSONObject(index)
                 val protocol = outbound.optString("protocol").lowercase()
-                if (protocol !in setOf("freedom", "dns", "blackhole")) add(index to endpointFromOutbound(outbound))
+                if (protocol !in setOf("freedom", "dns", "blackhole") && index in eligibleIndexes) {
+                    add(index to endpointFromOutbound(outbound))
+                }
             }
         }
+        if (candidates.isEmpty()) throw IllegalStateException("SUBSCRIPTION_INVALID")
         val networkKey = currentNetworkKey()
         val memory = SmartRouteMemory(this)
         val remembered = if (remember) memory.read(networkKey) else null
         val signatures = candidates.associate { (index, _) -> index to SmartRouteMemory.signature(outbounds.getJSONObject(index)) }
-        val preferredIndex = if (preferHysteria) {
-            val preferredPosition = CustomerConnectPolicy.firstHysteriaIndex(
-                candidates.map { (index, _) ->
-                val outbound = outbounds.getJSONObject(index)
-                    outbound.optString("protocol") to
-                        outbound.optJSONObject("streamSettings")?.optString("network")
-                }
-            )
-            preferredPosition?.let { position -> candidates.getOrNull(position)?.first }
-        } else null
+        val preferredIndex = preferredHysteriaIndex?.takeIf { candidate ->
+            candidates.any { (index, _) -> index == candidate }
+        }
         val rememberedIndex = remembered?.winner?.let { signature -> signatures.entries.firstOrNull { it.value == signature }?.key }
         // Reuse the winner learned for this exact network immediately. Xray's
         // observatory keeps checking alternatives after startup, so a full
@@ -447,6 +522,8 @@ class NivoraVpnService : VpnService(), DialerController {
             ?: candidates.firstOrNull()?.first ?: 0
         val selectedLabel = candidates.firstOrNull { it.first == selectedIndex }
             ?.let { SmartRouteMemory.label(outbounds.getJSONObject(it.first)) }
+        val selectedIsHysteria = outboundIsHysteria(outbounds.getJSONObject(selectedIndex))
+        val policy = VpnRoutingPolicy.forSession(selectedIsHysteria)
         if (remember) {
             val selectedSignature = signatures[selectedIndex]
             if (selectedSignature != null) {
@@ -454,9 +531,28 @@ class NivoraVpnService : VpnService(), DialerController {
                 memory.save(networkKey, selectedSignature, remembered?.backup ?: backup)
             }
         }
+        // A signed, short-lived ticket is only attached when the network lab
+        // has already proved Hysteria2 on this carrier. Keep that transport
+        // exclusive for the current session: mixing it into a least-ping
+        // balancer can move traffic back to a deceptively low-latency Reality
+        // route and also makes UDP/QUIC behaviour unpredictable.
+        if (policy.usesExclusiveProxy) {
+            candidates.forEach { (index, _) ->
+                outbounds.getJSONObject(index).put("tag", if (index == selectedIndex) "proxy" else "standby-route-$index")
+            }
+            return SmartRoute(
+                JSONObject().put("type", "field").put("inboundTag", JSONArray().put("tun-in")).put("outboundTag", "proxy"),
+                label = selectedLabel,
+                policy = policy
+            )
+        }
         if (candidates.size < 2) {
             outbounds.getJSONObject(selectedIndex).put("tag", "proxy")
-            return SmartRoute(JSONObject().put("type", "field").put("inboundTag", JSONArray().put("tun-in")).put("outboundTag", "proxy"), label = selectedLabel)
+            return SmartRoute(
+                JSONObject().put("type", "field").put("inboundTag", JSONArray().put("tun-in")).put("outboundTag", "proxy"),
+                label = selectedLabel,
+                policy = policy
+            )
         }
         candidates.forEach { (index, _) -> outbounds.getJSONObject(index).put("tag", "proxy-route-$index") }
         val fallbackTag = "proxy-route-$selectedIndex"
@@ -478,9 +574,44 @@ class NivoraVpnService : VpnService(), DialerController {
         return SmartRoute(
             JSONObject().put("type", "field").put("inboundTag", JSONArray().put("tun-in")).put("balancerTag", "smart-route"),
             balancers,
-            selectedLabel
+            selectedLabel,
+            policy
         )
     }
+
+    private fun routeIdentities(outbounds: JSONArray): List<ConvertedRouteIdentity> =
+        (0 until outbounds.length()).map { index ->
+            val outbound = outbounds.getJSONObject(index)
+            val endpoint = endpointFromOutbound(outbound)
+            ConvertedRouteIdentity(
+                protocol = outbound.optString("protocol"),
+                network = outbound.optJSONObject("streamSettings")?.optString("network"),
+                host = endpoint?.host,
+                port = endpoint?.port,
+                security = outbound.optJSONObject("streamSettings")?.optString("security"),
+                credentialFingerprint = hysteriaCredentialFingerprint(outbound)
+            )
+        }
+
+    private fun hysteriaCredentialFingerprint(outbound: JSONObject) =
+        if (outboundIsHysteria(outbound)) {
+            val streamAuth = outbound.optJSONObject("streamSettings")
+                ?.optJSONObject("hysteriaSettings")
+                ?.optString("auth")
+                .orEmpty()
+            // Keep compatibility with early libXray Hysteria JSON while never
+            // retaining the raw value in the route identity.
+            val legacyAuth = outbound.optJSONObject("hysteriaSettings")
+                ?.optString("auth")
+                .orEmpty()
+            CustomerConnectPolicy.credentialFingerprint(streamAuth.ifEmpty { legacyAuth })
+        } else null
+
+    private fun outboundIsHysteria(outbound: JSONObject): Boolean =
+        CustomerConnectPolicy.isHysteria(
+            outbound.optString("protocol"),
+            outbound.optJSONObject("streamSettings")?.optString("network")
+        )
 
     private fun labPrefersHysteria(): Boolean {
         val preferences = getSharedPreferences("neuralmesh_lab", MODE_PRIVATE)
