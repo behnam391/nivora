@@ -33,12 +33,30 @@ test('admin dashboard is served and protected API rejects invalid token', async 
   t.after(() => server.close());
   let r = await fetch(`${base}/admin`);
   assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-robots-tag'), 'noindex, nofollow, noarchive');
   assert.match(await r.text(), /مدیریت Nivora/);
   r = await fetch(`${base}/api/admin/plans`, { headers: { authorization: 'Bearer wrong' } });
   assert.equal(r.status, 401);
-  r = await fetch(`${base}/reseller`); assert.equal(r.status,200); assert.match(await r.text(),/پنل همکاری Nivora/);
-  r = await fetch(`${base}/account`); assert.equal(r.status,200); assert.match(await r.text(),/حساب مشتری Nivora/);
+  r = await fetch(`${base}/reseller`); assert.equal(r.status,200); assert.equal(r.headers.get('x-robots-tag'),'noindex, nofollow, noarchive'); assert.match(await r.text(),/پنل همکاری Nivora/);
+  r = await fetch(`${base}/account`); assert.equal(r.status,200); assert.equal(r.headers.get('x-robots-tag'),'noindex, nofollow, noarchive'); assert.match(await r.text(),/حساب مشتری Nivora/);
   r = await fetch(`${base}/brand-mark.png`); assert.equal(r.status,200); assert.equal(r.headers.get('content-type'),'image/png'); assert.ok((await r.arrayBuffer()).byteLength>1000);
+});
+
+test('public landing is separated from private commerce pages and robots policy', async t => {
+  const {server,base}=await start();t.after(()=>server.close());
+  let r=await fetch(`${base}/`);assert.equal(r.status,200);assert.equal(r.headers.get('x-robots-tag'),null);
+  const landing=await r.text();assert.match(landing,/استودیوی نرم‌افزار و ابزارهای هوشمند/);assert.match(landing,/studio-mark\.svg/);assert.doesNotMatch(landing,/مشاهده پلن‌ها|brand-mark\.png|\/account|\/reseller|\/admin|\/store|\/api|\/sub|\/download|\/receipts|VPN|proxy|فیلترشکن|اشتراک/i);
+  r=await fetch(`${base}/landing.css`);assert.equal(r.status,200);assert.match(r.headers.get('content-type'),/^text\/css/);assert.ok((await r.text()).length>1000);
+  r=await fetch(`${base}/studio-mark.svg`);assert.equal(r.status,200);assert.match(r.headers.get('content-type'),/^image\/svg\+xml/);assert.match(await r.text(),/<svg/);
+  for(const route of ['/store','/store/']){
+    r=await fetch(`${base}${route}`);assert.equal(r.status,200);assert.equal(r.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');assert.match(await r.text(),/مشاهده پلن‌ها/);
+  }
+  for(const route of ['/account/','/reseller/','/admin/']){
+    r=await fetch(`${base}${route}`);assert.equal(r.status,200);assert.equal(r.headers.get('x-robots-tag'),'noindex, nofollow, noarchive');
+  }
+  r=await fetch(`${base}/robots.txt`);assert.equal(r.status,200);assert.match(r.headers.get('content-type'),/^text\/plain/);
+  const robots=await r.text();assert.match(robots,/^User-agent: \*$/m);assert.match(robots,/^Allow: \/$/m);
+  assert.doesNotMatch(robots,/\/store|\/account|\/reseller|\/admin|\/api|\/sub|\/receipts|\/download/);
 });
 
 test('admin signs in with username and password and receives an expiring session', async t => {

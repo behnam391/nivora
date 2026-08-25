@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">نشان نیوورا</title>
+  <desc id="desc">نشان انتزاعی حرف N با طیف آبی</desc>
+  <defs>
+    <linearGradient id="panel" x1="16" y1="8" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#163a86"/>
+      <stop offset="0.55" stop-color="#071a46"/>
+      <stop offset="1" stop-color="#030a1e"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="29" y1="97" x2="99" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3885ff"/>
+      <stop offset="0.48" stop-color="#41e9ff"/>
+      <stop offset="1" stop-color="#9af6ff"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="34" fill="url(#panel)" stroke="#5adcf9" stroke-opacity=".45" stroke-width="2"/>
+  <path d="M29 96V32c0-5 4-9 9-9 3 0 6 2 8 4l45 57V32c0-5 4-9 9-9s9 4 9 9v64c0 5-4 9-9 9-3 0-6-2-8-4L47 44v52c0 5-4 9-9 9s-9-4-9-9Z" fill="url(#beam)" filter="url(#glow)"/>
+  <path d="M38 32l62 64" fill="none" stroke="#fff" stroke-opacity=".48" stroke-width="2" stroke-linecap="round"/>
+</svg>

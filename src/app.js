@@ -22,6 +22,16 @@ const json = (res, status, body) => {
   res.end(JSON.stringify(body));
 };
 
+const privatePageHeaders = {
+  'content-type': 'text/html; charset=utf-8',
+  'cache-control': 'no-store',
+  'x-robots-tag': 'noindex, nofollow, noarchive'
+};
+
+const robotsTxt = `User-agent: *
+Allow: /
+`;
+
 const readJson = async req => {
   let raw = '';
   for await (const chunk of req) {
@@ -290,8 +300,20 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         return json(res, result.status, result.body);
       }
       if (req.method === 'GET' && path === '/') {
-        const html = await readFile(resolve('public/index.html'));
+        const html = await readFile(resolve('public/landing.html'));
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(html);
+      }
+      if (req.method === 'GET' && (path === '/store' || path === '/store/')) {
+        const html = await readFile(resolve('public/index.html'));
+        res.writeHead(200, privatePageHeaders); return res.end(html);
+      }
+      if (req.method === 'GET' && path === '/landing.css') {
+        const css = await readFile(resolve('public/landing.css'));
+        res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' }); return res.end(css);
+      }
+      if (req.method === 'GET' && path === '/robots.txt') {
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=3600' });
+        return res.end(robotsTxt);
       }
       if (req.method === 'GET' && path === '/store.css') {
         const css = await readFile(resolve('public/store.css'));
@@ -309,16 +331,16 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if (req.method === 'GET' && receiptFile) {
         const file = await readFile(resolve('receipts', receiptFile[1]));
         const type = {'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp'}[extname(receiptFile[1]).toLowerCase()];
-        res.writeHead(200, { 'content-type':type, 'cache-control':'private, max-age=3600', 'x-content-type-options':'nosniff' }); return res.end(file);
+        res.writeHead(200, { 'content-type':type, 'cache-control':'private, max-age=3600', 'x-content-type-options':'nosniff', 'x-robots-tag':'noindex, nofollow, noarchive' }); return res.end(file);
       }
       if (req.method === 'GET' && (path === '/admin' || path === '/admin/')) {
         const html = await readFile(resolve('public/admin.html'));
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(html);
+        res.writeHead(200, privatePageHeaders); return res.end(html);
       }
       if (req.method === 'GET' && (path === '/reseller' || path === '/reseller/')) {
-        const html=await readFile(resolve('public/reseller.html'));res.writeHead(200,{'content-type':'text/html; charset=utf-8'});return res.end(html);
+        const html=await readFile(resolve('public/reseller.html'));res.writeHead(200,privatePageHeaders);return res.end(html);
       }
-      if(req.method==='GET'&&(path==='/account'||path==='/account/')){const html=await readFile(resolve('public/account.html'));res.writeHead(200,{'content-type':'text/html; charset=utf-8'});return res.end(html);}
+      if(req.method==='GET'&&(path==='/account'||path==='/account/')){const html=await readFile(resolve('public/account.html'));res.writeHead(200,privatePageHeaders);return res.end(html);}
       if(req.method==='GET'&&path==='/account.css'){const css=await readFile(resolve('public/account.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/account-extra.css'){const css=await readFile(resolve('public/account-extra.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/account.js'){const js=await readFile(resolve('public/account.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
@@ -326,9 +348,10 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/web-notifications.js'){const js=await readFile(resolve('public/web-notifications.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if(req.method==='GET'&&path==='/reseller.css'){const css=await readFile(resolve('public/reseller.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/reseller.js'){const js=await readFile(resolve('public/reseller.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
+      if(req.method==='GET'&&path==='/studio-mark.svg'){const svg=await readFile(resolve('public/studio-mark.svg'));res.writeHead(200,{'content-type':'image/svg+xml; charset=utf-8','cache-control':'public, max-age=86400'});return res.end(svg);}
       if(req.method==='GET'&&path==='/brand-mark.png'){const png=await readFile(resolve('public/brand-mark.png'));res.writeHead(200,{'content-type':'image/png','cache-control':'public, max-age=86400','content-length':png.length});return res.end(png);}
       if(req.method==='GET'&&path==='/brand-mark.svg'){const svg=await readFile(resolve('public/brand-mark.svg'));res.writeHead(200,{'content-type':'image/svg+xml; charset=utf-8','cache-control':'public, max-age=86400'});return res.end(svg);}
-      if(req.method==='GET'&&path==='/download/nivora-android.apk'){const apk=await readFile(resolve('public/releases/Nivora-0.14.5-Location-Flags-arm64.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Android-0.14.5.apk"','cache-control':'public, max-age=3600','content-length':apk.length});return res.end(apk);}
+      if(req.method==='GET'&&path==='/download/nivora-android.apk'){const apk=await readFile(resolve('public/releases/Nivora-0.14.5-Location-Flags-arm64.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Android-0.14.5.apk"','cache-control':'public, max-age=3600','content-length':apk.length,'x-robots-tag':'noindex, nofollow, noarchive'});return res.end(apk);}
       if(req.method==='GET'&&path==='/brand.css'){const css=await readFile(resolve('public/brand.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8','cache-control':'public, max-age=3600'});return res.end(css);}
       if (req.method === 'GET' && path === '/admin.css') {
         const css = await readFile(resolve('public/admin.css'));
