@@ -1,6 +1,8 @@
 package ir.nivora.app.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -91,10 +93,7 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(NivoraInk, Color(0xFF171331), NivoraInk)))) {
-        // Two quiet color pools create depth without a bitmap, blur, or an animation loop.
-        Box(Modifier.align(Alignment.TopEnd).offset(x = 82.dp, y = (-74).dp).size(270.dp).background(NivoraGreen.copy(.17f), CircleShape))
-        Box(Modifier.align(Alignment.CenterStart).offset(x = (-145).dp, y = 170.dp).size(260.dp).background(Color(0xFF36C8FF).copy(.10f), CircleShape))
+    AuroraBackground(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 22.dp),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -105,8 +104,9 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(28.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White.copy(.96f)),
-                elevation = CardDefaults.cardElevation(8.dp)
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(.90f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(.30f)),
+                elevation = CardDefaults.cardElevation(4.dp)
             ) {
                 Column(Modifier.padding(21.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
                     Text(if (registerMode) "ساخت حساب جدید" else if (partnerApp) "Nivora Partner" else "خوش آمدید", style = MaterialTheme.typography.headlineMedium)
@@ -179,9 +179,9 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
             }
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.VerifiedUser, null, tint = Color(0xFFB9D0C8), modifier = Modifier.size(17.dp))
+                Icon(Icons.Rounded.VerifiedUser, null, tint = Color(0xFFB9CBE8), modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(7.dp))
-                Text("اطلاعات ورود روی دستگاه رمزگذاری می‌شود", color = Color(0xFFB9D0C8), style = MaterialTheme.typography.labelMedium)
+                Text("اطلاعات ورود روی دستگاه رمزگذاری می‌شود", color = Color(0xFFB9CBE8), style = MaterialTheme.typography.labelMedium)
             }
         }
     }
@@ -234,38 +234,46 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
     var topupOpen by rememberSaveable { mutableStateOf(false) }
     var ticketOpen by rememberSaveable { mutableStateOf(false) }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) },
-        bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 10.dp) {
-                NavigationItem(AppDestination.HOME, destination, Icons.Rounded.Home, "خانه") { destination = it }
-                NavigationItem(AppDestination.PLANS, destination, Icons.Rounded.ShoppingBag, "پلن‌ها") { destination = it }
-                NavigationItem(AppDestination.WALLET, destination, Icons.Rounded.AccountBalanceWallet, "کیف پول") { destination = it }
-                NavigationItem(AppDestination.SUPPORT, destination, Icons.Rounded.SupportAgent, "پشتیبانی") {
-                    destination = it
-                    actions.markNotificationsRead()
+    AuroraBackground(Modifier.fillMaxSize()) {
+        Scaffold(
+            containerColor = Color.Transparent,
+            snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) },
+            bottomBar = {
+                NavigationBar(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(.22f), RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)),
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = .82f),
+                    tonalElevation = 0.dp
+                ) {
+                    NavigationItem(AppDestination.HOME, destination, Icons.Rounded.Home, "خانه") { destination = it }
+                    NavigationItem(AppDestination.PLANS, destination, Icons.Rounded.ShoppingBag, "پلن‌ها") { destination = it }
+                    NavigationItem(AppDestination.WALLET, destination, Icons.Rounded.AccountBalanceWallet, "کیف پول") { destination = it }
+                    NavigationItem(AppDestination.SUPPORT, destination, Icons.Rounded.SupportAgent, "پشتیبانی") {
+                        destination = it
+                        actions.markNotificationsRead()
+                    }
                 }
             }
-        }
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            when (destination) {
-                AppDestination.HOME -> HomeScreen(
-                    state,
-                    actions,
-                    onPlans = { destination = AppDestination.PLANS },
-                    onWallet = { destination = AppDestination.WALLET },
-                    onNotifications = { destination = AppDestination.SUPPORT; actions.markNotificationsRead() },
-                    onRenew = { renewSubscription = it }
-                )
-                AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0) { purchasePlan = it }
-                AppDestination.WALLET -> WalletScreen(state, onTopup = { topupOpen = true })
-                AppDestination.SUPPORT -> SupportScreen(state, onNewTicket = { ticketOpen = true }, onOpenTicket = actions::openTicket, onLogout = actions::logout, onNetworkLab = actions::openNetworkLab)
-            }
-            if (state.actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
-            if (state.ticketLoading) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(.12f)), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                when (destination) {
+                    AppDestination.HOME -> HomeScreen(
+                        state,
+                        actions,
+                        onPlans = { destination = AppDestination.PLANS },
+                        onWallet = { destination = AppDestination.WALLET },
+                        onNotifications = { destination = AppDestination.SUPPORT; actions.markNotificationsRead() },
+                        onRenew = { renewSubscription = it }
+                    )
+                    AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0) { purchasePlan = it }
+                    AppDestination.WALLET -> WalletScreen(state, onTopup = { topupOpen = true })
+                    AppDestination.SUPPORT -> SupportScreen(state, onNewTicket = { ticketOpen = true }, onOpenTicket = actions::openTicket, onLogout = actions::logout, onNetworkLab = actions::openNetworkLab)
+                }
+                if (state.actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                if (state.ticketLoading) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(.12f)), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
             }
         }
     }
@@ -323,7 +331,13 @@ private fun RowScope.NavigationItem(destination: AppDestination, selected: AppDe
         onClick = { onClick(destination) },
         icon = { Icon(icon, label) },
         label = { Text(label) },
-        colors = NavigationBarItemDefaults.colors(indicatorColor = MaterialTheme.colorScheme.primaryContainer)
+        colors = NavigationBarItemDefaults.colors(
+            selectedIconColor = MaterialTheme.colorScheme.primary,
+            selectedTextColor = MaterialTheme.colorScheme.primary,
+            indicatorColor = MaterialTheme.colorScheme.primary.copy(.14f),
+            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     )
 }
 
@@ -396,8 +410,8 @@ private fun ResellerOverviewScreen(account: ResellerAccount, refreshing: Boolean
         item { PartnerTopBar(account.name, refreshing, onRefresh, onLogout) }
         item {
             Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = NivoraInk), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(NivoraInk, Color(0xFF10513E)))).padding(22.dp)) {
-                    Text("موجودی قابل فروش", color = Color(0xFFB7CEC5), style = MaterialTheme.typography.bodyMedium)
+                Column(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(NivoraInk, Color(0xFF102A5A)))).padding(22.dp)) {
+                    Text("موجودی قابل فروش", color = Color(0xFFB9CBE8), style = MaterialTheme.typography.bodyMedium)
                     Text(toman(account.balanceToman), color = NivoraGreen, fontSize = 29.sp, fontWeight = FontWeight.Black)
                     Spacer(Modifier.height(15.dp))
                     Button(onClick = onSale, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = NivoraGreen, contentColor = NivoraInk)) { Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(6.dp)); Text("فروش اشتراک جدید") }
@@ -475,7 +489,7 @@ private fun ResellerPlansScreen(plans: List<Plan>, balance: Int, preferredCustom
 @Composable
 private fun ResellerWalletScreen(account: ResellerAccount) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("کیف پول همکاری", style = MaterialTheme.typography.headlineLarge); Text("ریز برداشت‌ها و بازگشت وجه", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(13.dp)); Card(colors = CardDefaults.cardColors(containerColor = NivoraInk), shape = RoundedCornerShape(25.dp)) { Column(Modifier.fillMaxWidth().padding(22.dp)) { Text("موجودی قابل فروش", color = Color(0xFFB6CCC4)); Text(toman(account.balanceToman), color = NivoraGreen, fontSize = 28.sp, fontWeight = FontWeight.Black) } } }
+        item { Text("کیف پول همکاری", style = MaterialTheme.typography.headlineLarge); Text("ریز برداشت‌ها و بازگشت وجه", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(13.dp)); Card(colors = CardDefaults.cardColors(containerColor = NivoraInk), shape = RoundedCornerShape(25.dp)) { Column(Modifier.fillMaxWidth().padding(22.dp)) { Text("موجودی قابل فروش", color = Color(0xFFB9CBE8)); Text(toman(account.balanceToman), color = NivoraGreen, fontSize = 28.sp, fontWeight = FontWeight.Black) } } }
         if (account.transactions.isEmpty()) item { EmptyState(Icons.AutoMirrored.Rounded.ReceiptLong, "تراکنشی نیست", "شارژها و خریدهای شما اینجا ثبت می‌شوند.") }
         else items(account.transactions, key = { it.id }) { TransactionRow(it) }
     }
@@ -534,7 +548,7 @@ private fun HomeScreen(
         }
         item {
             Column(Modifier.padding(horizontal = 20.dp)) {
-                ConnectionHero(state.vpnState, state.vpnError, state.smartRoute, state.selectedSubscription, state.pingMs, state.pingBusy, actions::toggleVpn, actions::measurePing)
+                ConnectionHero(state.vpnState, state.vpnError, state.selectedSubscription, state.pingMs, state.pingBusy, actions::toggleVpn, actions::measurePing)
             }
         }
         item {
@@ -583,11 +597,14 @@ private fun HomeScreen(
 
 @Composable
 private fun RowScope.QuickCard(icon: ImageVector, label: String, value: String, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier.weight(1f).clickable(onClick = onClick),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = CardDefaults.outlinedCardBorder()
+    val shape = RoundedCornerShape(20.dp)
+    Box(
+        modifier = Modifier
+            .weight(1f)
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface.copy(.72f))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(.28f), shape)
+            .clickable(onClick = onClick)
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
@@ -745,7 +762,7 @@ private fun SupportScreen(state: NivoraUiState, onNewTicket: () -> Unit, onOpenT
                         Spacer(Modifier.width(8.dp))
                         Text("Nivora ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
                     }
-                    Text("اتصال امن با هسته Xray · اطلاعات ورود رمزگذاری‌شده", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+                    Text("اتصال امن و خودکار · اطلاعات ورود روی دستگاه رمزگذاری می‌شود", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
                     if (BuildConfig.NETWORK_LAB_ENABLED) FilledTonalButton(onClick = onNetworkLab, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Rounded.Science, null); Spacer(Modifier.width(7.dp)); Text("آزمایشگاه هوشمند شبکه")
                     }
@@ -924,7 +941,7 @@ private fun TopupDialog(
 private fun BankCard(card: PaymentCard, onCopy: (String, String) -> Unit) {
     Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = NivoraInk), modifier = Modifier.fillMaxWidth()) {
         Column(
-            Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(NivoraInk, Color(0xFF126047)))).padding(20.dp),
+            Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(NivoraInk, Color(0xFF123A78)))).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {

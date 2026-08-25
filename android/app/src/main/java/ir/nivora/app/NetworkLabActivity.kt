@@ -359,7 +359,9 @@ class NetworkLabActivity : ComponentActivity() {
     )
 
     private fun stopVpn() {
-        stopService(Intent(this, NivoraVpnService::class.java))
+        val stop = Intent(this, NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP)
+        runCatching { startService(stop) }
+            .onFailure { stopService(Intent(this, NivoraVpnService::class.java)) }
     }
 
     private fun cancelRun() {

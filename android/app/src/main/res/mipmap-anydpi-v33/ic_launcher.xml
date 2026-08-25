@@ -1,5 +1,4 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/launcher_background"/>
-    <foreground android:drawable="@drawable/ic_launcher_foreground_v2"/>
-    <monochrome android:drawable="@drawable/ic_nivora_notification"/>
+    <foreground android:drawable="@drawable/nivora_brand_launcher"/>
 </adaptive-icon>

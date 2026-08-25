@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Surface
@@ -31,6 +32,7 @@ import androidx.work.WorkManager
 import ir.nivora.app.data.*
 import ir.nivora.app.ui.*
 import ir.nivora.app.vpn.NivoraVpnService
+import ir.nivora.app.vpn.VpnLifecyclePolicy
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -59,6 +61,10 @@ class MainActivity : ComponentActivity(), NivoraActions {
     private var networkCallbackRegistered = false
     private var lastUnderlyingNetwork: String? = null
     private var networkRestartAt = 0L
+    @Volatile private var manualDisconnectRequested = false
+    @Volatile private var activeSessionToken: String? = null
+    @Volatile private var liveSessionValidated = false
+    @Volatile private var dashboardValidationInFlight = false
     private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) {
             if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) ||
@@ -72,16 +78,18 @@ class MainActivity : ComponentActivity(), NivoraActions {
             handler.post {
                 val previous = lastUnderlyingNetwork
                 lastUnderlyingNetwork = key
-                if (previous != null && previous != key && state.vpnState == "connected" &&
-                    System.currentTimeMillis() - networkRestartAt > 5_000) {
-                    networkRestartAt = System.currentTimeMillis()
+                val now = System.currentTimeMillis()
+                if (VpnLifecyclePolicy.shouldRestartAfterNetworkChange(
+                        previous, key, state.vpnState, manualDisconnectRequested, networkRestartAt, now
+                    )) {
+                    networkRestartAt = now
                     showNotice("شبکه تغییر کرد؛ مسیر هوشمند دوباره انتخاب می‌شود")
                     startSelectedVpn()
                 }
             }
         }
     }
-    private val notificationPoll=object:Runnable{override fun run(){if(session.token()!=null)loadDashboard(false);handler.postDelayed(this,60_000)}}
+    private val notificationPoll=object:Runnable{override fun run(){if(activeSessionToken!=null)loadDashboard(false);handler.postDelayed(this,60_000)}}
 
     private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) startSelectedVpn()
@@ -95,6 +103,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
             val error = vpnPreferences.getString("error", null)
             val smartRoute = intent?.getStringExtra(NivoraVpnService.EXTRA_SMART_ROUTE)
                 ?: vpnPreferences.getString("smart_route", null)
+            if (vpnState == "disconnected" || vpnState == "error") manualDisconnectRequested = false
             state = state.copy(vpnState = vpnState, vpnError = friendlyVpnError(error), smartRoute = smartRoute)
             if (vpnState == "connected") handler.postDelayed({ refresh() }, 3_500)
         }
@@ -102,23 +111,44 @@ class MainActivity : ComponentActivity(), NivoraActions {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         session = SecureSessionStore(this)
         registerVpnReceiver()
         registerNetworkObserver()
         val storedState = vpnPreferences.getString("state", "disconnected") ?: "disconnected"
-        val correctedState = if (storedState in setOf("connected", "connecting") && !NivoraVpnService.isCoreRunning()) "disconnected" else storedState
+        val correctedState = VpnLifecyclePolicy.initialState(
+            storedState,
+            NivoraVpnService.isCoreRunning(),
+            NivoraVpnService.isConnectionAttemptActive()
+        )
         if (correctedState != storedState) vpnPreferences.edit().putString("state", correctedState).remove("error").apply()
         val expectedRole = if (BuildConfig.APP_AUDIENCE == "partner") "reseller" else "customer"
-        val signedIn = session.token() != null && session.role() == expectedRole
-        if (!signedIn && session.token() != null) session.clear()
-        state = state.copy(signedIn = signedIn, loading = signedIn, role = session.role(), vpnState = correctedState, vpnError = friendlyVpnError(vpnPreferences.getString("error", null)), smartRoute = vpnPreferences.getString("smart_route", null))
+        val storedToken = session.token()
+        val storedRole = session.role()
+        val signedIn = storedToken != null && storedRole == expectedRole
+        if (!signedIn && storedToken != null) session.clear()
+        activeSessionToken = storedToken.takeIf { signedIn }
+        liveSessionValidated = false
+        state = state.copy(
+            signedIn = signedIn,
+            loading = signedIn,
+            role = storedRole,
+            vpnState = correctedState,
+            vpnError = friendlyVpnError(vpnPreferences.getString("error", null)),
+            smartRoute = vpnPreferences.getString("smart_route", null)
+        )
         setContent {
-            NivoraTheme {
+            NivoraTheme(darkTheme = true) {
                 Surface { NivoraApp(state, this@MainActivity) }
             }
         }
-        if (signedIn) loadDashboard(initial = true)
+        activeSessionToken?.let { token ->
+            if (expectedRole == "customer") loadCachedCustomerDashboard(token)
+            loadDashboard(initial = true)
+        }
         if(signedIn)scheduleNotificationWorker()
         if(signedIn&&Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         handler.postDelayed(notificationPoll,60_000)
@@ -137,6 +167,9 @@ class MainActivity : ComponentActivity(), NivoraActions {
         work = { api.login(phone, password, if (role == LoginRole.RESELLER) "reseller" else "customer") },
         success = {
             session.save(it.token, it.role)
+            activeSessionToken = it.token
+            liveSessionValidated = false
+            dashboardValidationInFlight = false
             scheduleNotificationWorker()
             state = state.copy(signedIn = true, loading = true, role = it.role, account = null, reseller = null, loadError = null)
             loadDashboard(initial = true)
@@ -147,6 +180,9 @@ class MainActivity : ComponentActivity(), NivoraActions {
         work = { api.register(name, phone, password) },
         success = {
             session.save(it.token, "customer")
+            activeSessionToken = it.token
+            liveSessionValidated = false
+            dashboardValidationInFlight = false
             scheduleNotificationWorker()
             state = state.copy(signedIn = true, loading = true, role = "customer", loadError = null)
             loadDashboard(initial = true)
@@ -169,7 +205,15 @@ class MainActivity : ComponentActivity(), NivoraActions {
 
     override fun toggleVpn() {
         if (state.vpnState == "connected" || state.vpnState == "connecting") {
-            stopService(Intent(this, NivoraVpnService::class.java))
+            requestVpnStop()
+            return
+        }
+        if (state.vpnState == "disconnecting") return
+        if (!SessionValidationPolicy.canStartVpn(state.signedIn, liveSessionValidated)) {
+            showNotice("حساب و دستگاه در حال تأیید است؛ چند لحظه دیگر دوباره بزنید", true)
+            if (!state.loading && !state.refreshing && !dashboardValidationInFlight) {
+                loadDashboard(initial = state.account == null && state.reseller == null)
+            }
             return
         }
         val subscription = state.selectedSubscription
@@ -361,9 +405,13 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     override fun logout() {
-        stopService(Intent(this, NivoraVpnService::class.java))
+        activeSessionToken = null
+        liveSessionValidated = false
+        dashboardValidationInFlight = false
+        sendVpnStopCommand()
         session.clear()
         SubscriptionBundleStore(this).clear()
+        DashboardSnapshotStore(this).clear()
         WorkManager.getInstance(this).cancelUniqueWork("nivora-notification-poll")
         selection.edit().clear().apply()
         state = NivoraUiState(vpnState = "disconnected")
@@ -374,9 +422,15 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     private fun startSelectedVpn() {
+        if (!SessionValidationPolicy.canStartVpn(state.signedIn, liveSessionValidated)) {
+            showNotice("اتصال پس از تأیید حساب و دستگاه فعال می‌شود", true)
+            return
+        }
+        val token = activeSessionToken ?: return
         val subscription = state.selectedSubscription ?: return
         val url = subscription.url
         if (url.isNullOrBlank()) return
+        manualDisconnectRequested = false
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -385,23 +439,29 @@ class MainActivity : ComponentActivity(), NivoraActions {
             Intent(this, NivoraVpnService::class.java)
                 .putExtra(NivoraVpnService.EXTRA_URL, url)
                 .putExtra(NivoraVpnService.EXTRA_SUBSCRIPTION_ID, subscription.id)
-                .putExtra(NivoraVpnService.EXTRA_SESSION_TOKEN, session.token())
+                .putExtra(NivoraVpnService.EXTRA_SESSION_TOKEN, token)
                 .putExtra(NivoraVpnService.EXTRA_DEVICE_ID, deviceId)
                 .putExtra(NivoraVpnService.EXTRA_LABEL, subscription.locationName ?: subscription.planName)
         )
     }
 
     private fun loadDashboard(initial: Boolean) {
-        val token = session.token() ?: run { logout(); return }
-        if (state.refreshing || (initial && state.loading && (state.account != null || state.reseller != null))) return
+        val token = activeSessionToken ?: run { logout(); return }
+        if (dashboardValidationInFlight || state.refreshing || (initial && state.loading && (state.account != null || state.reseller != null))) return
+        val role = state.role
+        dashboardValidationInFlight = true
         state = state.copy(
             loading = initial && state.account == null && state.reseller == null,
             refreshing = !initial,
             loadError = null
         )
+        if (initial && role != "reseller" && state.account == null) {
+            loadInitialCustomerDashboard(token)
+            return
+        }
         background(
             work = {
-                if (state.role == "reseller") {
+                if (role == "reseller") {
                     val reseller = CompletableFuture.supplyAsync { api.resellerAccount(token) }
                     val resellerPlans = CompletableFuture.supplyAsync { api.resellerPlans(token) }
                     val tickets = CompletableFuture.supplyAsync { api.tickets(token,"reseller") }
@@ -421,43 +481,23 @@ class MainActivity : ComponentActivity(), NivoraActions {
                 }
             },
             success = { payload ->
+                if (!isCurrentSession(token)) return@background
+                dashboardValidationInFlight = false
                 if (payload.reseller != null) {
+                    liveSessionValidated = true
                     showNewNotifications(payload.reseller.notifications)
                     state = state.copy(signedIn = true, loading = false, refreshing = false, reseller = payload.reseller, resellerPlans = payload.resellerPlans, tickets = payload.tickets, account = null, loadError = null)
                     return@background
                 }
                 val account = payload.account ?: return@background
-                showNewNotifications(account.notifications)
-                val plans = payload.plans
-                val tickets = payload.tickets
-                val active = account.subscriptions.filter { it.status == "active" && it.url != null }
-                val storedId = selection.getString("subscription_id", null)
-                val selectedId = active.firstOrNull { it.id == storedId }?.id ?: active.firstOrNull()?.id
-                selectedId?.let { selection.edit().putString("subscription_id", it).apply() }
-                state = state.copy(
-                    signedIn = true,
-                    loading = false,
-                    refreshing = false,
-                    account = account,
-                    plans = plans,
-                    tickets = tickets,
-                    selectedSubscriptionId = selectedId,
-                    loadError = null
-                )
-                // Warm the encrypted bundle cache after the UI is already
-                // usable. The connect button can then start without waiting
-                // for Nivora and 3x-ui to complete a live round trip.
-                active.firstOrNull { it.id == selectedId }?.url?.let { subscriptionUrl ->
-                    thread(name = "nivora-bundle-prefetch") {
-                        runCatching { api.subscription(subscriptionUrl, token) }
-                            .onSuccess { SubscriptionBundleStore(this@MainActivity).save(subscriptionUrl, it) }
-                    }
-                }
+                liveSessionValidated = true
+                applyCustomerAccount(token, account, payload.plans, payload.tickets)
             },
             failure = { error ->
-                if ((error as? ApiException)?.code == "UNAUTHORIZED") {
-                    state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
-                } else {
+                if (!isCurrentSession(token)) return@background
+                dashboardValidationInFlight = false
+                if (isUnauthorized(error)) invalidateSession(token)
+                else {
                     state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
                     if (state.account != null || state.reseller != null) showNotice(friendly(error), true)
                 }
@@ -465,20 +505,183 @@ class MainActivity : ComponentActivity(), NivoraActions {
         )
     }
 
+    /**
+     * The encrypted snapshot is deliberately decoded after setContent. It may
+     * paint stale values while the live request is running, but never grants
+     * permission to start a VPN connection.
+     */
+    private fun loadCachedCustomerDashboard(token: String) {
+        background(
+            work = { DashboardSnapshotStore(this).readCustomer(token) },
+            success = { snapshot ->
+                if (snapshot == null || !isCurrentSession(token) || liveSessionValidated || state.account != null) {
+                    return@background
+                }
+                val active = snapshot.account.subscriptions.filter { it.status == "active" && it.url != null }
+                val storedId = selection.getString("subscription_id", null)
+                val selectedId = active.firstOrNull { it.id == storedId }?.id ?: active.firstOrNull()?.id
+                state = state.copy(
+                    loading = false,
+                    refreshing = dashboardValidationInFlight,
+                    account = snapshot.account,
+                    plans = state.plans.ifEmpty { snapshot.plans },
+                    tickets = state.tickets.ifEmpty { snapshot.tickets },
+                    selectedSubscriptionId = selectedId,
+                    loadError = null
+                )
+            },
+            failure = { /* A missing/corrupt cache simply leaves the live loader visible. */ }
+        )
+    }
+
+    /**
+     * Account data is enough to paint the home screen. Plans and tickets are
+     * independent and must not keep the user behind a second full-screen loader.
+     */
+    private fun loadInitialCustomerDashboard(token: String) {
+        state = state.copy(loading = true, refreshing = false, loadError = null)
+        background(
+            work = {
+                val binding = CompletableFuture.runAsync { api.bindDevice(token) }
+                val account = CompletableFuture.supplyAsync { api.account(token) }
+                val result = account.join()
+                binding.join()
+                result
+            },
+            success = { account ->
+                if (!isCurrentSession(token)) return@background
+                dashboardValidationInFlight = false
+                liveSessionValidated = true
+                applyCustomerAccount(token, account, state.plans, state.tickets)
+            },
+            failure = { error ->
+                if (!isCurrentSession(token)) return@background
+                dashboardValidationInFlight = false
+                if (isUnauthorized(error)) invalidateSession(token)
+                else state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
+            }
+        )
+        background(
+            work = {
+                val plans = CompletableFuture.supplyAsync { api.plans() }
+                val tickets = CompletableFuture.supplyAsync { api.tickets(token) }
+                plans.join() to tickets.join()
+            },
+            success = { (plans, tickets) ->
+                if (isCurrentSession(token)) {
+                    state = state.copy(plans = plans, tickets = tickets)
+                    if (liveSessionValidated) state.account?.let { saveDashboardSnapshot(token, it, plans, tickets) }
+                }
+            },
+            failure = { error ->
+                if (isCurrentSession(token) && isUnauthorized(error)) invalidateSession(token)
+                // Plans/tickets are secondary; other failures are retried by a normal refresh.
+            }
+        )
+    }
+
+    private fun applyCustomerAccount(token: String, account: Account, plans: List<Plan>, tickets: List<SupportTicket>) {
+        if (!isCurrentSession(token)) return
+        showNewNotifications(account.notifications)
+        val active = account.subscriptions.filter { it.status == "active" && it.url != null }
+        val storedId = selection.getString("subscription_id", null)
+        val selectedId = active.firstOrNull { it.id == storedId }?.id ?: active.firstOrNull()?.id
+        selectedId?.let { selection.edit().putString("subscription_id", it).apply() }
+        state = state.copy(
+            signedIn = true,
+            loading = false,
+            refreshing = false,
+            account = account,
+            plans = plans,
+            tickets = tickets,
+            selectedSubscriptionId = selectedId,
+            loadError = null
+        )
+        saveDashboardSnapshot(token, account, plans, tickets)
+        active.firstOrNull { it.id == selectedId }?.url?.let { subscriptionUrl ->
+            thread(name = "nivora-bundle-prefetch") {
+                runCatching { api.subscription(subscriptionUrl, token) }
+                    .onSuccess {
+                        if (isCurrentSession(token)) SubscriptionBundleStore(this@MainActivity).save(subscriptionUrl, it)
+                    }
+                    .onFailure { error ->
+                        if (isUnauthorized(error)) handler.post { invalidateSession(token) }
+                    }
+            }
+        }
+    }
+
+    private fun saveDashboardSnapshot(token: String, account: Account, plans: List<Plan>, tickets: List<SupportTicket>) {
+        thread(name = "nivora-dashboard-cache") {
+            if (!isCurrentSession(token)) return@thread
+            runCatching {
+                DashboardSnapshotStore(this@MainActivity).saveCustomer(
+                    token,
+                    CustomerDashboardSnapshot(account, plans, tickets)
+                )
+            }
+        }
+    }
+
+    private fun requestVpnStop() {
+        manualDisconnectRequested = true
+        networkRestartAt = System.currentTimeMillis()
+        state = state.copy(vpnState = "disconnecting", vpnError = null)
+        sendVpnStopCommand()
+        handler.postDelayed({
+            if (state.vpnState == "disconnecting" && !NivoraVpnService.isCoreRunning()) {
+                vpnPreferences.edit().putString("state", "disconnected").remove("error").remove("smart_route").apply()
+                manualDisconnectRequested = false
+                state = state.copy(vpnState = "disconnected", vpnError = null, smartRoute = null)
+            }
+        }, 1_500L)
+    }
+
+    private fun sendVpnStopCommand() {
+        val stopIntent = Intent(this, NivoraVpnService::class.java).setAction(NivoraVpnService.ACTION_STOP)
+        runCatching { startService(stopIntent) }
+            .onFailure { stopService(Intent(this, NivoraVpnService::class.java)) }
+    }
+
     private fun <T> runAction(work: () -> T, success: (T) -> Unit) {
         if (state.actionBusy) return
+        val capturedToken = activeSessionToken
         state = state.copy(actionBusy = true)
         background(
             work,
-            success = { state = state.copy(actionBusy = false); success(it) },
-            failure = { state = state.copy(actionBusy = false); showNotice(friendly(it), true) }
+            success = {
+                if (capturedToken != null && !isCurrentSession(capturedToken)) return@background
+                state = state.copy(actionBusy = false)
+                success(it)
+            },
+            failure = { error ->
+                if (capturedToken != null && !isCurrentSession(capturedToken)) return@background
+                state = state.copy(actionBusy = false)
+                if (capturedToken != null && isUnauthorized(error)) invalidateSession(capturedToken)
+                else showNotice(friendly(error), true)
+            }
         )
     }
 
     private fun withToken(action: (String) -> Unit) {
-        val token = session.token()
+        val token = activeSessionToken
         if (token == null) logout() else action(token)
     }
+
+    private fun isCurrentSession(token: String): Boolean =
+        SessionValidationPolicy.isCurrent(token, activeSessionToken)
+
+    private fun invalidateSession(token: String) {
+        if (!isCurrentSession(token)) return
+        logout()
+    }
+
+    private fun rootCause(error: Throwable): Throwable {
+        return SessionValidationPolicy.rootCause(error)
+    }
+
+    private fun isUnauthorized(error: Throwable): Boolean =
+        SessionValidationPolicy.isUnauthorized(error)
 
     private fun showNotice(text: String, error: Boolean = false) {
         state = state.copy(notice = UiNotice(noticeIds.incrementAndGet(), text, error))
@@ -504,7 +707,8 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     private fun friendly(error: Throwable): String {
-        val code = (error as? ApiException)?.code ?: error.message.orEmpty()
+        val resolved = rootCause(error)
+        val code = (resolved as? ApiException)?.code ?: resolved.message.orEmpty()
         return when (code) {
             "INVALID_CREDENTIALS" -> "شماره موبایل یا رمز عبور صحیح نیست"
             "PHONE_ALREADY_EXISTS" -> "این شماره موبایل قبلاً ثبت شده است"
@@ -522,7 +726,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
             "CUSTOMER_ALREADY_EXISTS" -> "این شماره قبلاً در دفترچه ثبت شده است"
             "CUSTOMER_NOT_FOUND" -> "پرونده مشتری پیدا نشد"
             "INVALID_SERVER_RESPONSE" -> "پاسخ سرور قابل خواندن نبود"
-            else -> when (error) {
+            else -> when (resolved) {
                 is SocketTimeoutException -> "پاسخ سرور طول کشید؛ دوباره تلاش کنید"
                 is UnknownHostException, is ConnectException -> "اینترنت یا دسترسی به سرور برقرار نیست"
                 else -> "خطایی رخ داد؛ دوباره تلاش کنید"

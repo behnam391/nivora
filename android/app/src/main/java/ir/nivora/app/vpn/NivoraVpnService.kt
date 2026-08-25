@@ -56,13 +56,17 @@ class NivoraVpnService : VpnService(), DialerController {
         private const val CONNECT_TICKET_BUDGET_MS = 5_000L
 
         private val coreRunning = AtomicBoolean(false)
+        private val connectionAttempts = AtomicInteger()
 
         // Never load the 90+ MB native core on MainActivity's UI thread just
         // to render the first frame. The service owns the authoritative state.
         fun isCoreRunning(): Boolean = coreRunning.get()
+        fun isConnectionAttemptActive(): Boolean = connectionAttempts.get() > 0
     }
 
     private val generation = AtomicInteger()
+    private val tunnelLock = Any()
+    private val coreLock = Any()
     private var tun: ParcelFileDescriptor? = null
     @Volatile private var terminalError = false
     @Volatile private var activeRunId: String? = null
@@ -95,6 +99,7 @@ class NivoraVpnService : VpnService(), DialerController {
         val label = intent.getStringExtra(EXTRA_LABEL).orEmpty()
         val runId = generation.incrementAndGet()
         terminalError = false
+        connectionAttempts.incrementAndGet()
         state("connecting", null)
         showNotification("در حال برقراری اتصال امن…", label, connected = false)
         thread(name = "nivora-xray") {
@@ -107,6 +112,8 @@ class NivoraVpnService : VpnService(), DialerController {
                 state("error", safeError(error))
                 shutdown(markDisconnected = false)
                 stopSelf()
+            } finally {
+                connectionAttempts.decrementAndGet()
             }
         }
         return START_STICKY
@@ -121,8 +128,7 @@ class NivoraVpnService : VpnService(), DialerController {
         label: String,
         runId: Int
     ) {
-        stopCore()
-        ensureCurrent(runId)
+        prepareCoreForRun(runId)
         val preferTicketRoute = shareLink.isNullOrBlank() &&
             !url.isNullOrBlank() &&
             !subscriptionId.isNullOrBlank() &&
@@ -326,8 +332,16 @@ class NivoraVpnService : VpnService(), DialerController {
             .addRoute("0.0.0.0", 0)
             .setBlocking(false)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
-        tun = builder.establish() ?: throw IllegalStateException("TUN_CREATE_FAILED")
-        config.getJSONObject("env").put("xray.tun.fd", tun!!.fd.toString())
+        val establishedTun = builder.establish() ?: throw IllegalStateException("TUN_CREATE_FAILED")
+        val replacedTun = synchronized(tunnelLock) {
+            if (generation.get() != runId) {
+                runCatching { establishedTun.close() }
+                throw InterruptedException("VPN_STOPPED")
+            }
+            tun.also { tun = establishedTun }
+        }
+        runCatching { replacedTun?.close() }
+        config.getJSONObject("env").put("xray.tun.fd", establishedTun.fd.toString())
         ensureCurrent(runId)
 
         LibXray.registerDialerController(this)
@@ -336,10 +350,13 @@ class NivoraVpnService : VpnService(), DialerController {
             .put("apiVersion", 1)
             .put("method", "runXrayFromJson")
             .put("payload", JSONObject().put("configJSON", config.toString()))
-        val result = JSONObject(LibXray.invoke(run.toString()))
-        if (!result.optBoolean("success")) throw IllegalStateException("XRAY_START_FAILED")
-        coreRunning.set(true)
-        ensureCurrent(runId)
+        synchronized(coreLock) {
+            ensureCurrent(runId)
+            val result = JSONObject(LibXray.invoke(run.toString()))
+            ensureCurrent(runId)
+            if (!result.optBoolean("success")) throw IllegalStateException("XRAY_START_FAILED")
+            coreRunning.set(true)
+        }
         // Network Lab performs its own end-to-end probes and scoring. Report
         // the core as ready immediately so its shorter connection deadline is
         // not spent waiting for the customer's separate health gate below.
@@ -357,7 +374,8 @@ class NivoraVpnService : VpnService(), DialerController {
             remove("real_mbps")
         }.apply()
         state("connected", null, smartRoute.label)
-        showNotification("متصل و محافظت‌شده", smartRoute.label?.let { "$label · $it" } ?: label, connected = true)
+        // Keep route details internal. Customers only need the human location label.
+        showNotification("متصل و محافظت‌شده", label, connected = true)
     }
 
     private class PendingConnectTicket(
@@ -701,7 +719,7 @@ class NivoraVpnService : VpnService(), DialerController {
     }
 
     private fun ensureCurrent(runId: Int) {
-        if (generation.get() != runId) throw InterruptedException("VPN_STOPPED")
+        if (!VpnLifecyclePolicy.isCurrentRun(runId, generation.get())) throw InterruptedException("VPN_STOPPED")
     }
 
     private fun state(value: String, error: String?, smartRoute: String? = null) {
@@ -723,7 +741,7 @@ class NivoraVpnService : VpnService(), DialerController {
             NotificationChannel(CHANNEL_ID, "اتصال امن Nivora", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "نمایش وضعیت اتصال VPN"
                 setShowBadge(false)
-                lightColor = Color.rgb(34, 212, 155)
+                lightColor = Color.rgb(56, 217, 255)
             }
         )
         val open = PendingIntent.getActivity(
@@ -739,13 +757,32 @@ class NivoraVpnService : VpnService(), DialerController {
             .setContentIntent(open)
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
-            .setColor(Color.rgb(34, 212, 155))
+            .setColor(Color.rgb(37, 99, 235))
             .apply { if (connected) addAction(Notification.Action.Builder(null, "قطع اتصال", stop).build()) }
             .build()
         startForeground(NOTIFICATION_ID, notification)
     }
 
     private fun stopCore() {
+        synchronized(coreLock) {
+            stopCoreLocked()
+        }
+    }
+
+    /**
+     * A delayed thread from an older start command must never stop the core
+     * owned by a newer generation. The generation decision and native stop are
+     * serialized with core startup under the same lock.
+     */
+    private fun prepareCoreForRun(runId: Int) {
+        synchronized(coreLock) {
+            ensureCurrent(runId)
+            stopCoreLocked()
+            ensureCurrent(runId)
+        }
+    }
+
+    private fun stopCoreLocked() {
         runCatching {
             LibXray.invoke(JSONObject().put("apiVersion", 1).put("method", "stopXray").put("payload", JSONObject()).toString())
         }
@@ -754,11 +791,15 @@ class NivoraVpnService : VpnService(), DialerController {
     }
 
     private fun shutdown(markDisconnected: Boolean) {
-        stopCore()
-        runCatching { tun?.close() }
-        tun = null
+        // Closing the TUN first makes a user-requested disconnect immediate,
+        // even if the native core takes time to finish its own shutdown.
+        val activeTun = synchronized(tunnelLock) {
+            tun.also { tun = null }
+        }
+        runCatching { activeTun?.close() }
         if (markDisconnected) state("disconnected", null)
         stopForeground(STOP_FOREGROUND_REMOVE)
+        stopCore()
     }
 
     private fun safeError(error: Throwable): String = when {

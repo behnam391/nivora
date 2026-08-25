@@ -14,18 +14,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// Kept under the old names so the app stays consistent internally. The visual
-// language is now midnight / electric violet rather than the previous green UI.
-val NivoraGreen = Color(0xFF8E7CFF)
-val NivoraGreenDark = Color(0xFF6754E8)
-val NivoraInk = Color(0xFF0C0A1C)
-val NivoraInkSoft = Color(0xFF1B1738)
-val NivoraMint = Color(0xFFF0EEFF)
-val NivoraBackground = Color(0xFFF8F7FF)
-val NivoraLine = Color(0xFFE2DFFF)
-val NivoraMuted = Color(0xFF6F6A86)
-val NivoraDanger = Color(0xFFE44F5A)
-val NivoraWarning = Color(0xFFF0A836)
+// Legacy variable names are retained to avoid a noisy mechanical rewrite.
+// Their values now follow the final Nivora artwork: midnight, cobalt, cyan and silver.
+val NivoraGreen = Color(0xFF38D9FF)
+val NivoraGreenDark = Color(0xFF2563EB)
+val NivoraInk = Color(0xFF050816)
+val NivoraInkSoft = Color(0xFF0D1733)
+val NivoraMint = Color(0xFFEAF7FF)
+val NivoraBackground = Color(0xFFF4F8FF)
+val NivoraLine = Color(0xFFCADAF4)
+val NivoraMuted = Color(0xFF61708F)
+val NivoraDanger = Color(0xFFFF5C78)
+val NivoraWarning = Color(0xFFFFB547)
 
 private val LightColors = lightColorScheme(
     primary = NivoraGreenDark,
@@ -38,7 +38,7 @@ private val LightColors = lightColorScheme(
     onBackground = NivoraInk,
     surface = Color.White,
     onSurface = NivoraInk,
-    surfaceVariant = Color(0xFFF0EFF8),
+    surfaceVariant = Color(0xFFEAF1FB),
     onSurfaceVariant = NivoraMuted,
     outline = NivoraLine,
     error = NivoraDanger
@@ -48,17 +48,17 @@ private val DarkColors = darkColorScheme(
     primary = NivoraGreen,
     onPrimary = NivoraInk,
     primaryContainer = NivoraInkSoft,
-    onPrimaryContainer = Color(0xFFE8E4FF),
+    onPrimaryContainer = Color(0xFFEAF7FF),
     secondary = Color(0xFF62D4FF),
     onSecondary = NivoraInk,
-    background = Color(0xFF0A0916),
-    onBackground = Color(0xFFF0EFFF),
-    surface = Color(0xFF151229),
-    onSurface = Color(0xFFF0EFFF),
-    surfaceVariant = Color(0xFF211D3D),
-    onSurfaceVariant = Color(0xFFB6B0CC),
-    outline = Color(0xFF393358),
-    error = Color(0xFFFF7C84)
+    background = Color(0xFF050816),
+    onBackground = Color(0xFFF0F7FF),
+    surface = Color(0xFF0D1733),
+    onSurface = Color(0xFFF0F7FF),
+    surfaceVariant = Color(0xFF16254A),
+    onSurfaceVariant = Color(0xFFB5C6E3),
+    outline = Color(0xFF31466E),
+    error = Color(0xFFFF7C91)
 )
 
 private val NivoraTypography = Typography(

@@ -1,6 +1,13 @@
 package ir.nivora.app.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -10,6 +17,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -23,17 +31,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ir.nivora.app.R
 import ir.nivora.app.data.Plan
 import ir.nivora.app.data.Subscription
 import java.text.NumberFormat
@@ -63,49 +77,52 @@ fun countryFlag(code: String?): String = when (code?.trim()?.uppercase(Locale.US
 
 @Composable
 fun NivoraLogo(modifier: Modifier = Modifier, compact: Boolean = false, onDark: Boolean = false) {
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(
-            Modifier.size(if (compact) 40.dp else 57.dp)
-                .background(if (onDark) Color.White.copy(.08f) else MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(if (compact) 13.dp else 18.dp))
-                .padding(if (compact) 6.dp else 8.dp),
-            contentAlignment = Alignment.Center
-        ) { NivoraMark(Modifier.fillMaxSize()) }
-        Column {
-            Text("NIVORA", color = if (onDark) Color.White else MaterialTheme.colorScheme.onSurface, fontSize = if (compact) 19.sp else 26.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
-            if (!compact) Text("اینترنت امن، ساده و سریع", style = MaterialTheme.typography.bodyMedium, color = if (onDark) Color(0xFFB9D0C8) else MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
+    // A single branded resource is shared with the launcher/splash pipeline so
+    // the user never sees a second, slightly different logo after first paint.
+    Image(
+        painter = painterResource(R.drawable.nivora_brand_full),
+        contentDescription = "Nivora",
+        modifier = modifier
+            .height(if (compact) 38.dp else 104.dp)
+            .widthIn(max = if (compact) 132.dp else 240.dp),
+        contentScale = ContentScale.Fit,
+        alpha = if (onDark) 1f else .98f
+    )
 }
 
+/** Static aurora pools provide a glass backdrop without a live blur pass. */
 @Composable
-fun NivoraMark(modifier: Modifier = Modifier) {
-    Canvas(modifier) {
-        val w = size.width
-        val h = size.height
-        val mark = Path().apply {
-            moveTo(.17f * w, .82f * h)
-            lineTo(.17f * w, .29f * h)
-            cubicTo(.17f * w, .20f * h, .27f * w, .16f * h, .34f * w, .24f * h)
-            lineTo(.72f * w, .70f * h)
-            lineTo(.72f * w, .28f * h)
-            cubicTo(.72f * w, .20f * h, .78f * w, .15f * h, .86f * w, .15f * h)
-            lineTo(.89f * w, .15f * h)
-            lineTo(.89f * w, .73f * h)
-            cubicTo(.89f * w, .84f * h, .77f * w, .89f * h, .70f * w, .80f * h)
-            lineTo(.34f * w, .37f * h)
-            lineTo(.34f * w, .72f * h)
-            cubicTo(.34f * w, .79f * h, .29f * w, .84f * h, .22f * w, .84f * h)
-            close()
+fun AuroraBackground(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
+    val base = MaterialTheme.colorScheme.background
+    val dark = MaterialTheme.colorScheme.surface.luminance() < .35f
+    Box(
+        modifier
+            .background(
+                Brush.verticalGradient(
+                    if (dark) listOf(Color(0xFF070A18), Color(0xFF0B1230), Color(0xFF080B1B))
+                    else listOf(Color(0xFFF7F9FF), Color(0xFFEEF3FF), Color(0xFFF9FAFF))
+                )
+            )
+    ) {
+        Canvas(Modifier.matchParentSize()) {
+            drawCircle(
+                color = Color(0xFF6278FF).copy(alpha = if (dark) .25f else .15f),
+                radius = size.minDimension * .66f,
+                center = Offset(size.width * .95f, size.height * .08f)
+            )
+            drawCircle(
+                color = Color(0xFF39D8FF).copy(alpha = if (dark) .15f else .10f),
+                radius = size.minDimension * .54f,
+                center = Offset(size.width * .08f, size.height * .55f)
+            )
+            drawCircle(
+                color = Color(0xFFFF6B9B).copy(alpha = if (dark) .075f else .045f),
+                radius = size.minDimension * .42f,
+                center = Offset(size.width * .88f, size.height * .88f)
+            )
+            drawRect(base.copy(alpha = if (dark) .05f else .12f))
         }
-        drawPath(mark, brush = Brush.linearGradient(listOf(Color(0xFF5DE1FF), NivoraGreen, Color(0xFFC38BFF))))
-        val highlight = Path().apply {
-            moveTo(.34f * w, .37f * h)
-            lineTo(.45f * w, .50f * h)
-            lineTo(.45f * w, .72f * h)
-            cubicTo(.45f * w, .78f * h, .40f * w, .82f * h, .34f * w, .83f * h)
-            close()
-        }
-        drawPath(highlight, Color(0xFFF2EDFF).copy(alpha = .62f))
+        content()
     }
 }
 
@@ -139,148 +156,196 @@ fun AppTopBar(name: String, unread: Int, refreshing: Boolean, onRefresh: () -> U
 fun ConnectionHero(
     state: String,
     error: String?,
-    smartRoute: String?,
     subscription: Subscription?,
     pingMs: Long?,
     pingBusy: Boolean,
     onToggle: () -> Unit,
     onPing: () -> Unit
 ) {
-    val connected = state == "connected"
-    val connecting = state == "connecting"
-    val glow by animateColorAsState(if (connected) NivoraGreen else Color(0xFF4B4380), label = "connection-glow")
-    val powerScale by animateFloatAsState(if (connected) 1.04f else 1f, label = "power-scale")
-    val orbit = rememberInfiniteTransition(label = "connection-orbit")
-    val ringScale by orbit.animateFloat(1f, if (connecting) 1.36f else 1.12f, infiniteRepeatable(tween(if (connecting) 900 else 1800), RepeatMode.Reverse), label = "ring-scale")
-    val ringAlpha by orbit.animateFloat(if (connecting) .62f else .22f, 0.02f, infiniteRepeatable(tween(if (connecting) 900 else 1800), RepeatMode.Reverse), label = "ring-alpha")
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(30.dp),
-        colors = CardDefaults.cardColors(containerColor = NivoraInk),
-        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
-    ) {
-        Box(
-            Modifier.fillMaxWidth().background(
-                Brush.radialGradient(
-                    colors = listOf(glow.copy(.30f), Color.Transparent),
-                    radius = 700f
+    val visualState = when (state) {
+        "connected" -> ConnectionVisualState.Connected
+        "connecting" -> ConnectionVisualState.Connecting
+        "disconnecting" -> ConnectionVisualState.Disconnecting
+        "error" -> ConnectionVisualState.Error
+        else -> ConnectionVisualState.Disconnected
+    }
+    val glow by animateColorAsState(
+        when (visualState) {
+            ConnectionVisualState.Connected -> Color(0xFF45D9FF)
+            ConnectionVisualState.Connecting -> Color(0xFF7B82FF)
+            ConnectionVisualState.Disconnecting -> Color(0xFF6E8BBE)
+            ConnectionVisualState.Error -> Color(0xFFFF6B8A)
+            ConnectionVisualState.Disconnected -> Color(0xFF6976B8)
+        },
+        animationSpec = tween(420),
+        label = "connection-glow"
+    )
+    val powerScale by animateFloatAsState(
+        targetValue = if (visualState == ConnectionVisualState.Connected) 1.04f else 1f,
+        animationSpec = tween(360),
+        label = "connection-scale"
+    )
+    val shape = RoundedCornerShape(28.dp)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    listOf(Color(0xE6161D3C), Color(0xD50B1634), Color(0xD8172442))
                 )
             )
+            .border(1.dp, Color.White.copy(.13f), shape)
+    ) {
+        Canvas(Modifier.matchParentSize()) {
+            drawCircle(glow.copy(.18f), radius = size.minDimension * .68f, center = Offset(size.width * .82f, size.height * .20f))
+            drawCircle(Color(0xFF3DDCFF).copy(.07f), radius = size.minDimension * .50f, center = Offset(size.width * .10f, size.height * .95f))
+        }
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 17.dp, vertical = 15.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 19.dp, vertical = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("اتصال امن", color = Color.White, style = MaterialTheme.typography.titleLarge)
-                        Text(
-                            when (state) {
-                                "connected" -> "محافظت فعال است"
-                                "connecting" -> "در حال ساخت تونل امن…"
-                                "error" -> "اتصال برقرار نشد"
-                                else -> "برای اتصال دکمه را لمس کنید"
-                            },
-                            color = if (connected) Color(0xFF8EF0CF) else Color(0xFF9DB9AF),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                    StatusPill(
-                        label = when (state) { "connected" -> "متصل"; "connecting" -> "در حال اتصال"; "error" -> "خطا"; else -> "قطع" },
-                        color = when (state) { "connected" -> NivoraGreen; "connecting" -> NivoraWarning; "error" -> NivoraDanger; else -> Color(0xFF8BA099) },
-                        dark = true
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        subscription?.let { "${countryFlag(it.countryCode)}  ${it.locationName ?: it.planName}" }
+                            ?: "اشتراک فعالی انتخاب نشده",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
+                    Text("محافظت هوشمند Nivora", color = Color(0xFFB9C5EB), style = MaterialTheme.typography.labelMedium)
                 }
-                Spacer(Modifier.height(12.dp))
+                StatusPill(
+                    label = when (visualState) {
+                        ConnectionVisualState.Connected -> "متصل"
+                        ConnectionVisualState.Connecting -> "در حال اتصال"
+                        ConnectionVisualState.Disconnecting -> "در حال قطع"
+                        ConnectionVisualState.Error -> "نیاز به تلاش دوباره"
+                        ConnectionVisualState.Disconnected -> "آماده"
+                    },
+                    color = glow,
+                    dark = true
+                )
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    AnimatedContent(
+                        targetState = visualState,
+                        transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(150)) },
+                        label = "connection-copy"
+                    ) { target ->
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                when (target) {
+                                    ConnectionVisualState.Connected -> "اینترنت آزاد آماده است"
+                                    ConnectionVisualState.Connecting -> "در حال پیدا کردن بهترین مسیر…"
+                                    ConnectionVisualState.Disconnecting -> "در حال پایان اتصال…"
+                                    ConnectionVisualState.Error -> "اتصال کامل نشد"
+                                    ConnectionVisualState.Disconnected -> "برای شروع لمس کنید"
+                                },
+                                color = Color.White,
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                            Text(
+                                when (target) {
+                                    ConnectionVisualState.Connected -> "برای قطع اتصال، دکمه را لمس کنید"
+                                    ConnectionVisualState.Connecting -> "برای لغو، دوباره دکمه را لمس کنید"
+                                    ConnectionVisualState.Disconnecting -> "چند لحظه صبر کنید"
+                                    ConnectionVisualState.Error -> error ?: "دوباره تلاش کنید"
+                                    ConnectionVisualState.Disconnected -> "اتصال سریع و خودکار"
+                                },
+                                color = if (target == ConnectionVisualState.Error) Color(0xFFFFA9B9) else Color(0xFFB9C5EB),
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        GlassMetric(Icons.Rounded.Speed, if (pingBusy) "…" else pingMs?.let { "$it ms" } ?: "تست سرعت", onPing)
+                        GlassMetric(Icons.Rounded.Shield, "محافظت خودکار", null)
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
                 Box(
                     modifier = Modifier
-                        .size((82 * powerScale).dp)
-                        .shadow(18.dp, CircleShape, ambientColor = glow.copy(.48f), spotColor = glow.copy(.48f))
-                        .background(glow.copy(.18f), CircleShape)
-                        .border(1.dp, glow.copy(.62f), CircleShape)
+                        .size(84.dp)
+                        .scale(powerScale)
+                        .shadow(18.dp, CircleShape, ambientColor = glow.copy(.38f), spotColor = glow.copy(.38f))
+                        .background(glow.copy(.15f), CircleShape)
+                        .border(1.dp, glow.copy(.68f), CircleShape)
                         .padding(8.dp)
-                        .background(if (connected) NivoraGreen else Color(0xFF17382E), CircleShape)
-                        .clickable(enabled = !connecting, onClick = onToggle),
+                        .background(
+                            Brush.radialGradient(listOf(glow.copy(.74f), Color(0xFF172345))),
+                            CircleShape
+                        )
+                        // Connecting is intentionally clickable: the same control
+                        // doubles as an immediate cancel action.
+                        .clickable(onClick = onToggle),
                     contentAlignment = Alignment.Center
                 ) {
-                    Box(Modifier.size((76 * ringScale).dp).border(1.dp, glow.copy(ringAlpha), CircleShape))
-                    Box(Modifier.size((60 * ringScale).dp).border(1.dp, Color(0xFF61D8FF).copy(ringAlpha * .7f), CircleShape))
-                    if (connecting) FreedomLinkGlyph(Modifier.size(48.dp))
-                    else Icon(Icons.Rounded.PowerSettingsNew, if (connected) "قطع اتصال" else "اتصال", tint = if (connected) NivoraInk else Color.White, modifier = Modifier.size(34.dp))
-                }
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    subscription?.let { "${countryFlag(it.countryCode)}  ${it.locationName ?: it.planName}" } ?: "اشتراک فعالی انتخاب نشده",
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (connected && !smartRoute.isNullOrBlank()) {
-                    Text(
-                        "مسیر هوشمند: $smartRoute",
-                        color = Color(0xFF8EF0CF),
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 5.dp)
-                    )
-                } else if (connecting) {
-                    Text(
-                        "در حال ساخت مسیر آزاد و امن برای شبکه شما…",
-                        color = Color(0xFFC9C3E5),
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 5.dp)
-                    )
-                }
-                if (state == "error" && !error.isNullOrBlank()) {
-                    Text(error, color = Color(0xFFFFA9AE), style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp))
-                }
-                Spacer(Modifier.height(9.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    DarkMetric(Icons.Rounded.Speed, if (pingBusy) "…" else pingMs?.let { "$it ms" } ?: "تست پینگ", onPing)
-                    DarkMetric(Icons.Rounded.Lock, "Reality", null)
+                    AnimatedContent(
+                        targetState = visualState,
+                        transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(130)) },
+                        label = "connection-orb"
+                    ) { target ->
+                        when (target) {
+                            ConnectionVisualState.Connecting -> ConnectingOrbGlyph(Modifier.size(54.dp), glow)
+                            ConnectionVisualState.Disconnecting -> ConnectingOrbGlyph(Modifier.size(54.dp), glow)
+                            ConnectionVisualState.Connected -> Icon(Icons.Rounded.Check, "قطع اتصال", tint = Color.White, modifier = Modifier.size(36.dp))
+                            ConnectionVisualState.Error -> Icon(Icons.Rounded.Refresh, "تلاش دوباره", tint = Color.White, modifier = Modifier.size(34.dp))
+                            ConnectionVisualState.Disconnected -> Icon(Icons.Rounded.PowerSettingsNew, "اتصال", tint = Color.White, modifier = Modifier.size(34.dp))
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/** A tiny Canvas-only connection animation: no GIF, image asset, or permanent work. */
+private enum class ConnectionVisualState { Disconnected, Connecting, Disconnecting, Connected, Error }
+
+/** The only infinite animation in the hero, and it leaves composition when ready. */
 @Composable
-private fun FreedomLinkGlyph(modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "freedom-link")
+private fun ConnectingOrbGlyph(modifier: Modifier = Modifier, color: Color) {
+    val transition = rememberInfiniteTransition(label = "connecting-orb")
     val phase by transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1500), RepeatMode.Restart),
-        label = "freedom-link-phase"
+        animationSpec = infiniteRepeatable(tween(1150), RepeatMode.Restart),
+        label = "connecting-orb-phase"
     )
     Canvas(modifier) {
-        val radius = size.minDimension * .38f
         val center = Offset(size.width / 2, size.height / 2)
-        drawCircle(Color(0xFFB7ADFF).copy(.20f), radius, center, style = androidx.compose.ui.graphics.drawscope.Stroke(width = size.minDimension * .045f))
-        drawCircle(Color(0xFF8E7CFF), size.minDimension * .15f, center)
-        drawCircle(Color.White.copy(.9f), size.minDimension * .055f, center)
-        repeat(3) { index ->
-            val angle = (phase + index / 3f) * (Math.PI * 2).toFloat() - (Math.PI / 2).toFloat()
-            val point = Offset(center.x + kotlin.math.cos(angle) * radius, center.y + kotlin.math.sin(angle) * radius)
-            drawCircle(if (index == 0) Color(0xFF61D8FF) else Color(0xFFC7BFFF), size.minDimension * .075f, point)
-        }
+        drawCircle(Color.White.copy(.10f), size.minDimension * .39f, center, style = Stroke(size.minDimension * .055f))
+        drawArc(
+            color = Color.White.copy(.94f),
+            startAngle = phase * 360f - 90f,
+            sweepAngle = 112f,
+            useCenter = false,
+            style = Stroke(width = size.minDimension * .07f, cap = StrokeCap.Round)
+        )
+        drawCircle(color.copy(.35f), size.minDimension * .20f, center)
+        drawCircle(Color.White, size.minDimension * .07f, center)
     }
 }
 
 @Composable
-private fun DarkMetric(icon: ImageVector, label: String, onClick: (() -> Unit)?) {
+private fun GlassMetric(icon: ImageVector, label: String, onClick: (() -> Unit)?) {
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(.08f))
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.White.copy(.075f))
+            .border(1.dp, Color.White.copy(.08f), RoundedCornerShape(12.dp))
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = 15.dp, vertical = 10.dp),
+            .padding(horizontal = 10.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(7.dp)
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
-        Icon(icon, null, tint = NivoraGreen, modifier = Modifier.size(18.dp))
-        Text(label, color = Color.White, style = MaterialTheme.typography.labelLarge)
+        Icon(icon, null, tint = Color(0xFF72DFFF), modifier = Modifier.size(16.dp))
+        Text(label, color = Color.White, style = MaterialTheme.typography.labelMedium, maxLines = 1)
     }
 }
 
@@ -304,38 +369,90 @@ fun SubscriptionCard(
 ) {
     var expanded by androidx.compose.runtime.saveable.rememberSaveable(subscription.id) { androidx.compose.runtime.mutableStateOf(false) }
     val progress = (subscription.usagePercent / 100.0).toFloat().coerceIn(0f, 1f)
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = if (selected) CardDefaults.outlinedCardBorder().copy(brush = Brush.linearGradient(listOf(NivoraGreenDark, NivoraGreen))) else CardDefaults.outlinedCardBorder()
+    val shape = RoundedCornerShape(20.dp)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = .76f))
+            .border(
+                width = if (selected) 1.2.dp else 1.dp,
+                brush = if (selected) Brush.linearGradient(listOf(Color(0xFF667BFF), Color(0xFF45D9FF)))
+                else Brush.linearGradient(listOf(MaterialTheme.colorScheme.outline.copy(.38f), MaterialTheme.colorScheme.outline.copy(.16f))),
+                shape = shape
+            )
     ) {
-        Column(Modifier.padding(horizontal = 15.dp, vertical = 13.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            Row(Modifier.fillMaxWidth().clickable { onSelect(); expanded = !expanded }, verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
-                    Text(countryFlag(subscription.countryCode), fontSize = 23.sp)
-                }
-                Spacer(Modifier.width(11.dp))
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Row(
+                Modifier.fillMaxWidth().clickable { onSelect(); expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier.size(42.dp).background(MaterialTheme.colorScheme.primary.copy(.10f), RoundedCornerShape(13.dp)),
+                    contentAlignment = Alignment.Center
+                ) { Text(countryFlag(subscription.countryCode), fontSize = 21.sp) }
+                Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(subscription.planName, style = MaterialTheme.typography.titleMedium)
-                    Text(subscription.locationName ?: "انتخاب خودکار", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                    Text(subscription.planName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        "${subscription.locationName ?: "انتخاب خودکار"}  ·  ${if (subscription.startsOnFirstUse) "آماده شروع" else "${faNumber(subscription.remainingDays)} روز باقی‌مانده"}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
-                if (selected) StatusPill("انتخاب‌شده", NivoraGreenDark)
-                Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, if (expanded) "بستن جزئیات" else "نمایش جزئیات", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("${gb(subscription.usedBytes)} / ${gb(subscription.totalBytes)} گیگ", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${faNumber(subscription.usagePercent)}٪ مصرف", style = MaterialTheme.typography.labelMedium, color = if (progress > .85f) NivoraDanger else NivoraGreenDark)
-            }
-            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape), color = if (progress > .85f) NivoraDanger else NivoraGreen, trackColor = MaterialTheme.colorScheme.surfaceVariant)
-            if (expanded) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SubscriptionMetric(Icons.Rounded.CalendarMonth, if (subscription.startsOnFirstUse) "شروع نشده" else "${faNumber(subscription.remainingDays)} روز")
-                    SubscriptionMetric(Icons.Rounded.Devices, "${faNumber(subscription.deviceLimit)} دستگاه")
-                    SubscriptionMetric(Icons.Rounded.DataUsage, "${faNumber(subscription.trafficGb)} گیگ")
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        "${faNumber(subscription.usagePercent)}٪",
+                        color = if (progress > .85f) NivoraDanger else MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    if (selected) Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(6.dp).background(Color(0xFF45D9FF), CircleShape))
+                        Spacer(Modifier.width(4.dp))
+                        Text("فعال", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                    }
                 }
-                if (subscription.routeCount > 1) Text("${faNumber(subscription.routeCount)} مسیر هوشمند برای این اشتراک فعال است", color = NivoraGreenDark, style = MaterialTheme.typography.labelMedium)
-                Button(onClick = onRenew, modifier = Modifier.fillMaxWidth().height(40.dp)) { Icon(Icons.Rounded.Autorenew, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("تمدید اشتراک") }
+                Spacer(Modifier.width(5.dp))
+                Icon(
+                    if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    if (expanded) "بستن جزئیات" else "نمایش جزئیات",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(21.dp)
+                )
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(animationSpec = tween(260)) + fadeIn(tween(210)),
+                exit = shrinkVertically(animationSpec = tween(220)) + fadeOut(tween(150))
+            ) {
+                Column(Modifier.padding(top = 11.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("${gb(subscription.usedBytes)} از ${gb(subscription.totalBytes)} گیگ مصرف شده", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${faNumber(subscription.usagePercent)}٪", style = MaterialTheme.typography.labelMedium, color = if (progress > .85f) NivoraDanger else MaterialTheme.colorScheme.primary)
+                    }
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape),
+                        color = if (progress > .85f) NivoraDanger else Color(0xFF5B7CFF),
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(.70f)
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SubscriptionMetric(Icons.Rounded.CalendarMonth, if (subscription.startsOnFirstUse) "شروع نشده" else "${faNumber(subscription.remainingDays)} روز")
+                        SubscriptionMetric(Icons.Rounded.Devices, "${faNumber(subscription.deviceLimit)} دستگاه")
+                        SubscriptionMetric(Icons.Rounded.DataUsage, "${faNumber(subscription.trafficGb)} گیگ")
+                    }
+                    if (subscription.routeCount > 1) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Icon(Icons.Rounded.AutoAwesome, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Text("بهینه‌سازی خودکار برای این اشتراک فعال است", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                    Button(onClick = onRenew, modifier = Modifier.fillMaxWidth().height(40.dp)) {
+                        Icon(Icons.Rounded.Autorenew, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("تمدید اشتراک")
+                    }
+                }
             }
         }
     }
@@ -344,7 +461,7 @@ fun SubscriptionCard(
 @Composable
 private fun RowScope.SubscriptionMetric(icon: ImageVector, value: String) {
     Column(
-        modifier = Modifier.weight(1f).background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(13.dp)).padding(vertical = 9.dp),
+        modifier = Modifier.weight(1f).background(MaterialTheme.colorScheme.surfaceVariant.copy(.68f), RoundedCornerShape(13.dp)).padding(vertical = 9.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
@@ -413,7 +530,7 @@ private fun RowScope.PlanFeature(icon: ImageVector, value: String, dark: Boolean
 @Composable
 fun WalletBalanceCard(balance: Int, onTopup: () -> Unit) {
     Card(shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = NivoraInk), modifier = Modifier.fillMaxWidth()) {
-        Box(Modifier.background(Brush.linearGradient(listOf(NivoraInk, Color(0xFF104738))))) {
+        Box(Modifier.background(Brush.linearGradient(listOf(NivoraInk, Color(0xFF102A5A))))) {
             Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(45.dp).background(Color.White.copy(.1f), RoundedCornerShape(15.dp)), contentAlignment = Alignment.Center) {
@@ -421,7 +538,7 @@ fun WalletBalanceCard(balance: Int, onTopup: () -> Unit) {
                     }
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("موجودی کیف پول", color = Color(0xFFB6CCC4), style = MaterialTheme.typography.bodyMedium)
+                        Text("موجودی کیف پول", color = Color(0xFFB9CBE8), style = MaterialTheme.typography.bodyMedium)
                         Text(toman(balance), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Black)
                     }
                 }
@@ -437,7 +554,7 @@ fun WalletBalanceCard(balance: Int, onTopup: () -> Unit) {
 fun StatusPill(label: String, color: Color, dark: Boolean = false) {
     Box(
         Modifier.background(color.copy(if (dark) .18f else .12f), CircleShape).border(1.dp, color.copy(.35f), CircleShape).padding(horizontal = 10.dp, vertical = 5.dp)
-    ) { Text(label, color = if (dark && color == NivoraGreen) Color(0xFF8EF0CF) else color, style = MaterialTheme.typography.labelMedium) }
+    ) { Text(label, color = if (dark && color == NivoraGreen) Color(0xFFA9EDFF) else color, style = MaterialTheme.typography.labelMedium) }
 }
 
 @Composable
@@ -458,11 +575,34 @@ fun EmptyState(icon: ImageVector, title: String, body: String, action: String? =
 
 @Composable
 fun FullScreenLoading() {
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(24.dp)) {
-            NivoraLogo()
-            CircularProgressIndicator(color = NivoraGreen, strokeWidth = 3.dp)
-            Text("در حال آماده‌سازی حساب…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    AuroraBackground(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Spacer(Modifier.height(12.dp))
+            Box(
+                Modifier.fillMaxWidth(.54f).height(22.dp)
+                    .background(MaterialTheme.colorScheme.surface.copy(.72f), RoundedCornerShape(11.dp))
+            )
+            Box(
+                Modifier.fillMaxWidth().height(206.dp)
+                    .background(MaterialTheme.colorScheme.surface.copy(.68f), RoundedCornerShape(28.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(.20f), RoundedCornerShape(28.dp))
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                repeat(2) {
+                    Box(
+                        Modifier.weight(1f).height(88.dp)
+                            .background(MaterialTheme.colorScheme.surface.copy(.58f), RoundedCornerShape(22.dp))
+                    )
+                }
+            }
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth(.28f).align(Alignment.CenterHorizontally).clip(CircleShape),
+                color = NivoraGreen,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(.45f)
+            )
         }
     }
 }

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The dedicated square artwork stays inside the adaptive-icon safe zone. -->
+    <item
+        android:width="56dp"
+        android:height="56dp"
+        android:gravity="center">
+        <bitmap
+            android:antialias="true"
+            android:filter="true"
+            android:gravity="fill"
+            android:src="@drawable/nivora_app_icon" />
+    </item>
+</layer-list>
