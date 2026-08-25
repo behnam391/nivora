@@ -735,6 +735,10 @@ class NivoraVpnService : VpnService(), DialerController {
             .putExtra(EXTRA_SMART_ROUTE, smartRoute))
     }
 
+    // The partner flavor removes this service from its merged manifest. Lint
+    // still analyzes the shared source against that manifest and otherwise
+    // reports a false missing foreground-service type for the excluded class.
+    @android.annotation.SuppressLint("ForegroundServiceType")
     private fun showNotification(text: String, label: String, connected: Boolean) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(

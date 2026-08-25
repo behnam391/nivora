@@ -3,15 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#071c16">
+  <meta name="theme-color" content="#050816">
+  <meta name="description" content="مرکز مدیریت مشتریان، فروش، کیف پول و پشتیبانی همکاران Nivora.">
   <title>پنل همکاری Nivora | مرکز فروش</title>
-  <link rel="icon" href="/brand-mark.svg">
+  <link rel="icon" href="/brand-mark.png">
   <link rel="stylesheet" href="/reseller.css">
 </head>
 <body>
   <section id="login" class="login-shell">
     <form id="login-form" class="login-card">
-      <div class="brand-lockup"><img src="/brand-mark.svg" alt=""><div><strong>NIVORA</strong><span>PARTNER CENTER</span></div></div>
+      <div class="brand-lockup"><img src="/brand-mark.png" alt=""><div><strong>NIVORA</strong><span>PARTNER CENTER</span></div></div>
       <div class="login-copy"><span class="eyebrow">مرکز فروش همکاران</span><h1>کسب‌وکارت را مدیریت کن</h1><p>مشتری، فروش، تمدید و سود؛ همه در یک پنل.</p></div>
       <label>شماره موبایل<input id="phone" inputmode="numeric" autocomplete="username" pattern="09[0-9]{9}" placeholder="09123456789" required></label>
       <label>رمز عبور<input id="password" type="password" autocomplete="current-password" required></label>
@@ -22,12 +23,14 @@
 
   <div id="app" class="app hidden">
     <aside>
-      <div class="brand-lockup side-brand"><img src="/brand-mark.svg" alt=""><div><strong>NIVORA</strong><span>مرکز همکاری</span></div></div>
+      <div class="brand-lockup side-brand"><img src="/brand-mark.png" alt=""><div><strong>NIVORA</strong><span>مرکز همکاری</span></div></div>
       <nav>
+        <span class="nav-group">مرکز عملیات</span>
         <button class="nav active" data-view="overview"><i>⌂</i><span>نمای کلی</span></button>
         <button class="nav" data-view="customers"><i>♙</i><span>دفترچه مشتریان</span><b id="customers-badge">۰</b></button>
         <button class="nav" data-view="plans"><i>＋</i><span>فروش اشتراک</span></button>
         <button class="nav" data-view="orders"><i>↻</i><span>فروش‌ها و تمدیدها</span></button>
+        <span class="nav-group">مالی و ارتباط</span>
         <button class="nav" data-view="wallet"><i>◈</i><span>کیف پول</span></button>
         <button class="nav" data-view="support"><i>◌</i><span>پشتیبانی و اعلان‌ها</span><b id="support-badge">۰</b></button>
       </nav>
@@ -73,14 +76,19 @@
       </section>
 
       <section id="wallet" class="view hidden">
-        <div class="section-head"><div><span class="eyebrow">حساب مالی</span><h2>کیف پول همکاری</h2><p>تمام برداشت‌ها، بازگشت‌ها و شارژهای حساب.</p></div></div>
-        <div id="wallet-hero" class="wallet-hero"></div><div id="ledger" class="panel ledger"></div>
+        <div class="section-head"><div><span class="eyebrow">حساب مالی</span><h2>کیف پول همکاری</h2><p>موجودی، انتقال به مشتری، برگشت انتقال و بدهی‌ها.</p></div></div>
+        <div id="wallet-hero" class="wallet-hero"></div>
+        <div class="finance-grid">
+          <article class="panel"><div class="panel-head"><div><span class="eyebrow">ریز حساب</span><h2>گردش کیف پول</h2></div></div><div id="ledger" class="ledger"></div></article>
+          <article class="panel"><div class="panel-head"><div><span class="eyebrow">انتقال به مشتری</span><h2>انتقال‌های کیف پول</h2></div></div><div id="wallet-transfers"></div></article>
+          <article class="panel finance-span"><div class="panel-head"><div><span class="eyebrow">حساب دفتری</span><h2>بدهی‌های مشتریان</h2></div></div><div id="reseller-debts"></div></article>
+        </div>
       </section>
       <section id="support" class="view hidden"><div class="section-head"><div><h2>پشتیبانی و اعلان‌ها</h2><p>گفت‌وگو با مدیریت و پیام‌های مهم حساب همکاری</p></div><button id="new-ticket" class="primary">تیکت جدید</button></div><div class="support-grid"><article class="panel"><div class="panel-head"><h2>اعلان‌ها</h2><button id="read-notifications" class="link">خواندم</button></div><div id="notification-list"></div></article><article class="panel"><div class="panel-head"><h2>گفت‌وگوها</h2></div><div id="ticket-list"></div></article></div></section>
     </main>
   </div>
 
-  <dialog id="customer-dialog"><form id="customer-form" method="dialog"><button type="button" class="close" data-close="customer-dialog">×</button><span class="eyebrow">دفترچه مشتریان</span><h2 id="customer-dialog-title">مشتری جدید</h2><input id="customer-id" type="hidden"><label>نام و نام خانوادگی<input id="customer-name" maxlength="80" required></label><label>شماره موبایل<input id="customer-phone" inputmode="numeric" pattern="09[0-9]{9}" maxlength="11" required></label><label>یادداشت داخلی<textarea id="customer-note" rows="3" maxlength="500" placeholder="مثلاً نحوه آشنایی یا توضیح پیگیری"></textarea></label><p id="customer-error" class="form-error"></p><button class="primary wide" type="submit">ذخیره در دفترچه</button></form></dialog>
+  <dialog id="customer-dialog"><form id="customer-form"><button type="button" class="close" data-close="customer-dialog">×</button><span class="eyebrow">دفترچه مشتریان</span><h2 id="customer-dialog-title">مشتری جدید</h2><input id="customer-id" type="hidden"><label>نام و نام خانوادگی<input id="customer-name" maxlength="80" autocomplete="name" required></label><label>شماره موبایل<input id="customer-phone" inputmode="numeric" autocomplete="tel" pattern="09[0-9]{9}" maxlength="11" required></label><label id="customer-password-label">رمز ورود مشتری<input id="customer-password" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="خالی بگذارید تا خودکار ساخته شود"><small>اگر خالی بماند، رمز موقت فقط یک‌بار نمایش داده می‌شود.</small></label><label>یادداشت داخلی<textarea id="customer-note" rows="3" maxlength="500" placeholder="مثلاً نحوه آشنایی یا توضیح پیگیری"></textarea></label><p id="customer-error" class="form-error"></p><button class="primary wide" type="submit">ذخیره در دفترچه</button></form></dialog>
 
   <dialog id="profile-dialog" class="large-dialog"><div class="dialog-body"><button type="button" class="close" data-close="profile-dialog">×</button><div id="profile-content"></div></div></dialog>
   <dialog id="global-customer-dialog"><div class="dialog-body"><button type="button" class="close" data-close="global-customer-dialog">×</button><span class="eyebrow">مشتریان Nivora</span><h2>جست‌وجوی سراسری</h2><p>با شماره یا نام، مشتری همکار دیگر را پیدا کنید. کنترل سرویس‌های صادرشده توسط آن همکار به شما داده نمی‌شود.</p><label>نام یا شماره موبایل<input id="global-customer-query" placeholder="مثلاً 0912…"></label><button id="global-customer-submit" class="primary wide">جست‌وجو</button><div id="global-customer-results" class="customer-list"></div></div></dialog>
@@ -91,8 +99,13 @@
 
   <dialog id="ticket-dialog"><form id="ticket-form"><button type="button" class="close" data-close="ticket-dialog">×</button><span class="eyebrow">پشتیبانی همکاران</span><h2>تیکت جدید</h2><label>موضوع<input id="ticket-subject" required minlength="3"></label><label>پیام<textarea id="ticket-body" rows="5" required minlength="3"></textarea></label><p id="ticket-error" class="form-error"></p><button class="primary wide">ارسال پیام</button></form></dialog>
   <dialog id="conversation-dialog" class="large-dialog"><div class="dialog-body"><button type="button" class="close" data-close="conversation-dialog">×</button><h2 id="conversation-title">گفت‌وگو</h2><div id="conversation-messages" class="conversation-messages"></div><form id="reply-form"><label>پاسخ<textarea id="reply-body" rows="3" required minlength="2"></textarea></label><button class="primary wide">ارسال پاسخ</button></form></div></dialog>
+  <dialog id="credential-dialog"><div class="dialog-body credential-card"><button type="button" class="close" data-close="credential-dialog">×</button><span class="eyebrow">اطلاعات ورود مشتری</span><h2>رمز موقت ساخته شد</h2><p>این رمز بعداً قابل مشاهده نیست؛ اکنون آن را امن برای مشتری بفرستید.</p><button id="temporary-password" class="secret-value" type="button"></button><button id="copy-temporary-password" class="primary wide" type="button">کپی رمز موقت</button></div></dialog>
+  <dialog id="password-reset-dialog"><form id="password-reset-form"><button type="button" class="close" data-close="password-reset-dialog">×</button><span class="eyebrow">امنیت حساب مشتری</span><h2 id="password-reset-title">تغییر رمز مشتری</h2><input id="password-reset-customer-id" type="hidden"><p class="security-note">با ثبت رمز تازه، رمز قبلی و همه نشست‌های فعال مشتری باطل می‌شوند.</p><label>رمز جدید<input id="password-reset-value" type="password" minlength="8" maxlength="128" autocomplete="new-password" required><small>حداقل ۸ کاراکتر</small></label><label>تکرار رمز جدید<input id="password-reset-confirm" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></label><p id="password-reset-error" class="form-error"></p><button class="primary wide" type="submit">ثبت رمز جدید و خروج از نشست‌های قبلی</button></form></dialog>
+  <dialog id="wallet-transfer-dialog"><form id="wallet-transfer-form"><button type="button" class="close" data-close="wallet-transfer-dialog">×</button><span class="eyebrow">انتقال از کیف پول همکاری</span><h2 id="wallet-transfer-title">شارژ کیف پول مشتری</h2><input id="wallet-customer-id" type="hidden"><label>مبلغ انتقال (تومان)<input id="wallet-transfer-amount" type="number" min="1" inputmode="numeric" required></label><label>توضیح تراکنش<input id="wallet-transfer-note" maxlength="160" placeholder="مثلاً شارژ بابت تسویه"></label><div id="wallet-transfer-balance" class="selected"></div><p id="wallet-transfer-error" class="form-error"></p><button class="primary wide" type="submit">تأیید انتقال</button></form></dialog>
+  <dialog id="debt-dialog"><form id="debt-form"><button type="button" class="close" data-close="debt-dialog">×</button><span class="eyebrow">حساب دفتری مشتری</span><h2 id="debt-title">ثبت بدهی</h2><input id="debt-customer-id" type="hidden"><label>مبلغ بدهی (تومان)<input id="debt-amount" type="number" min="1" inputmode="numeric" required></label><label>شرح بدهی<input id="debt-note" minlength="3" maxlength="200" required></label><p id="debt-error" class="form-error"></p><button class="primary wide" type="submit">ثبت و اطلاع به مشتری</button></form></dialog>
+  <dialog id="reverse-dialog"><form id="reverse-form"><button type="button" class="close" data-close="reverse-dialog">×</button><span class="eyebrow">اصلاح انتقال کیف پول</span><h2>برگشت وجه انتقالی</h2><input id="reverse-transfer-id" type="hidden"><div id="reverse-details" class="selected"></div><label>مبلغ برگشت (تومان)<input id="reverse-amount" type="number" min="1" inputmode="numeric" required></label><label>دلیل برگشت<input id="reverse-reason" minlength="3" maxlength="200" value="اصلاح انتقال توسط همکار فروش" required></label><p id="reverse-error" class="form-error"></p><button class="danger-button wide" type="submit">برگشت مبلغ به کیف پول همکاری</button></form></dialog>
+  <dialog id="suspend-dialog"><form id="suspend-form"><button type="button" class="close" data-close="suspend-dialog">×</button><span class="eyebrow">کنترل اشتراک</span><h2>تعلیق سرویس مشتری</h2><input id="suspend-order-id" type="hidden"><label>دلیل تعلیق<textarea id="suspend-reason" rows="3" minlength="3" maxlength="300" required></textarea></label><p id="suspend-error" class="form-error"></p><button class="danger-button wide" type="submit">تعلیق اشتراک</button></form></dialog>
   <div id="toast" role="status"></div>
-  <style>.support-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.notice-row,.ticket-row{width:100%;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:14px 2px;border:0;border-top:1px solid var(--line);background:transparent;color:var(--ink);text-align:right}.notice-row:first-child,.ticket-row:first-child{border-top:0}.notice-row{display:grid}.notice-row.unread{border-radius:14px;padding:14px;background:#e9faf4}.notice-row b,.notice-row span,.notice-row small,.ticket-row b,.ticket-row small{display:block}.notice-row span,.notice-row small,.ticket-row small{color:var(--muted);margin-top:5px}.ticket-row span{flex:1}.ticket-row em{font-style:normal}.conversation-messages{display:grid;gap:10px;max-height:50vh;overflow:auto;padding:4px}.message{max-width:83%;padding:12px 14px;border-radius:16px;background:#eef4f1}.message.mine{margin-right:auto;background:#dcf8ed}.message p{white-space:pre-wrap;margin:5px 0}.message small{color:var(--muted)}@media(max-width:700px){.support-grid{grid-template-columns:1fr}}</style>
   <script src="/web-notifications.js" defer></script>
   <script src="/reseller.js" defer></script>
 </body>

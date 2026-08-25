@@ -2,34 +2,45 @@
 <html lang="fa" dir="rtl">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>مدیریت Nivora</title><link rel="icon" href="/brand-mark.svg"><link rel="stylesheet" href="/admin.css"><link rel="stylesheet" href="/admin-extra.css"><link rel="stylesheet" href="/brand.css">
+  <title>مرکز مدیریت Nivora</title><link rel="icon" href="/brand-mark.png"><link rel="stylesheet" href="/brand.css"><link rel="stylesheet" href="/admin.css"><link rel="stylesheet" href="/admin-extra.css">
 </head>
 <body>
+  <div id="network-progress" aria-hidden="true"></div>
   <section id="login" class="login-shell">
-    <form id="login-form" class="login-card">
-      <div class="brand-mark"><img src="/brand-mark.svg" alt="Nivora"></div><p class="eyebrow">NIVORA CONTROL</p>
-      <h1>ورود به مدیریت</h1><p class="muted">با حساب مدیر وارد شوید.</p>
-      <label>نام کاربری<input id="admin-username" type="text" autocomplete="username" required></label>
-      <label>رمز عبور<input id="admin-password" type="password" autocomplete="current-password" minlength="8" required></label>
-      <button class="primary wide" type="submit">ورود امن</button><p id="login-error" class="error"></p>
-    </form>
+    <div class="login-frame">
+      <div class="login-intro" aria-hidden="true">
+        <div class="intro-orbit"><div class="brand-mark hero"><img src="/brand-mark.png" alt=""></div></div>
+        <p class="eyebrow">NIVORA COMMAND CENTER</p><h2>همه‌چیز زیر یک سقف</h2>
+        <p>فروش، همکاران، مشتریان، پرداخت‌ها و زیرساخت را سریع و شفاف مدیریت کنید.</p>
+        <div class="intro-chips"><span>فروش</span><span>شبکه</span><span>پشتیبانی</span></div>
+      </div>
+      <form id="login-form" class="login-card">
+        <div class="login-brand"><div class="brand-mark"><img src="/brand-mark.png" alt="Nivora"></div><div><b>Nivora</b><span>مرکز مدیریت</span></div></div>
+        <p class="eyebrow">ورود مدیر</p><h1>خوش آمدید</h1><p class="muted">برای ادامه، اطلاعات حساب مدیریت را وارد کنید.</p>
+        <label>نام کاربری<input id="admin-username" type="text" autocomplete="username" inputmode="text" required></label>
+        <label>رمز عبور<input id="admin-password" type="password" autocomplete="current-password" minlength="8" required></label>
+        <button class="primary wide" type="submit"><span>ورود امن</span></button><p id="login-error" class="error" role="alert" aria-live="polite"></p>
+      </form>
+    </div>
   </section>
 
   <div id="app" class="app hidden">
-    <aside>
-      <div class="brand"><div class="brand-mark small"><img src="/brand-mark.svg" alt=""></div><div><b>Nivora</b><span>مرکز مدیریت</span></div></div>
-      <nav><button class="nav active" data-view="overview">نمای کلی</button><button class="nav" data-view="plans">پلن‌ها</button><button class="nav" data-view="cards">کارت‌های بانکی</button><button class="nav" data-view="orders">سفارش‌ها <i id="pending-badge">۰</i></button><button class="nav" data-view="telegram">ربات تلگرام</button><button class="nav" data-view="security">امنیت حساب</button></nav>
+    <aside id="admin-sidebar" aria-label="منوی مدیریت">
+      <div class="sidebar-head"><div class="brand"><div class="brand-mark small"><img src="/brand-mark.png" alt=""></div><div><b>Nivora</b><span>مرکز مدیریت</span></div></div><button id="nav-close" class="icon nav-close" type="button" aria-label="بستن منو">×</button></div>
+      <nav id="admin-nav"><button class="nav active" data-view="overview" data-icon="⌂">نمای کلی</button><button class="nav" data-view="plans" data-icon="◇">پلن‌ها</button><button class="nav" data-view="cards" data-icon="▭">کارت‌های بانکی</button><button class="nav" data-view="orders" data-icon="☷">سفارش‌ها <i id="pending-badge">۰</i></button><button class="nav" data-view="telegram" data-icon="◈">ربات تلگرام</button><button class="nav" data-view="security" data-icon="⌾">امنیت حساب</button></nav>
       <button id="logout" class="ghost logout">خروج</button>
     </aside>
+    <button id="nav-backdrop" type="button" aria-label="بستن منو"></button>
     <main>
-      <header><div><p class="eyebrow">پنل فروش اشتراک</p><h1 id="page-title">نمای کلی</h1></div><div class="live"><span></span> سیستم فعال</div></header>
+      <header><div class="header-title"><button id="nav-toggle" class="icon nav-toggle" type="button" aria-label="بازکردن منو">☰</button><div><p class="eyebrow">NIVORA CONTROL</p><h1 id="page-title">نمای کلی</h1></div></div><div class="header-actions"><time id="header-date"></time><div class="live"><span></span> سیستم فعال</div></div></header>
+      <div id="app-message" class="app-message hidden" role="alert"><span></span><button type="button" aria-label="بستن">×</button></div>
 
       <section id="overview" class="view">
         <div class="stats">
           <article><span>پلن‌های فعال</span><strong id="stat-plans">—</strong></article>
           <article><span>نیازمند بررسی</span><strong id="stat-pending">—</strong></article>
           <article><span>تأییدشده</span><strong id="stat-approved">—</strong></article>
-          <article><span>مبلغ در انتظار</span><strong id="stat-value">—</strong><small>ریال</small></article>
+          <article><span>مبلغ در انتظار</span><strong id="stat-value">—</strong><small>تومان</small></article>
         </div>
         <div class="panel"><div class="panel-head"><div><h2>سفارش‌های جدید</h2><p>آخرین پرداخت‌های نیازمند بررسی</p></div><button class="link" data-go="orders">مشاهده همه</button></div><div id="recent-orders"></div></div>
       </section>
@@ -53,10 +64,11 @@
   </div>
 
   <dialog id="plan-dialog"><form id="plan-form"><div class="modal-head"><div><p class="eyebrow">PLAN EDITOR</p><h2 id="plan-dialog-title">پلن جدید</h2></div><button type="button" class="icon close-dialog">×</button></div><input id="plan-id" type="hidden">
-    <div class="form-grid"><label class="span-2">نام پلن<input id="plan-name" required></label><label class="span-2">توضیح<textarea id="plan-description" rows="2"></textarea></label><label>قیمت (ریال)<input id="plan-price" type="number" min="0" required></label><label>حجم (گیگابایت)<input id="plan-traffic" type="number" min="1" required></label><label>مدت (روز)<input id="plan-days" type="number" min="1" required></label><label>تعداد دستگاه<input id="plan-devices" type="number" min="1" required></label><label>ترتیب نمایش<input id="plan-sort" type="number" value="0"></label><label class="check"><input id="plan-active" type="checkbox" checked> فعال و قابل فروش</label></div>
+    <div class="form-grid"><label class="span-2">نام پلن<input id="plan-name" required></label><label class="span-2">توضیح<textarea id="plan-description" rows="2"></textarea></label><label>قیمت (تومان)<input id="plan-price" type="number" min="0" required></label><label>حجم (گیگابایت)<input id="plan-traffic" type="number" min="1" required></label><label>مدت (روز)<input id="plan-days" type="number" min="1" required></label><label>تعداد دستگاه<input id="plan-devices" type="number" min="1" required></label><label>ترتیب نمایش<input id="plan-sort" type="number" value="0"></label><label class="check"><input id="plan-active" type="checkbox" checked> فعال و قابل فروش</label></div>
     <div class="modal-actions"><button type="button" class="ghost close-dialog">انصراف</button><button class="primary" type="submit">ذخیره پلن</button></div></form></dialog>
 
   <dialog id="review-dialog"><form id="review-form"><div class="modal-head"><div><p class="eyebrow">RECEIPT REVIEW</p><h2>بررسی پرداخت</h2></div><button type="button" class="icon close-review">×</button></div><div id="review-summary"></div><label>یادداشت مدیر<textarea id="review-note" rows="3" placeholder="اختیاری"></textarea></label><div class="modal-actions split"><button type="button" id="reject-order" class="danger">رد پرداخت</button><button type="button" class="ghost close-review">انصراف</button><button type="submit" class="primary">تأیید پرداخت</button></div></form></dialog>
   <dialog id="card-dialog"><form id="card-form"><div class="modal-head"><div><p class="eyebrow">PAYMENT CARD</p><h2 id="card-dialog-title">کارت جدید</h2></div><button type="button" class="icon close-card">×</button></div><input id="card-id" type="hidden"><div class="form-grid"><label class="span-2">شماره کارت<input id="card-number" inputmode="numeric" maxlength="19" required></label><label>نام صاحب کارت<input id="card-holder" required></label><label>نام بانک<input id="card-bank" placeholder="اختیاری"></label><label>ترتیب نمایش<input id="card-sort" type="number" value="0"></label><label class="check"><input id="card-active" type="checkbox" checked> فعال و قابل نمایش</label></div><div class="modal-actions"><button type="button" class="ghost close-card">انصراف</button><button class="primary" type="submit">ذخیره کارت</button></div></form></dialog>
-  <div id="toast"></div><script src="/web-notifications.js" defer></script><script src="/admin.js" defer></script><script src="/admin-resellers.js" defer></script><script src="/admin-account-edit.js" defer></script><script src="/admin-locations.js" defer></script><script src="/admin-nodes.js" defer></script><script src="/admin-topups.js" defer></script><script src="/admin-customers.js" defer></script><script src="/admin-password-resets.js" defer></script><script src="/admin-growth.js" defer></script><script src="/admin-telegram.js" defer></script><script src="/admin-notifications.js" defer></script><style>.admin-notification-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.admin-notification-list article{display:grid;gap:6px;padding:17px;border:1px solid #dfe9e5;border-radius:16px;background:#fff}.admin-notification-list span,.admin-notification-list small{color:#70827b}@media(max-width:700px){.admin-notification-list{grid-template-columns:1fr}}</style>
+  <dialog id="admin-prompt-dialog" class="prompt-dialog"><form id="admin-prompt-form"><div class="modal-head"><div><p class="eyebrow">NIVORA ACTION</p><h2 id="admin-prompt-title">تأیید عملیات</h2></div><button id="admin-prompt-x" type="button" class="icon">×</button></div><p id="admin-prompt-message" class="admin-prompt-message"></p><label id="admin-prompt-field-wrap"><span id="admin-prompt-label">مقدار</span><input id="admin-prompt-input"><textarea id="admin-prompt-textarea" rows="5" class="hidden"></textarea></label><p id="admin-prompt-error" class="error" role="alert"></p><div class="modal-actions"><button id="admin-prompt-cancel" type="button" class="ghost">انصراف</button><button id="admin-prompt-submit" type="submit" class="primary">تأیید</button></div></form></dialog>
+  <div id="toast" role="status" aria-live="polite"></div><script src="/web-notifications.js" defer></script><script src="/admin.js" defer></script><script src="/admin-resellers.js" defer></script><script src="/admin-account-edit.js" defer></script><script src="/admin-locations.js" defer></script><script src="/admin-nodes.js" defer></script><script src="/admin-topups.js" defer></script><script src="/admin-customers.js" defer></script><script src="/admin-password-resets.js" defer></script><script src="/admin-growth.js" defer></script><script src="/admin-telegram.js" defer></script><script src="/admin-notifications.js" defer></script>
 </body></html>

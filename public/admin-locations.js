@@ -1,19 +1,11 @@
 (()=>{
   const $=selector=>document.querySelector(selector);
-  const token=()=>sessionStorage.getItem('nivora_admin_token')||'';
   const esc=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
   const fa=value=>new Intl.NumberFormat('fa-IR').format(Number(value)||0);
   let locations=[],nodes=[],active=null,endpoints=[],editingEndpoint=null;
   const flags={IR:'🇮🇷',FI:'🇫🇮',DE:'🇩🇪',NL:'🇳🇱',FR:'🇫🇷',TR:'🇹🇷',AE:'🇦🇪',US:'🇺🇸',GB:'🇬🇧',CA:'🇨🇦',SG:'🇸🇬',JP:'🇯🇵'};
   const flagFor=location=>{const custom=String(location.flag_emoji??'').trim();return custom&&custom.toLowerCase()!=='null'&&custom.toLowerCase()!=='undefined'?custom:(flags[String(location.country_code||'').toUpperCase()]||'🌐')};
 
-  async function api(path,options={}){
-    const response=await fetch(path,{...options,headers:{authorization:`Bearer ${token()}`,'content-type':'application/json'}});
-    const data=await response.json().catch(()=>({}));
-    if(!response.ok){const error=new Error(data.error||'خطا');error.code=data.error;throw error}
-    return data;
-  }
-  function toast(message){const node=$('#toast');node.textContent=message;node.classList.add('show');setTimeout(()=>node.classList.remove('show'),2400)}
 
   function mount(){
     document.head.insertAdjacentHTML('beforeend','<link rel="stylesheet" href="/admin-locations.css">');
@@ -43,7 +35,7 @@
   async function save(event){event.preventDefault();const id=$('#location-id').value,country=$('#location-country').value.trim().toUpperCase(),body={name:$('#location-name').value,countryCode:country,flagEmoji:$('#location-flag').value.trim()||flags[country]||'',city:$('#location-city').value,provider:$('#location-provider').value,panelNodeId:$('#location-node').value,panelType:$('#location-panel').value,panelInboundId:Number($('#location-inbound').value)||null,panelCdnInboundId:Number($('#location-cdn-inbound').value)||null,capacity:Number($('#location-capacity').value),active:$('#location-active').checked};await api(id?`/api/admin/locations/${id}`:'/api/admin/locations',{method:id?'PATCH':'POST',body:JSON.stringify(body)});$('#location-dialog').close();toast('لوکیشن و پرچم ذخیره شد');await load()}
   async function openPlans(id){active=locations.find(location=>location.id===id);const rows=await api(`/api/admin/locations/${id}/plans`);$('#location-plans-title').textContent=`پلن‌های ${active.name}`;$('#location-plans-list').innerHTML=rows.map(plan=>`<label class="plan-check"><input type="checkbox" data-id="${plan.id}" ${plan.attached?'checked':''}>${esc(plan.name)}</label>`).join('');$('#location-plans-dialog').showModal()}
   async function savePlans(event){event.preventDefault();const planIds=[...document.querySelectorAll('#location-plans-list input:checked')].map(input=>input.dataset.id);await api(`/api/admin/locations/${active.id}/plans`,{method:'POST',body:JSON.stringify({planIds})});$('#location-plans-dialog').close();toast('اتصال پلن‌ها ذخیره شد');await load()}
-  async function remove(){if(!active||!confirm('لوکیشن حذف شود؟'))return;try{await api(`/api/admin/locations/${active.id}`,{method:'DELETE'});$('#location-dialog').close();await load()}catch(error){alert(error.code==='LOCATION_IN_USE'?'ابتدا اتصال پلن‌های این لوکیشن را بردارید.':'حذف انجام نشد.')}}
+  async function remove(){if(!active||!await adminConfirm({title:'حذف لوکیشن',message:'پیش از حذف باید اتصال پلن‌های این لوکیشن برداشته شده باشد.',confirmText:'حذف لوکیشن',danger:true}))return;try{await api(`/api/admin/locations/${active.id}`,{method:'DELETE'});$('#location-dialog').close();toast('لوکیشن حذف شد');await load()}catch(error){toast(error.code==='LOCATION_IN_USE'?'ابتدا اتصال پلن‌های این لوکیشن را بردارید.':'حذف انجام نشد.')}}
   async function openEndpoints(id){active=locations.find(location=>location.id===id);$('#endpoints-title').textContent=`مسیرهای ${active.name}`;$('#endpoints-dialog').showModal();await loadEndpoints()}
   async function loadEndpoints(){endpoints=await api(`/api/admin/locations/${active.id}/endpoints`);renderEndpoints()}
   function health(endpoint){if(endpoint.health_status==='online')return `<span class="endpoint-health online">آنلاین · ${fa(endpoint.last_latency_ms)} ms</span>`;if(endpoint.health_status==='offline')return '<span class="endpoint-health offline">در دسترس نیست</span>';return '<span class="endpoint-health unknown">تست نشده</span>'}
@@ -53,6 +45,6 @@
   async function saveEndpoint(event){event.preventDefault();const id=$('#endpoint-id').value,body={label:$('#endpoint-label').value,mode:$('#endpoint-mode').value,host:$('#endpoint-host').value,serverName:$('#endpoint-server-name').value,port:Number($('#endpoint-port').value),priority:Number($('#endpoint-priority').value),active:$('#endpoint-active').checked};try{await api(id?`/api/admin/location-endpoints/${id}`:`/api/admin/locations/${active.id}/endpoints`,{method:id?'PATCH':'POST',body:JSON.stringify(body)});$('#endpoint-dialog').close();toast('مسیر اتصال ذخیره شد');await loadEndpoints();await load()}catch(error){$('#endpoint-error').textContent=error.code==='ENDPOINT_ALREADY_EXISTS'?'این IP و پورت قبلاً ثبت شده است.':'اطلاعات مسیر معتبر نیست.'}}
   async function importEndpoints(event){event.preventDefault();const body={sourceUrl:$('#import-source').value,raw:$('#import-raw').value,serverName:$('#import-server-name').value,port:Number($('#import-port').value),limit:Number($('#import-limit').value),labelPrefix:$('#import-prefix').value};try{const result=await api(`/api/admin/locations/${active.id}/endpoints/import`,{method:'POST',body:JSON.stringify(body)});$('#import-dialog').close();toast(`${fa(result.imported)} مسیر وارد شد؛ ${fa(result.skipped)} تکراری بود`);await loadEndpoints();await load()}catch(error){const messages={NO_CLOUDFLARE_IPS_FOUND:'IP معتبر Cloudflare در منبع پیدا نشد.',CLEAN_IP_SOURCE_NOT_PUBLIC:'منبع باید HTTPS عمومی باشد.',CLEAN_IP_SOURCE_MUST_BE_PUBLIC_HTTPS:'لینک HTTPS عمومی وارد کنید.',INVALID_CLEAN_IP_IMPORT:'ساب‌دامین یا اطلاعات ورود معتبر نیست.'};$('#import-error').textContent=messages[error.code]||'ورود مسیرها انجام نشد.'}}
   async function testEndpoint(button){button.disabled=true;button.textContent='در حال تست…';try{const result=await api(`/api/admin/location-endpoints/${button.dataset.id}/test`,{method:'POST',body:'{}'});toast(result.status==='online'?`مسیر آنلاین است؛ ${fa(result.latencyMs)} میلی‌ثانیه`:'مسیر در دسترس نیست');await loadEndpoints();await load()}finally{button.disabled=false;button.textContent='تست'}}
-  async function deleteEndpoint(){if(!editingEndpoint||!confirm(`مسیر ${editingEndpoint.label} حذف شود؟`))return;await api(`/api/admin/location-endpoints/${editingEndpoint.id}`,{method:'DELETE'});$('#endpoint-dialog').close();toast('مسیر حذف شد');await loadEndpoints();await load()}
+  async function deleteEndpoint(){if(!editingEndpoint||!await adminConfirm({title:'حذف مسیر اتصال',message:`مسیر «${editingEndpoint.label}» از خروجی اشتراک حذف شود؟`,confirmText:'حذف مسیر',danger:true}))return;await api(`/api/admin/location-endpoints/${editingEndpoint.id}`,{method:'DELETE'});$('#endpoint-dialog').close();toast('مسیر حذف شد');await loadEndpoints();await load()}
   document.addEventListener('DOMContentLoaded',mount);
 })();

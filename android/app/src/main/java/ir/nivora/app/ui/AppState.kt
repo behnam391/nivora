@@ -6,7 +6,11 @@ import ir.nivora.app.data.PaymentCard
 import ir.nivora.app.data.Plan
 import ir.nivora.app.data.ResellerAccount
 import ir.nivora.app.data.ResellerCustomer
+import ir.nivora.app.data.ResellerDirectoryCustomer
 import ir.nivora.app.data.ResellerOrder
+import ir.nivora.app.data.ResellerSaleTarget
+import ir.nivora.app.data.ResellerDebt
+import ir.nivora.app.data.ResellerWalletTransfer
 import ir.nivora.app.data.Subscription
 import ir.nivora.app.data.SupportTicket
 import ir.nivora.app.data.TicketConversation
@@ -26,6 +30,11 @@ data class NivoraUiState(
     val account: Account? = null,
     val reseller: ResellerAccount? = null,
     val resellerPlans: List<Plan> = emptyList(),
+    val resellerDirectory: List<ResellerDirectoryCustomer> = emptyList(),
+    val resellerDirectoryQuery: String = "",
+    val resellerDirectoryLoading: Boolean = false,
+    val resellerPasswordManagedCustomerIds: Set<String> = emptySet(),
+    val resellerProfileLoadingId: String? = null,
     val plans: List<Plan> = emptyList(),
     val tickets: List<SupportTicket> = emptyList(),
     val ticketConversation: TicketConversation? = null,
@@ -75,9 +84,16 @@ interface NivoraActions {
     fun openNetworkLab()
     fun createResellerCustomer(name: String, phone: String, password:String, note: String)
     fun resetResellerCustomerPassword(customer:ResellerCustomer,password:String)
+    fun loadResellerCustomerAccess(customer: ResellerCustomer)
     fun resellerPurchase(plan: Plan, customer: ResellerCustomer, salePriceToman: Int)
+    fun resellerPurchaseTarget(plan: Plan, target: ResellerSaleTarget, salePriceToman: Int)
     fun resellerRenew(order: ResellerOrder, salePriceToman: Int)
     fun controlResellerSubscription(order:ResellerOrder,action:String,reason:String)
+    fun searchResellerDirectory(query: String)
+    fun creditResellerCustomerWallet(accountId: String, amountToman: Int, note: String)
+    fun reverseResellerWalletTransfer(transfer: ResellerWalletTransfer, amountToman: Int?, reason: String)
+    fun createResellerCustomerDebt(accountId: String, amountToman: Int, note: String)
+    fun controlResellerCustomerDebt(debt: ResellerDebt, action: String)
     fun copyText(value: String, message: String)
     fun logout()
     fun consumeNotice()

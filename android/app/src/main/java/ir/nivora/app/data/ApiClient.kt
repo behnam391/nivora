@@ -111,9 +111,9 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         val ordersRaw = rawRequest("/api/reseller/orders", token = token).body
         val customers = JSONArray(customersRaw).objects().map {
             ResellerCustomer(
-                it.getString("id"), it.getString("name"), it.getString("phone"),
-                it.optString("note"), it.optInt("active_subscriptions"), it.optInt("subscription_count"),
-                it.optInt("revenue_toman"), it.optInt("profit_toman"), it.optString("account_id").isNotBlank()
+                it.getString("id"), it.cleanText("account_id"), it.getString("name"), it.getString("phone"),
+                it.cleanText("note").orEmpty(), it.optInt("active_subscriptions"), it.optInt("subscription_count"),
+                it.optInt("revenue_toman"), it.optInt("profit_toman"), false
             )
         }
         val orders = JSONArray(ordersRaw).objects().map(::resellerOrder)
@@ -124,10 +124,37 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
             )
         }
         val notifications = me.array("notifications").objects().map { CustomerNotification(it.getString("id"),it.getString("title"),it.getString("body"),it.optString("read_at").takeIf(String::isNotBlank),it.getString("created_at")) }
+        val debts = me.array("debts").objects().map {
+            ResellerDebt(
+                id = it.getString("id"),
+                customerAccountId = it.getString("customer_account_id"),
+                customerName = it.optString("customer_name"),
+                customerPhone = it.optString("customer_phone"),
+                amountToman = it.optInt("amount_toman"),
+                note = it.optString("note"),
+                status = it.optString("status"),
+                createdAt = it.optString("created_at"),
+                paymentReportedAt = it.cleanText("payment_reported_at")
+            )
+        }
+        val walletTransfers = me.array("walletTransfers").objects().map {
+            ResellerWalletTransfer(
+                id = it.getString("id"),
+                customerAccountId = it.getString("customer_account_id"),
+                customerName = it.optString("customer_name"),
+                customerPhone = it.optString("customer_phone"),
+                amountToman = it.optInt("amount_toman"),
+                reversedAmountToman = it.optInt("reversed_amount_toman"),
+                note = it.optString("note"),
+                status = it.optString("status"),
+                createdAt = it.optString("created_at")
+            )
+        }
         return ResellerAccount(
             me.getString("name"), me.getString("phone"), me.getInt("balanceToman"),
             me.optInt("customersCount"), me.optInt("salesCount"), me.optInt("activeSubscriptions"),
-            me.optInt("totalRevenueToman"), me.optInt("totalProfitToman"), notifications, transactions, customers, orders
+            me.optInt("totalRevenueToman"), me.optInt("totalProfitToman"), notifications, transactions,
+            debts, walletTransfers, customers, orders
         )
     }
 
@@ -147,8 +174,77 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
     }
     fun resetResellerCustomerPassword(token: String, customerId: String, password: String) { request("/api/reseller/customers/$customerId/reset-password", "POST", token, JSONObject().put("password",password)) }
 
+    fun resellerCustomerAccess(token: String, customerId: String): ResellerCustomerAccess {
+        val encoded = URLEncoder.encode(customerId, Charsets.UTF_8.name()).replace("+", "%20")
+        val json = request("/api/reseller/customers/$encoded", token = token)
+        return ResellerCustomerAccess(
+            customerId = json.getString("id"),
+            passwordManaged = json.optInt("password_managed") == 1 || json.optBoolean("password_managed")
+        )
+    }
+
+    fun resellerCustomerDirectory(token: String, query: String): List<ResellerDirectoryCustomer> {
+        val normalized = query.trim()
+        if (normalized.length < 3) throw ApiException("SEARCH_QUERY_TOO_SHORT", 400)
+        val encoded = URLEncoder.encode(normalized, Charsets.UTF_8.name()).replace("+", "%20")
+        val raw = rawRequest("/api/reseller/customer-directory?q=$encoded", token = token).body
+        return JSONArray(raw).objects().map {
+            ResellerDirectoryCustomer(
+                accountId = it.getString("id"),
+                name = it.getString("name"),
+                phone = it.getString("phone"),
+                balanceToman = it.optInt("balance_toman")
+            )
+        }
+    }
+
+    fun creditCustomerWallet(token: String, accountId: String, amountToman: Int, note: String): Int {
+        val encoded = URLEncoder.encode(accountId, Charsets.UTF_8.name()).replace("+", "%20")
+        val json = request(
+            "/api/reseller/customers/$encoded/wallet",
+            "POST",
+            token,
+            JSONObject().put("amountToman", amountToman).put("note", note.trim())
+        )
+        return json.optInt("balanceToman")
+    }
+
+    fun reverseCustomerWalletTransfer(token: String, transferId: String, amountToman: Int?, reason: String) {
+        val encoded = URLEncoder.encode(transferId, Charsets.UTF_8.name()).replace("+", "%20")
+        val body = JSONObject().put("reason", reason.trim())
+        amountToman?.let { body.put("amountToman", it) }
+        request("/api/reseller/wallet-transfers/$encoded/reverse", "POST", token, body)
+    }
+
+    fun createCustomerDebt(token: String, accountId: String, amountToman: Int, note: String): String {
+        val encoded = URLEncoder.encode(accountId, Charsets.UTF_8.name()).replace("+", "%20")
+        return request(
+            "/api/reseller/customers/$encoded/debts",
+            "POST",
+            token,
+            JSONObject().put("amountToman", amountToman).put("note", note.trim())
+        ).getString("id")
+    }
+
+    fun controlCustomerDebt(token: String, debtId: String, action: String) {
+        require(action == "settle" || action == "cancel")
+        val encoded = URLEncoder.encode(debtId, Charsets.UTF_8.name()).replace("+", "%20")
+        request("/api/reseller/debts/$encoded/$action", "POST", token, JSONObject())
+    }
+
     fun resellerPurchase(token: String, planId: String, customerId: String, salePriceToman: Int): PurchaseResult {
         val json = request("/api/reseller/purchase", "POST", token, JSONObject().put("planId", planId).put("customerId", customerId).put("salePriceToman", salePriceToman))
+        return PurchaseResult(json.optString("subscriptionUrl").takeIf(String::isNotBlank), 0, json.optInt("balanceToman"))
+    }
+
+    fun resellerPurchase(token: String, planId: String, target: ResellerSaleTarget, salePriceToman: Int): PurchaseResult {
+        val body = JSONObject().put("planId", planId).put("salePriceToman", salePriceToman)
+        when {
+            !target.customerId.isNullOrBlank() -> body.put("customerId", target.customerId)
+            !target.accountId.isNullOrBlank() -> body.put("customerAccountId", target.accountId)
+            else -> throw ApiException("CUSTOMER_NOT_FOUND", 400)
+        }
+        val json = request("/api/reseller/purchase", "POST", token, body)
         return PurchaseResult(json.optString("subscriptionUrl").takeIf(String::isNotBlank), 0, json.optInt("balanceToman"))
     }
 
@@ -375,10 +471,11 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
     }
 
     private fun resellerOrder(json: JSONObject) = ResellerOrder(
-        json.getString("id"), json.getString("plan_id"), json.optString("reseller_customer_id").takeIf(String::isNotBlank),
+        json.getString("id"), json.getString("plan_id"), json.cleanText("reseller_customer_id"),
         json.optString("customer_name"), json.optString("phone"), json.getString("plan_name"),
         json.optString("order_kind", "purchase"), json.optString("subscription_status", json.optString("status")),
-        json.optString("subscription_url").takeIf(String::isNotBlank), json.optString("location_name").takeIf(String::isNotBlank),
+        json.cleanText("control_status") ?: "active",
+        json.cleanText("subscription_url"), json.cleanText("location_name"),
         json.optInt("traffic_gb"), json.optInt("duration_days"), json.optInt("remainingDays"),
         json.optInt("reseller_sale_price_toman"), json.getString("created_at")
     )

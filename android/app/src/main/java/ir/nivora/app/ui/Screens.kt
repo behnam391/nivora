@@ -63,7 +63,7 @@ fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
             !state.signedIn -> AuthScreen(state.actionBusy, actions)
             state.loading && state.account == null && state.reseller == null -> FullScreenLoading()
             state.loadError != null && state.account == null && state.reseller == null -> FullScreenError(state.loadError, actions::refresh, actions::logout)
-            state.role == "reseller" -> ResellerDashboard(state, actions, snackbar)
+            state.role == "reseller" -> PartnerAppDashboard(state, actions, snackbar)
             else -> MainDashboard(state, actions, snackbar)
         }
     }

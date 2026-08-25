@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" tools:node="remove" />
+    <application>
+        <activity android:name=".NetworkLabActivity" tools:node="remove" />
+        <service android:name=".vpn.NivoraVpnService" tools:node="remove" />
+    </application>
+</manifest>

@@ -336,7 +336,10 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_account ON notifications(account_id,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_resets_status ON password_reset_requests(status,requested_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_reset_codes_account ON password_reset_codes(account_id,created_at DESC)');
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_reseller_customers_account ON reseller_customers(account_id) WHERE account_id IS NOT NULL');
+  // A customer can buy from more than one reseller.  Keep one private address-
+  // book row per reseller instead of globally locking the account to its creator.
+  db.exec('DROP INDEX IF EXISTS idx_reseller_customers_account');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_reseller_customers_account_owner ON reseller_customers(reseller_id,account_id) WHERE account_id IS NOT NULL');
   db.exec(`CREATE TABLE IF NOT EXISTS telegram_recovery_sessions (chat_id TEXT PRIMARY KEY,account_id TEXT REFERENCES accounts(id),verified_phone TEXT,state TEXT NOT NULL DEFAULT 'waiting_contact',expires_at TEXT NOT NULL,created_at TEXT NOT NULL)`);
   db.exec(`CREATE TABLE IF NOT EXISTS reseller_debts (
     id TEXT PRIMARY KEY,
@@ -351,8 +354,20 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
     settled_by TEXT,
     updated_at TEXT NOT NULL
   )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS reseller_wallet_transfers (
+    id TEXT PRIMARY KEY,
+    reseller_id TEXT NOT NULL REFERENCES accounts(id),
+    customer_account_id TEXT NOT NULL REFERENCES accounts(id),
+    amount_toman INTEGER NOT NULL CHECK(amount_toman > 0),
+    reversed_amount_toman INTEGER NOT NULL DEFAULT 0 CHECK(reversed_amount_toman >= 0 AND reversed_amount_toman <= amount_toman),
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','partially_reversed','reversed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_debts_customer ON reseller_debts(customer_account_id,status,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_debts_reseller ON reseller_debts(reseller_id,status,created_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_wallet_transfers_owner ON reseller_wallet_transfers(reseller_id,customer_account_id,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_customers_owner ON reseller_customers(reseller_id,status,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_location_endpoints_location ON location_endpoints(location_id,active,priority)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_service_locations_node ON service_locations(panel_node_id)');

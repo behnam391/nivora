@@ -116,14 +116,19 @@ class MainActivity : ComponentActivity(), NivoraActions {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
         session = SecureSessionStore(this)
-        registerVpnReceiver()
-        registerNetworkObserver()
+        val customerAudience = BuildConfig.APP_AUDIENCE == "customer"
+        if (customerAudience) {
+            registerVpnReceiver()
+            registerNetworkObserver()
+        }
         val storedState = vpnPreferences.getString("state", "disconnected") ?: "disconnected"
-        val correctedState = VpnLifecyclePolicy.initialState(
-            storedState,
-            NivoraVpnService.isCoreRunning(),
-            NivoraVpnService.isConnectionAttemptActive()
-        )
+        val correctedState = if (customerAudience) {
+            VpnLifecyclePolicy.initialState(
+                storedState,
+                NivoraVpnService.isCoreRunning(),
+                NivoraVpnService.isConnectionAttemptActive()
+            )
+        } else "disconnected"
         if (correctedState != storedState) vpnPreferences.edit().putString("state", correctedState).remove("error").apply()
         val expectedRole = if (BuildConfig.APP_AUDIENCE == "partner") "reseller" else "customer"
         val storedToken = session.token()
@@ -204,6 +209,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     override fun toggleVpn() {
+        if (BuildConfig.APP_AUDIENCE != "customer") return
         if (state.vpnState == "connected" || state.vpnState == "connecting") {
             requestVpnStop()
             return
@@ -356,9 +362,21 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     override fun markNotificationsRead() = withToken { token ->
-        val account = state.account ?: return@withToken
-        if (account.notifications.none { it.readAt == null }) return@withToken
-        state = state.copy(account = account.copy(notifications = account.notifications.map { it.copy(readAt = it.readAt ?: "read") }))
+        val unread = if (state.role == "reseller") {
+            state.reseller?.notifications.orEmpty().any { it.readAt == null }
+        } else {
+            state.account?.notifications.orEmpty().any { it.readAt == null }
+        }
+        if (!unread) return@withToken
+        state = if (state.role == "reseller") {
+            state.copy(reseller = state.reseller?.let { reseller ->
+                reseller.copy(notifications = reseller.notifications.map { it.copy(readAt = it.readAt ?: "read") })
+            })
+        } else {
+            state.copy(account = state.account?.let { account ->
+                account.copy(notifications = account.notifications.map { it.copy(readAt = it.readAt ?: "read") })
+            })
+        }
         background(
             work = { api.markNotificationsRead(token, state.role) },
             success = { },
@@ -367,7 +385,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
 
     override fun openNetworkLab() {
-        if (BuildConfig.NETWORK_LAB_ENABLED) startActivity(Intent(this, NetworkLabActivity::class.java))
+        if (BuildConfig.APP_AUDIENCE == "customer" && BuildConfig.NETWORK_LAB_ENABLED) startActivity(Intent(this, NetworkLabActivity::class.java))
     }
 
     override fun createResellerCustomer(name: String, phone: String, password:String, note: String) = withToken { token ->
@@ -379,11 +397,40 @@ class MainActivity : ComponentActivity(), NivoraActions {
 
     override fun resetResellerCustomerPassword(customer:ResellerCustomer,password:String)=withToken{token->runAction(work={api.resetResellerCustomerPassword(token,customer.id,password)},success={showNotice("رمز مشتری تغییر کرد");loadDashboard(false)})}
 
+    override fun loadResellerCustomerAccess(customer: ResellerCustomer) = withToken { token ->
+        state = state.copy(resellerProfileLoadingId = customer.id)
+        background(
+            work = { api.resellerCustomerAccess(token, customer.id) },
+            success = { access ->
+                if (!isCurrentSession(token) || state.resellerProfileLoadingId != customer.id) return@background
+                val allowed = state.resellerPasswordManagedCustomerIds.toMutableSet().apply {
+                    if (access.passwordManaged) add(access.customerId) else remove(access.customerId)
+                }
+                state = state.copy(resellerPasswordManagedCustomerIds = allowed, resellerProfileLoadingId = null)
+            },
+            failure = {
+                if (!isCurrentSession(token) || state.resellerProfileLoadingId != customer.id) return@background
+                state = state.copy(resellerProfileLoadingId = null)
+                if (isUnauthorized(it)) invalidateSession(token) else showNotice(friendly(it), true)
+            }
+        )
+    }
+
     override fun resellerPurchase(plan: Plan, customer: ResellerCustomer, salePriceToman: Int) = withToken { token ->
         runAction(
             work = { api.resellerPurchase(token, plan.id, customer.id, salePriceToman) },
             success = { result ->
                 result.subscriptionUrl?.let { copyText(it, "اشتراک ساخته شد و لینک آن کپی شد") } ?: showNotice("اشتراک با موفقیت ساخته شد")
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
+    override fun resellerPurchaseTarget(plan: Plan, target: ResellerSaleTarget, salePriceToman: Int) = withToken { token ->
+        runAction(
+            work = { api.resellerPurchase(token, plan.id, target, salePriceToman) },
+            success = {
+                showNotice("اشتراک ${target.name} با موفقیت ساخته شد")
                 loadDashboard(initial = false)
             }
         )
@@ -397,6 +444,69 @@ class MainActivity : ComponentActivity(), NivoraActions {
     }
     override fun controlResellerSubscription(order:ResellerOrder,action:String,reason:String)=withToken{token->runAction(work={api.controlResellerSubscription(token,order.id,action,reason)},success={showNotice(if(action=="suspend")"اشتراک تعلیق شد" else if(action=="resume")"اشتراک فعال شد" else "اشتراک حذف شد");loadDashboard(false)})}
 
+    override fun searchResellerDirectory(query: String) = withToken { token ->
+        val normalized = query.trim()
+        if (normalized.length < 3) {
+            state = state.copy(resellerDirectoryLoading = false)
+            showNotice("برای جست‌وجو حداقل سه رقم یا سه حرف وارد کنید", true)
+            return@withToken
+        }
+        state = state.copy(resellerDirectoryQuery = normalized, resellerDirectoryLoading = true)
+        background(
+            work = { api.resellerCustomerDirectory(token, normalized) },
+            success = {
+                if (!isCurrentSession(token) || state.resellerDirectoryQuery != normalized) return@background
+                state = state.copy(resellerDirectory = it, resellerDirectoryLoading = false)
+            },
+            failure = {
+                if (!isCurrentSession(token) || state.resellerDirectoryQuery != normalized) return@background
+                state = state.copy(resellerDirectoryLoading = false)
+                if (isUnauthorized(it)) invalidateSession(token) else showNotice(friendly(it), true)
+            }
+        )
+    }
+
+    override fun creditResellerCustomerWallet(accountId: String, amountToman: Int, note: String) = withToken { token ->
+        runAction(
+            work = { api.creditCustomerWallet(token, accountId, amountToman, note) },
+            success = {
+                showNotice("کیف پول مشتری شارژ شد")
+                if (state.resellerDirectoryQuery.length >= 3) searchResellerDirectory(state.resellerDirectoryQuery)
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
+    override fun reverseResellerWalletTransfer(transfer: ResellerWalletTransfer, amountToman: Int?, reason: String) = withToken { token ->
+        runAction(
+            work = { api.reverseCustomerWalletTransfer(token, transfer.id, amountToman, reason) },
+            success = {
+                showNotice("اصلاح کیف پول انجام شد")
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
+    override fun createResellerCustomerDebt(accountId: String, amountToman: Int, note: String) = withToken { token ->
+        runAction(
+            work = { api.createCustomerDebt(token, accountId, amountToman, note) },
+            success = {
+                showNotice("بدهی ثبت شد و به مشتری اطلاع داده شد")
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
+    override fun controlResellerCustomerDebt(debt: ResellerDebt, action: String) = withToken { token ->
+        runAction(
+            work = { api.controlCustomerDebt(token, debt.id, action) },
+            success = {
+                showNotice(if (action == "settle") "پرداخت بدهی تأیید شد" else "بدهی لغو شد")
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
     override fun copyText(value: String, message: String) {
         if (value.isBlank()) return
         val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
@@ -408,7 +518,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
         activeSessionToken = null
         liveSessionValidated = false
         dashboardValidationInFlight = false
-        sendVpnStopCommand()
+        if (BuildConfig.APP_AUDIENCE == "customer") sendVpnStopCommand()
         session.clear()
         SubscriptionBundleStore(this).clear()
         DashboardSnapshotStore(this).clear()
@@ -465,7 +575,11 @@ class MainActivity : ComponentActivity(), NivoraActions {
                     val reseller = CompletableFuture.supplyAsync { api.resellerAccount(token) }
                     val resellerPlans = CompletableFuture.supplyAsync { api.resellerPlans(token) }
                     val tickets = CompletableFuture.supplyAsync { api.tickets(token,"reseller") }
-                    DashboardPayload(reseller = reseller.join(), resellerPlans = resellerPlans.join(), tickets = tickets.join())
+                    DashboardPayload(
+                        reseller = reseller.join(),
+                        resellerPlans = resellerPlans.join(),
+                        tickets = tickets.join()
+                    )
                 } else {
                     // Device validation used to add a complete HTTPS round trip
                     // before any dashboard request could start. Keep the gate,
@@ -486,7 +600,17 @@ class MainActivity : ComponentActivity(), NivoraActions {
                 if (payload.reseller != null) {
                     liveSessionValidated = true
                     showNewNotifications(payload.reseller.notifications)
-                    state = state.copy(signedIn = true, loading = false, refreshing = false, reseller = payload.reseller, resellerPlans = payload.resellerPlans, tickets = payload.tickets, account = null, loadError = null)
+                    state = state.copy(
+                        signedIn = true,
+                        loading = false,
+                        refreshing = false,
+                        reseller = payload.reseller,
+                        resellerPlans = payload.resellerPlans,
+                        resellerDirectoryLoading = false,
+                        tickets = payload.tickets,
+                        account = null,
+                        loadError = null
+                    )
                     return@background
                 }
                 val account = payload.account ?: return@background
@@ -725,6 +849,15 @@ class MainActivity : ComponentActivity(), NivoraActions {
             "INVALID_CUSTOMER" -> "نام یا شماره موبایل مشتری معتبر نیست"
             "CUSTOMER_ALREADY_EXISTS" -> "این شماره قبلاً در دفترچه ثبت شده است"
             "CUSTOMER_NOT_FOUND" -> "پرونده مشتری پیدا نشد"
+            "SEARCH_QUERY_TOO_SHORT" -> "برای جست‌وجو حداقل سه رقم یا سه حرف وارد کنید"
+            "INVALID_AMOUNT" -> "مبلغ واردشده معتبر نیست"
+            "INVALID_DEBT" -> "مبلغ و دلیل بدهی را کامل وارد کنید"
+            "DEBT_NOT_FOUND" -> "این بدهی دیگر فعال نیست"
+            "INVALID_REVERSAL_AMOUNT" -> "مبلغ برگشت از مانده شارژ بیشتر است"
+            "WALLET_TRANSFER_NOT_FOUND" -> "این انتقال دیگر قابل اصلاح نیست"
+            "SUSPENSION_REASON_REQUIRED" -> "دلیل تعلیق را کامل بنویسید"
+            "SUBSCRIPTION_NOT_FOUND" -> "اشتراک قابل کنترل پیدا نشد"
+            "PANEL_CONTROL_FAILED" -> "کنترل اشتراک در پنل سرور انجام نشد"
             "INVALID_SERVER_RESPONSE" -> "پاسخ سرور قابل خواندن نبود"
             else -> when (resolved) {
                 is SocketTimeoutException -> "پاسخ سرور طول کشید؛ دوباره تلاش کنید"

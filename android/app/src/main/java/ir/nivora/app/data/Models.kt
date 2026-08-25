@@ -93,6 +93,7 @@ data class Account(
 
 data class ResellerCustomer(
     val id: String,
+    val accountId: String?,
     val name: String,
     val phone: String,
     val note: String,
@@ -101,6 +102,32 @@ data class ResellerCustomer(
     val revenueToman: Int,
     val profitToman: Int,
     val managedAccount: Boolean
+)
+
+/** A customer account that the backend explicitly allows a reseller to find. */
+data class ResellerDirectoryCustomer(
+    val accountId: String,
+    val name: String,
+    val phone: String,
+    val balanceToman: Int
+)
+
+data class ResellerCustomerAccess(
+    val customerId: String,
+    val passwordManaged: Boolean
+)
+
+/**
+ * A normalized sale target. Own address-book customers use [customerId], while
+ * directory customers use [accountId]. The backend remains the authority that
+ * decides whether the reseller may operate on the target.
+ */
+data class ResellerSaleTarget(
+    val customerId: String?,
+    val accountId: String?,
+    val name: String,
+    val phone: String,
+    val balanceToman: Int? = null
 )
 
 data class ResellerOrder(
@@ -112,6 +139,7 @@ data class ResellerOrder(
     val planName: String,
     val orderKind: String,
     val status: String,
+    val controlStatus: String,
     val subscriptionUrl: String?,
     val locationName: String?,
     val trafficGb: Int,
@@ -119,7 +147,37 @@ data class ResellerOrder(
     val remainingDays: Int,
     val salePriceToman: Int,
     val createdAt: String
+) {
+    val effectiveStatus: String
+        get() = controlStatus.takeUnless { it.isBlank() || it == "active" } ?: status
+}
+
+data class ResellerDebt(
+    val id: String,
+    val customerAccountId: String,
+    val customerName: String,
+    val customerPhone: String,
+    val amountToman: Int,
+    val note: String,
+    val status: String,
+    val createdAt: String,
+    val paymentReportedAt: String?
 )
+
+data class ResellerWalletTransfer(
+    val id: String,
+    val customerAccountId: String,
+    val customerName: String,
+    val customerPhone: String,
+    val amountToman: Int,
+    val reversedAmountToman: Int,
+    val note: String,
+    val status: String,
+    val createdAt: String
+) {
+    val remainingAmountToman: Int
+        get() = (amountToman - reversedAmountToman).coerceAtLeast(0)
+}
 
 data class ResellerAccount(
     val name: String,
@@ -132,6 +190,8 @@ data class ResellerAccount(
     val totalProfitToman: Int,
     val notifications: List<CustomerNotification>,
     val transactions: List<WalletTransaction>,
+    val debts: List<ResellerDebt>,
+    val walletTransfers: List<ResellerWalletTransfer>,
     val customers: List<ResellerCustomer>,
     val orders: List<ResellerOrder>
 )
