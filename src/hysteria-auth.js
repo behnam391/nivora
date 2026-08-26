@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
+import { isCustomerDeviceHashAuthorized } from './device-bindings.js';
 
 const DAY_MS = 86_400_000;
 const GB = 1024 ** 3;
@@ -99,7 +100,7 @@ export function createHysteriaTicketService(db, {
     SELECT s.id subscription_id,s.status subscription_status,s.control_status,s.panel_client_id,
       s.hysteria_started_at,s.hysteria_expires_at,s.hysteria_duration_days,s.hysteria_traffic_limit_bytes,s.hysteria_used_bytes,
       o.id order_id,o.account_id,o.location_id,o.status order_status,o.order_kind,
-      a.status account_status,a.device_binding_hash,
+      a.status account_status,
       n.id route_id,n.public_host,n.public_port,n.sni,n.obfs_type,n.obfs_password_encrypted,n.pin_sha256,n.active node_active
     FROM orders o
     JOIN subscriptions s ON s.order_id=o.id
@@ -115,7 +116,7 @@ export function createHysteriaTicketService(db, {
     SELECT s.id subscription_id,s.status subscription_status,s.control_status,s.panel_client_id,
       s.hysteria_started_at,s.hysteria_expires_at,s.hysteria_duration_days,s.hysteria_traffic_limit_bytes,s.hysteria_used_bytes,
       o.id order_id,o.account_id,o.location_id,o.status order_status,o.order_kind,
-      a.status account_status,a.device_binding_hash,
+      a.status account_status,
       n.id route_id,n.public_host,n.public_port,n.sni,n.obfs_type,n.obfs_password_encrypted,n.pin_sha256,n.active node_active
     FROM subscriptions s
     JOIN orders o ON o.id=s.order_id
@@ -131,7 +132,7 @@ export function createHysteriaTicketService(db, {
     }
     if (row.control_status && row.control_status !== 'active') throw new HysteriaAuthError('SUBSCRIPTION_SUSPENDED', 409);
     if (row.account_status !== 'active') throw new HysteriaAuthError('ACCOUNT_SUSPENDED', 403);
-    if (!deviceBindingHash || !row.device_binding_hash || !safeEqual(deviceBindingHash, row.device_binding_hash)) {
+    if (!deviceBindingHash || !isCustomerDeviceHashAuthorized(db,row.account_id,deviceBindingHash)) {
       throw new HysteriaAuthError('DEVICE_MISMATCH', 403);
     }
     if (!validHostname(row.public_host) || !Number.isInteger(Number(row.public_port)) || Number(row.public_port) < 1 || Number(row.public_port) > 65535) {
@@ -264,7 +265,10 @@ export function createHysteriaTicketService(db, {
       row = syncHysteriaEntitlement(row);
       assertHysteriaEntitlement(row);
       const consumedAt = new Date(now()).toISOString();
-      const clientId = ticket.client_id || `hy2-${sha256(row.subscription_id).slice(0,32)}`;
+      // Keep traffic identity stable per subscription and device. Multiple
+      // authorized devices can now connect concurrently without sharing one
+      // Hysteria client counter; usage still aggregates into the subscription.
+      const clientId = ticket.client_id || `hy2-${sha256(`${row.subscription_id}\0${claims.did}`).slice(0,32)}`;
       const result = db.prepare(`UPDATE hysteria_tickets SET consumed_at=COALESCE(consumed_at,?),client_id=COALESCE(client_id,?) WHERE id=? AND revoked_at IS NULL AND expires_at>?`)
         .run(consumedAt, clientId, claims.jti, consumedAt);
       if (result.changes !== 1) throw new HysteriaAuthError('INVALID_TICKET');

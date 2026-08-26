@@ -4,10 +4,10 @@ const fa=value=>new Intl.NumberFormat('fa-IR').format(Number(value)||0);
 const date=value=>value?new Date(value).toLocaleString('fa-IR',{dateStyle:'medium',timeStyle:'short'}):'بدون فعالیت';
 const esc=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 const safeUrl=value=>{try{const url=new URL(value,location.origin);return ['http:','https:'].includes(url.protocol)?url.href:'#'}catch{return '#'}};
-const errorText=code=>({INVALID_CREDENTIALS:'شماره موبایل یا رمز عبور صحیح نیست.',RATE_LIMITED:'تعداد تلاش‌ها زیاد بود؛ یک دقیقه صبر کنید و دوباره وارد شوید.',INVALID_CUSTOMER:'نام یا شماره موبایل معتبر نیست.',CUSTOMER_ALREADY_EXISTS:'این شماره قبلاً در دفترچه ثبت شده است.',PHONE_ALREADY_EXISTS:'این شماره قبلاً حساب فعال دارد.',WEAK_PASSWORD:'رمز باید حداقل ۸ کاراکتر باشد.',CUSTOMER_PASSWORD_NOT_MANAGED:'تغییر رمز این مشتری در اختیار حساب همکاری شما نیست.',CUSTOMER_NOT_FOUND:'پرونده مشتری پیدا نشد.',CUSTOMER_PHONE_NOT_MANAGED:'شماره این حساب توسط شما قابل تغییر نیست.',INSUFFICIENT_BALANCE:'موجودی کیف پول کافی نیست.',INVALID_AMOUNT:'مبلغ واردشده معتبر نیست.',INVALID_DEBT:'مبلغ و شرح بدهی را کامل وارد کنید.',DEBT_NOT_FOUND:'این بدهی دیگر قابل تغییر نیست.',WALLET_TRANSFER_NOT_FOUND:'این انتقال دیگر قابل برگشت نیست.',INVALID_REVERSAL_AMOUNT:'مبلغ برگشت از مانده انتقال بیشتر است.',NO_CAPACITY:'ظرفیت این پلن فعلاً تکمیل است.',PROVISION_FAILED:'ساخت اشتراک ناموفق بود و مبلغ به کیف پول برگشت.',RENEW_FAILED:'تمدید ناموفق بود و مبلغ به کیف پول برگشت.',PANEL_CONTROL_FAILED:'کنترل سرویس در پنل مقصد انجام نشد.',INVALID_PURCHASE:'اطلاعات فروش کامل نیست.',UNAUTHORIZED:'نشست شما منقضی شده است.'}[code]||'عملیات انجام نشد؛ دوباره تلاش کنید.');
+const errorText=code=>({INVALID_CREDENTIALS:'شماره موبایل یا رمز عبور صحیح نیست.',RATE_LIMITED:'تعداد تلاش‌ها زیاد بود؛ یک دقیقه صبر کنید و دوباره وارد شوید.',INVALID_CUSTOMER:'نام یا شماره موبایل معتبر نیست.',CUSTOMER_ALREADY_EXISTS:'این شماره قبلاً در دفترچه ثبت شده است.',PHONE_ALREADY_EXISTS:'این شماره قبلاً حساب فعال دارد.',WEAK_PASSWORD:'رمز باید حداقل ۸ کاراکتر باشد.',CUSTOMER_PASSWORD_NOT_MANAGED:'تغییر رمز این مشتری در اختیار حساب همکاری شما نیست.',CUSTOMER_NOT_FOUND:'پرونده مشتری پیدا نشد.',CUSTOMER_PHONE_NOT_MANAGED:'شماره این حساب توسط شما قابل تغییر نیست.',CUSTOMER_DEVICE_NOT_MANAGED:'مدیریت دستگاه‌های این مشتری در اختیار حساب همکاری شما نیست.',DEVICE_MANAGEMENT_FORBIDDEN:'مدیریت دستگاه‌های این مشتری در اختیار حساب همکاری شما نیست.',INVALID_DEVICE_LIMIT:'سقف دستگاه باید یک عدد معتبر باشد.',DEVICE_LIMIT_INVALID:'سقف دستگاه باید یک عدد معتبر باشد.',DEVICE_LIMIT_BELOW_ACTIVE_COUNT:'ابتدا دستگاه‌های اضافه را آزاد کنید و سپس سقف را کاهش دهید.',DEVICE_LIMIT_BELOW_ACTIVE:'ابتدا دستگاه‌های اضافه را آزاد کنید و سپس سقف را کاهش دهید.',DEVICE_NOT_FOUND:'این دستگاه دیگر ثبت‌شده نیست.',INSUFFICIENT_BALANCE:'موجودی کیف پول کافی نیست.',INVALID_AMOUNT:'مبلغ واردشده معتبر نیست.',INVALID_DEBT:'مبلغ و شرح بدهی را کامل وارد کنید.',DEBT_NOT_FOUND:'این بدهی دیگر قابل تغییر نیست.',WALLET_TRANSFER_NOT_FOUND:'این انتقال دیگر قابل برگشت نیست.',INVALID_REVERSAL_AMOUNT:'مبلغ برگشت از مانده انتقال بیشتر است.',NO_CAPACITY:'ظرفیت این پلن فعلاً تکمیل است.',PROVISION_FAILED:'ساخت اشتراک ناموفق بود و مبلغ به کیف پول برگشت.',RENEW_FAILED:'تمدید ناموفق بود و مبلغ به کیف پول برگشت.',PANEL_CONTROL_FAILED:'کنترل سرویس در پنل مقصد انجام نشد.',INVALID_PURCHASE:'اطلاعات فروش کامل نیست.',UNAUTHORIZED:'نشست شما منقضی شده است.'}[code]||'عملیات انجام نشد؛ دوباره تلاش کنید.');
 
 let token=localStorage.getItem('reseller_token')||'';
-let me=null,plans=[],orders=[],customers=[],tickets=[],activeTicket=null,selectedPlan=null,selectedOrder=null,profile=null,returnToPurchase=false,externalCustomer=null,credentialPurchaseCustomerId='',activeWalletCustomer=null,activeReverseTransfer=null,polling=false;
+let me=null,plans=[],orders=[],customers=[],tickets=[],activeTicket=null,selectedPlan=null,selectedOrder=null,profile=null,returnToPurchase=false,externalCustomer=null,credentialPurchaseCustomerId='',activeWalletCustomer=null,activeReverseTransfer=null,activeDeviceProfile=null,polling=false;
 
 async function api(path,options={}){
   const response=await fetch(path,{...options,headers:{...(options.body?{'content-type':'application/json'}:{}),...(token?{authorization:`Bearer ${token}`}:{})}});
@@ -46,7 +46,8 @@ function renderRecent(){
 }
 
 function visibleCustomers(){const query=$('#customer-search').value.trim().toLowerCase();return customers.filter(customer=>!query||customer.name.toLowerCase().includes(query)||customer.phone.includes(query))}
-function renderCustomers(){const rows=visibleCustomers();$('#customer-result-count').textContent=`${fa(rows.length)} مشتری`;$('#customer-list').innerHTML=rows.length?rows.map(customer=>`<article class="customer-row"><div class="customer-name"><span class="avatar">${esc(customer.name.slice(0,1))}</span><div><b>${esc(customer.name)}</b><small>${esc(customer.phone)}${customer.note?` · ${esc(customer.note)}`:''}</small></div></div><div class="metric"><b>${fa(customer.active_subscriptions)}</b><span>اشتراک فعال</span></div><div class="metric"><b>${fa(customer.revenue_toman)} تومان</b><span>فروش ثبت‌شده</span></div><div class="metric profit-metric"><b>${fa(customer.profit_toman)} تومان</b><span>سود</span></div><div class="customer-actions"><button class="soft customer-sale" data-id="${customer.id}">＋ فروش</button><button class="soft secondary open-customer" data-id="${customer.id}">پرونده</button></div></article>`).join(''):'<div class="panel empty"><b>مشتری پیدا نشد</b>مشتری تازه اضافه کنید یا عبارت جست‌وجو را تغییر دهید.</div>';
+function customerDeviceLabel(customer){const count=Number(customer.device_count??customer.deviceCount),limit=Number(customer.device_limit??customer.deviceLimit);return Number.isInteger(count)&&Number.isInteger(limit)&&limit>0?` · ${fa(count)} از ${fa(limit)} دستگاه`:''}
+function renderCustomers(){const rows=visibleCustomers();$('#customer-result-count').textContent=`${fa(rows.length)} مشتری`;$('#customer-list').innerHTML=rows.length?rows.map(customer=>`<article class="customer-row"><div class="customer-name"><span class="avatar">${esc(customer.name.slice(0,1))}</span><div><b>${esc(customer.name)}</b><small>${esc(customer.phone)}${customer.note?` · ${esc(customer.note)}`:''}${customerDeviceLabel(customer)}</small></div></div><div class="metric"><b>${fa(customer.active_subscriptions)}</b><span>اشتراک فعال</span></div><div class="metric"><b>${fa(customer.revenue_toman)} تومان</b><span>فروش ثبت‌شده</span></div><div class="metric profit-metric"><b>${fa(customer.profit_toman)} تومان</b><span>سود</span></div><div class="customer-actions"><button class="soft customer-sale" data-id="${customer.id}">＋ فروش</button><button class="soft secondary open-customer" data-id="${customer.id}">پرونده</button></div></article>`).join(''):'<div class="panel empty"><b>مشتری پیدا نشد</b>مشتری تازه اضافه کنید یا عبارت جست‌وجو را تغییر دهید.</div>';
   bindCustomerOpeners();$$('.customer-sale').forEach(button=>button.onclick=()=>showView('plans',button.dataset.id));
 }
 
@@ -95,18 +96,95 @@ async function resetCustomerPassword(event){
   catch(requestError){error.textContent=errorText(requestError.message)}finally{setBusy(button,false)}
 }
 
+function normalizePartnerDevices(raw){
+  const allDevices=Array.isArray(raw)?raw:Array.isArray(raw?.devices)?raw.devices:[];
+  const devices=allDevices.filter(device=>!device.status||device.status==='active');
+  const limitValue=Number(raw?.deviceLimit??raw?.device_limit??activeDeviceProfile?.deviceLimit??activeDeviceProfile?.device_limit??1);
+  const recoveryRequests=Array.isArray(raw?.recoveryRequests)?raw.recoveryRequests:[];
+  return {devices,recoveryRequests,deviceLimit:Number.isInteger(limitValue)&&limitValue>0?limitValue:1,deviceLimitOverride:raw?.deviceLimitOverride??raw?.device_limit_override??null};
+}
+function partnerDeviceName(device,index){return device.label??device.name??device.model??device.platform??`دستگاه ${fa(index+1)}`}
+function partnerDeviceMeta(device){return [device.platform,device.model,device.appVersion??device.app_version].filter(Boolean).join(' · ')}
+function partnerDeviceTime(device){return device.lastSeenAt??device.last_seen_at??device.boundAt??device.bound_at??device.createdAt??device.created_at??''}
+
+async function openPartnerDevices(customer){
+  if(!customer?.id)return;
+  activeDeviceProfile=customer;
+  $('#partner-device-title').textContent=`دستگاه‌های ${customer.name}`;
+  $('#partner-device-caption').textContent=customer.phone||'';
+  $('#partner-device-error').textContent='';
+  $('#partner-device-content').classList.add('hidden');
+  $('#partner-device-loading').classList.remove('hidden');
+  const dialog=$('#partner-device-dialog');if(!dialog.open)dialog.showModal();
+  await loadPartnerDevices();
+}
+
+async function loadPartnerDevices(){
+  if(!activeDeviceProfile)return;
+  $('#partner-device-error').textContent='';
+  try{
+    const state=normalizePartnerDevices(await api(`/api/reseller/customers/${encodeURIComponent(activeDeviceProfile.id)}/devices`));
+    activeDeviceProfile.deviceLimit=state.deviceLimit;activeDeviceProfile.deviceLimitOverride=state.deviceLimitOverride;activeDeviceProfile.deviceCount=state.devices.length;
+    $('#partner-device-limit').value=state.deviceLimit;
+    $('#partner-device-usage').textContent=`${fa(state.devices.length)} دستگاه از ${fa(state.deviceLimit)} جایگاه استفاده شده · ${state.deviceLimitOverride==null?'سقف پلن':'سقف اختصاصی'}`;
+    $('#partner-inherit-device-limit').disabled=state.deviceLimitOverride==null;
+    $('#partner-reset-all-devices').disabled=!state.devices.length;
+    $('#partner-device-recovery').classList.toggle('hidden',!state.recoveryRequests.length);
+    $('#partner-device-recovery-list').innerHTML=state.recoveryRequests.map(request=>`<article class="device-row recovery-row"><div class="device-icon">!</div><div><b>فعال‌سازی دستگاه تازه</b><small>${date(request.requested_at||request.requestedAt)}</small></div><div class="recovery-actions"><button type="button" class="primary partner-approve-recovery" data-request="${esc(request.id)}">تأیید</button><button type="button" class="control-button danger partner-reject-recovery" data-request="${esc(request.id)}">رد</button></div></article>`).join('');
+    $('#partner-device-list').innerHTML=state.devices.length?state.devices.map((device,index)=>{const meta=partnerDeviceMeta(device),seen=partnerDeviceTime(device);return `<article class="device-row"><div class="device-icon">${fa(index+1)}</div><div><b>${esc(partnerDeviceName(device,index))}</b><small>${meta?esc(meta):'اپ Nivora'}${seen?` · آخرین فعالیت ${esc(date(seen))}`:''}</small></div><button type="button" class="control-button danger partner-remove-device" data-device="${esc(device.id)}">آزادسازی</button></article>`}).join(''):'<div class="device-empty"><b>دستگاهی ثبت نشده است</b><span>ورود بعدی مشتری، نخستین جایگاه را فعال می‌کند.</span></div>';
+    $$('.partner-remove-device').forEach(button=>button.onclick=()=>removePartnerDevice(button.dataset.device));
+    $$('.partner-approve-recovery').forEach(button=>button.onclick=()=>resolvePartnerRecovery(button.dataset.request,'approve'));
+    $$('.partner-reject-recovery').forEach(button=>button.onclick=()=>resolvePartnerRecovery(button.dataset.request,'reject'));
+    $('#partner-device-loading').classList.add('hidden');$('#partner-device-content').classList.remove('hidden');
+  }catch(error){$('#partner-device-loading').classList.add('hidden');$('#partner-device-error').textContent=errorText(error.message)}
+}
+
+async function savePartnerDeviceLimit(){
+  if(!activeDeviceProfile)return;
+  const button=$('#partner-save-device-limit'),limit=Number($('#partner-device-limit').value);
+  if(!Number.isInteger(limit)||limit<1||limit>10){$('#partner-device-error').textContent='سقف دستگاه باید بین ۱ تا ۱۰ باشد.';return}
+  setBusy(button,true,'در حال ذخیره…');$('#partner-device-error').textContent='';
+  try{await api(`/api/reseller/customers/${encodeURIComponent(activeDeviceProfile.id)}/device-limit`,{method:'PATCH',body:JSON.stringify({deviceLimit:limit})});toast('سقف دستگاه مشتری ذخیره شد');await loadPartnerDevices()}
+  catch(error){$('#partner-device-error').textContent=errorText(error.message)}finally{setBusy(button,false)}
+}
+
+async function inheritPartnerDeviceLimit(){
+  if(!activeDeviceProfile)return;
+  const button=$('#partner-inherit-device-limit');setBusy(button,true,'در حال ذخیره…');$('#partner-device-error').textContent='';
+  try{await api(`/api/reseller/customers/${encodeURIComponent(activeDeviceProfile.id)}/device-limit`,{method:'PATCH',body:JSON.stringify({deviceLimit:null})});toast('سقف دستگاه از پلن مشتری خوانده می‌شود');await loadPartnerDevices();setBusy(button,false);button.disabled=true}
+  catch(error){$('#partner-device-error').textContent=errorText(error.message);setBusy(button,false)}
+}
+
+async function removePartnerDevice(deviceId){
+  if(!activeDeviceProfile||!confirm('این دستگاه از حساب مشتری آزاد شود؟'))return;
+  try{await api(`/api/reseller/customers/${encodeURIComponent(activeDeviceProfile.id)}/devices/${encodeURIComponent(deviceId)}`,{method:'DELETE'});toast('دستگاه انتخاب‌شده آزاد شد');await loadPartnerDevices()}
+  catch(error){$('#partner-device-error').textContent=errorText(error.message)}
+}
+
+async function resetAllPartnerDevices(){
+  if(!activeDeviceProfile||!confirm(`همه دستگاه‌ها و نشست‌های فعال ${activeDeviceProfile.name} خارج شوند؟`))return;
+  try{await api(`/api/reseller/customers/${encodeURIComponent(activeDeviceProfile.id)}/device-reset`,{method:'POST',body:'{}'});toast('همه دستگاه‌های مشتری آزاد شدند');await loadPartnerDevices()}
+  catch(error){$('#partner-device-error').textContent=errorText(error.message)}
+}
+
+async function resolvePartnerRecovery(requestId,action){
+  if(!confirm(action==='approve'?'این گوشی تازه تأیید و قدیمی‌ترین جایگاه آزاد شود؟':'این درخواست دستگاه رد شود؟'))return;
+  try{await api(`/api/reseller/device-recovery-requests/${encodeURIComponent(requestId)}/${action}`,{method:'POST',body:'{}'});toast(action==='approve'?'دستگاه تازه تأیید شد':'درخواست رد شد');await loadPartnerDevices()}
+  catch(error){$('#partner-device-error').textContent=errorText(error.message)}
+}
+
 async function openProfile(id){
   const dialog=$('#profile-dialog');if(!dialog.open)dialog.showModal();$('#profile-content').innerHTML='<div class="empty">در حال دریافت پرونده…</div>';
   try{
     profile=await api(`/api/reseller/customers/${id}`);
     const purchases=profile.orders.filter(order=>order.order_kind==='purchase'),active=purchases.filter(order=>order.subscription_status==='active'&&(order.control_status||'active')==='active');
-    const revenue=profile.orders.reduce((sum,order)=>sum+(order.reseller_sale_price_toman||0),0),cost=profile.orders.reduce((sum,order)=>sum+Math.round((order.amount_transferred_irr||0)/10),0);
+    const revenue=profile.orders.reduce((sum,order)=>sum+(order.reseller_sale_price_toman||0),0),cost=profile.orders.reduce((sum,order)=>sum+Math.round((order.amount_transferred_irr||0)/10),0),canManageDevices=profile.device_manageable??profile.deviceManageable??profile.password_managed??Boolean(profile.account_id);
     const orderRows=profile.orders.length?profile.orders.map(order=>{const control=order.control_status||'active',canControl=order.order_kind==='purchase'&&order.subscription_status==='active';return `<div class="profile-order"><div><b>${esc(order.plan_name)}</b><small>${order.order_kind==='renewal'?'تمدید':'فروش اولیه'} · ${date(order.created_at)}</small></div><div><span class="status ${statusClass(order.subscription_status,control)}">${statusLabel(order.subscription_status,control)}</span><small>${fa(order.remainingDays)} روز مانده</small></div><div class="profile-order-actions">${order.subscription_url?`<button class="copy" data-copy="${esc(order.subscription_url)}">کپی لینک</button>`:''}${canControl&&control!=='deleted'?`<button class="renew" data-renew="${order.id}">تمدید</button>`:''}${canControl&&control==='suspended'?`<button class="control-button" data-control="${order.id}" data-action="resume">فعال‌سازی</button>`:canControl&&control!=='deleted'?`<button class="control-button danger" data-control="${order.id}" data-action="suspend">تعلیق</button>`:''}${canControl&&control!=='deleted'?`<button class="control-button danger" data-control="${order.id}" data-action="delete">حذف</button>`:''}</div></div>`}).join(''):'<div class="empty">هنوز اشتراکی برای این مشتری ساخته نشده است.</div>';
     const transferRows=profile.walletTransfers?.length?profile.walletTransfers.map(item=>walletTransferMarkup({...item,customer_name:profile.name},false)).join(''):'<div class="empty">انتقالی ثبت نشده است.</div>';
     const debtRows=profile.debts?.length?profile.debts.map(item=>debtMarkup({...item,customer_name:profile.name},false)).join(''):'<div class="empty">بدهی ثبت نشده است.</div>';
-    $('#profile-content').innerHTML=`<div class="profile-head"><span class="avatar">${esc(profile.name.slice(0,1))}</span><div><h2>${esc(profile.name)}</h2><p>${esc(profile.phone)}</p>${profile.note?`<small>${esc(profile.note)}</small>`:''}</div></div><div class="profile-actions"><button class="primary" id="profile-sale">＋ اشتراک جدید</button>${profile.account_id?'<button class="soft" id="profile-wallet">شارژ کیف پول</button><button class="soft" id="profile-debt">ثبت بدهی</button>':''}${profile.password_managed?'<button class="soft" id="profile-password">تغییر رمز مشتری</button>':''}<button class="soft secondary" id="profile-edit">ویرایش پرونده</button><button class="text-button" id="profile-archive">بایگانی</button></div><div class="profile-stats"><article><span>اشتراک فعال</span><b>${fa(active.length)}</b></article><article><span>کل فروش</span><b>${fa(revenue)} تومان</b></article><article><span>سود ثبت‌شده</span><b>${fa(revenue-cost)} تومان</b></article><article><span>کیف پول مشتری</span><b>${fa(profile.walletBalanceToman)} تومان</b></article></div><h3>اشتراک‌ها و تمدیدها</h3><div>${orderRows}</div><div class="profile-finance-grid"><section><h3>انتقال‌های کیف پول</h3>${transferRows}</section><section><h3>بدهی‌ها</h3>${debtRows}</section></div>`;
+    $('#profile-content').innerHTML=`<div class="profile-head"><span class="avatar">${esc(profile.name.slice(0,1))}</span><div><h2>${esc(profile.name)}</h2><p>${esc(profile.phone)}</p>${profile.note?`<small>${esc(profile.note)}</small>`:''}</div></div><div class="profile-actions"><button class="primary" id="profile-sale">＋ اشتراک جدید</button>${profile.account_id?'<button class="soft" id="profile-wallet">شارژ کیف پول</button><button class="soft" id="profile-debt">ثبت بدهی</button>':''}${profile.password_managed?'<button class="soft" id="profile-password">تغییر رمز مشتری</button>':''}${canManageDevices?'<button class="soft" id="profile-devices">مدیریت دستگاه‌ها</button>':''}<button class="soft secondary" id="profile-edit">ویرایش پرونده</button><button class="text-button" id="profile-archive">بایگانی</button></div><div class="profile-stats"><article><span>اشتراک فعال</span><b>${fa(active.length)}</b></article><article><span>کل فروش</span><b>${fa(revenue)} تومان</b></article><article><span>سود ثبت‌شده</span><b>${fa(revenue-cost)} تومان</b></article><article><span>کیف پول مشتری</span><b>${fa(profile.walletBalanceToman)} تومان</b></article></div><h3>اشتراک‌ها و تمدیدها</h3><div>${orderRows}</div><div class="profile-finance-grid"><section><h3>انتقال‌های کیف پول</h3>${transferRows}</section><section><h3>بدهی‌ها</h3>${debtRows}</section></div>`;
     $('#profile-sale').onclick=()=>{dialog.close();showView('plans',profile.id)};
-    $('#profile-wallet')?.addEventListener('click',()=>openWalletTransfer(profile));$('#profile-debt')?.addEventListener('click',()=>openDebt(profile));$('#profile-password')?.addEventListener('click',()=>openPasswordReset(profile));
+    $('#profile-wallet')?.addEventListener('click',()=>openWalletTransfer(profile));$('#profile-debt')?.addEventListener('click',()=>openDebt(profile));$('#profile-password')?.addEventListener('click',()=>openPasswordReset(profile));$('#profile-devices')?.addEventListener('click',()=>openPartnerDevices(profile));
     $('#profile-edit').onclick=()=>{dialog.close();openCustomer(profile)};$('#profile-archive').onclick=archiveProfile;bindOrderActions();bindFinanceActions();
   }catch(error){$('#profile-content').innerHTML=`<div class="empty"><b>پرونده باز نشد</b>${errorText(error.message)}</div>`}
 }
@@ -128,6 +206,7 @@ $('#copy-temporary-password').onclick=async()=>{await copy($('#temporary-passwor
 $('#temporary-password').onclick=()=>copy($('#temporary-password').textContent,'رمز موقت کپی شد');
 $('#credential-dialog').addEventListener('close',()=>{const customerId=credentialPurchaseCustomerId;credentialPurchaseCustomerId='';$('#temporary-password').textContent='';if(customerId&&selectedPlan)openBuy(selectedPlan.id,customerId)});
 $('#password-reset-form').onsubmit=resetCustomerPassword;
+$('#partner-save-device-limit').onclick=savePartnerDeviceLimit;$('#partner-inherit-device-limit').onclick=inheritPartnerDeviceLimit;$('#partner-reset-all-devices').onclick=resetAllPartnerDevices;
 $('#ticket-form').onsubmit=createTicket;$('#reply-form').onsubmit=replyTicket;$('#new-ticket').onclick=()=>$('#ticket-dialog').showModal();$('#read-notifications').onclick=readNotifications;$('#login-form').onsubmit=login;$('#customer-form').onsubmit=saveCustomer;$('#buy-form').onsubmit=purchase;$('#renew-form').onsubmit=renew;$('#new-customer').onclick=()=>openCustomer();
 $('#global-customer-search').onclick=()=>{$('#global-customer-results').innerHTML='';$('#global-customer-query').value='';$('#global-customer-dialog').showModal()};$('#global-customer-submit').onclick=searchGlobalCustomers;$('#global-customer-query').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();searchGlobalCustomers()}};
 $('#buy-new-customer').onclick=()=>{$('#buy-dialog').close();returnToPurchase=true;openCustomer()};$('#sale-price').oninput=updateProfit;$('#renew-sale-price').oninput=updateRenewProfit;$('#customer-search').oninput=renderCustomers;$('#order-search').oninput=renderOrders;$('#order-filter').onchange=renderOrders;$('#refresh').onclick=refresh;$('#logout').onclick=()=>{localStorage.removeItem('reseller_token');location.reload()};

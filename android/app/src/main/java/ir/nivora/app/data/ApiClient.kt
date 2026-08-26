@@ -86,9 +86,41 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         return runCatching { JSONObject(raw) }.getOrElse { throw ApiException("INVALID_SERVER_RESPONSE", 502) }
     }
 
+    private fun deviceRecovery(root: JSONObject): DeviceRecoveryRequest {
+        // Accept both the flat response planned by Nivora and common wrapped
+        // shapes so the app can be released before the server endpoint lands.
+        val payload = root.optJSONObject("request")
+            ?: root.optJSONObject("data")?.optJSONObject("request")
+            ?: root.optJSONObject("data")
+            ?: root
+        val id = payload.cleanText("id")
+            ?: payload.cleanText("requestId")
+            ?: root.cleanText("requestId")
+        val status = DeviceRecoveryPolicy.normalizeStatus(
+            payload.cleanText("status") ?: root.cleanText("status")
+        )
+        val message = payload.cleanText("message")
+            ?: payload.cleanText("reviewNote")
+            ?: root.cleanText("message")
+        return DeviceRecoveryRequest(id, status, message)
+    }
+
     fun login(phone: String, password: String, role: String) = session(
         request(if (role == "reseller") "/api/reseller/login" else "/api/customer/login", "POST", body = JSONObject().put("phone", phone).put("password", password)), role
     )
+
+    fun requestDeviceRecovery(phone: String, password: String): DeviceRecoveryRequest = deviceRecovery(
+        request(
+            "/api/device-recovery/request",
+            "POST",
+            body = JSONObject().put("phone", phone).put("password", password)
+        )
+    )
+
+    fun deviceRecoveryStatus(requestId: String): DeviceRecoveryRequest {
+        val encoded = URLEncoder.encode(requestId, Charsets.UTF_8.name()).replace("+", "%20")
+        return deviceRecovery(request("/api/device-recovery/request/$encoded"))
+    }
 
     fun bindDevice(token: String) { request("/api/customer/device/bind", "POST", token = token) }
 
@@ -392,7 +424,7 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
             WalletTopup(
                 it.getString("id"), it.getInt("amount_toman"),
                 it.optString("receipt_reference").takeIf(String::isNotBlank), it.getString("status"),
-                it.optString("review_note").takeIf(String::isNotBlank), it.getString("created_at")
+                it.cleanText("review_note"), it.getString("created_at")
             )
         }
         val notifications = json.array("notifications").objects().map {
@@ -468,6 +500,21 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
 
     fun markNotificationsRead(token: String, role: String = "customer") {
         request("/api/${if(role=="reseller") "reseller" else "customer"}/notifications/read", "POST", token, JSONObject())
+    }
+
+    fun changePassword(token: String, currentPassword: String, newPassword: String) {
+        request(
+            "/api/customer/change-password", "POST", token,
+            JSONObject().put("currentPassword", currentPassword).put("newPassword", newPassword)
+        )
+    }
+
+    fun clearNotifications(token: String, role: String = "customer") {
+        request("/api/${if(role=="reseller") "reseller" else "customer"}/notifications", "DELETE", token)
+    }
+
+    fun clearTickets(token: String, role: String = "customer") {
+        request("/api/${if(role=="reseller") "reseller" else "customer"}/tickets", "DELETE", token)
     }
 
     private fun resellerOrder(json: JSONObject) = ResellerOrder(

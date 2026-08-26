@@ -21,6 +21,15 @@ enum class ResellerDestination { OVERVIEW, CUSTOMERS, PLANS, WALLET, SUPPORT }
 
 data class UiNotice(val id: Long, val text: String, val error: Boolean = false)
 
+data class DeviceRecoveryUiState(
+    val phone: String,
+    val reasonCode: String,
+    val requestId: String? = null,
+    val status: String = "ready",
+    val message: String? = null,
+    val error: String? = null
+)
+
 data class NivoraUiState(
     val signedIn: Boolean = false,
     val loading: Boolean = false,
@@ -49,6 +58,10 @@ data class NivoraUiState(
     val pingBusy: Boolean = false,
     val showVpnDisclosure: Boolean = false,
     val discount: DiscountResult? = null,
+    val deviceRecovery: DeviceRecoveryUiState? = null,
+    val biometricEnabled: Boolean = false,
+    val biometricLocked: Boolean = false,
+    val biometricMessage: String? = null,
     val notice: UiNotice? = null
 ) {
     val activeSubscriptions: List<Subscription>
@@ -64,6 +77,12 @@ interface NivoraActions {
     fun requestPasswordReset(phone: String, onChallenge:(String,String?)->Unit)
     fun openTelegramRecovery()
     fun confirmPasswordReset(phone:String, resetId:String, code:String, newPassword:String)
+    fun requestDeviceRecovery()
+    fun refreshDeviceRecovery()
+    fun retryDeviceRecoveryLogin()
+    fun dismissDeviceRecovery()
+    fun setBiometricEnabled(enabled: Boolean)
+    fun requestBiometricUnlock()
     fun refresh()
     fun selectSubscription(subscription: Subscription)
     fun toggleVpn()
@@ -81,6 +100,9 @@ interface NivoraActions {
     fun replyTicket(body: String)
     fun closeTicketConversation()
     fun markNotificationsRead()
+    fun changePassword(currentPassword: String, newPassword: String)
+    fun clearNotifications()
+    fun clearTickets()
     fun openNetworkLab()
     fun createResellerCustomer(name: String, phone: String, password:String, note: String)
     fun resetResellerCustomerPassword(customer:ResellerCustomer,password:String)

@@ -202,4 +202,24 @@ data class PurchaseResult(val subscriptionUrl: String?, val discountToman: Int, 
 data class DiscountResult(val code: String, val percent: Int)
 data class ResetChallenge(val id: String, val debugCode: String?)
 
+data class DeviceRecoveryRequest(
+    val id: String?,
+    val status: String,
+    val message: String?
+)
+
+object DeviceRecoveryPolicy {
+    private val blockedDeviceCodes = setOf("DEVICE_ALREADY_BOUND", "DEVICE_LIMIT_REACHED")
+
+    fun canRequest(errorCode: String): Boolean = errorCode in blockedDeviceCodes
+
+    fun normalizeStatus(value: String?): String = when (value?.trim()?.lowercase()) {
+        "approved", "resolved", "accepted_reset" -> "approved"
+        "rejected", "dismissed", "denied" -> "rejected"
+        "expired", "cancelled", "canceled" -> "expired"
+        "pending", "queued", "accepted", "under_review", "in_review" -> "pending"
+        else -> "pending"
+    }
+}
+
 class ApiException(val code: String, val status: Int) : RuntimeException(code)

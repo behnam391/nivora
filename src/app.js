@@ -16,6 +16,8 @@ import { sendSms } from './sms.js';
 import { createTelegramRecovery } from './telegram-bot.js';
 import { createThreeXuiProvisioner } from './providers/three-x-ui.js';
 import { createHysteriaTicketService, HysteriaAuthError } from './hysteria-auth.js';
+import { claimCustomerDevice as claimDevice, deviceErrorBody, deviceSummary, hashDeviceId, listAccountDevices, readDeviceId, resetAccountDevices, revokeAccountDevice, setDeviceLimitOverride } from './device-bindings.js';
+import { deviceRecoveryErrorBody, deviceRecoveryStatus, listDeviceRecoveryRequests, requestDeviceRecovery, resolveDeviceRecovery } from './device-recovery.js';
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -159,16 +161,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   ).run(actor, action, type, id, details && JSON.stringify(details), new Date().toISOString());
   const notify = (accountId,title,body) => db.prepare('INSERT INTO notifications(id,account_id,title,body,created_at) VALUES(?,?,?,?,?)').run(randomUUID(),accountId,title,body,new Date().toISOString());
   const normalizePhone = value => String(value || '').replace(/[\s\-()]/g, '').replace(/^\+98/, '0').replace(/^0098/, '0');
-  const deviceHash = req => {
-    const id = String(req.headers['x-nivora-device'] || '').trim();
-    return /^[a-zA-Z0-9_-]{20,160}$/.test(id) ? createHash('sha256').update(id).digest('hex') : '';
-  };
-  const claimCustomerDevice = (account, req) => {
-    const hash = deviceHash(req);
-    if (!hash) return;
-    if (account.device_binding_hash && account.device_binding_hash !== hash) throw new Error('DEVICE_ALREADY_BOUND');
-    if (!account.device_binding_hash) db.prepare('UPDATE accounts SET device_binding_hash=?,device_bound_at=?,updated_at=? WHERE id=?').run(hash,new Date().toISOString(),new Date().toISOString(),account.id);
-  };
+  const deviceHash = req => hashDeviceId(readDeviceId(req));
+  const claimCustomerDevice = (account, req, options) => claimDevice(db,account,req,options);
   const codeHash = code => createHash('sha256').update(String(code)).digest('hex');
   const settingGet=key=>db.prepare('SELECT value FROM app_settings WHERE key=?').get(key)?.value;
   const settingSet=(key,value)=>db.prepare(`INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`).run(key,String(value),new Date().toISOString());
@@ -403,8 +397,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           WHERE s.access_token=? AND s.status='active'`).get(publicSubscriptionMatch[1]);
         if (!subscription) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_FOUND'); }
         const account = accountFromRequest(db, req, { requireDevice:enforceDeviceGateway });
-        const subscriptionAccount = subscription.account_id && db.prepare('SELECT role,device_binding_hash FROM accounts WHERE id=?').get(subscription.account_id);
-        if (enforceDeviceGateway && subscriptionAccount?.device_binding_hash && (!account || account.role !== 'customer' || account.id !== subscription.account_id)) { res.writeHead(401, {'content-type':'text/plain; charset=utf-8'}); return res.end('AUTH_REQUIRED'); }
+        const subscriptionAccount = subscription.account_id && db.prepare('SELECT role FROM accounts WHERE id=?').get(subscription.account_id);
+        if (enforceDeviceGateway && subscriptionAccount?.role === 'customer' && (!account || account.role !== 'customer' || account.id !== subscription.account_id)) { res.writeHead(401, {'content-type':'text/plain; charset=utf-8'}); return res.end('AUTH_REQUIRED'); }
         const upstream = subscription.upstream_subscription_url || subscription.subscription_url;
         if (!upstream) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_READY'); }
         const endpoints = subscription.location_id ? db.prepare(`SELECT label,host,port,mode,server_name,priority,active FROM location_endpoints WHERE location_id=? AND active=1 ORDER BY priority,created_at`).all(subscription.location_id) : [];
@@ -451,19 +445,38 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           supportId: process.env.SUPPORT_ID || '',telegramBotUsername:telegramConfig().enabled?telegramConfig().username:''
         });
       }
+      if(req.method==='POST'&&path==='/api/device-recovery/request'){
+        const body=await readJson(req),phone=normalizePhone(body.phone);
+        if(!/^09\d{9}$/.test(phone)||typeof body.password!=='string')return json(res,401,{error:'INVALID_CREDENTIALS'});
+        const account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(phone);
+        if(!account||!verifyPassword(body.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});
+        const requestedHash=deviceHash(req);if(!requestedHash)return json(res,403,{error:'DEVICE_REQUIRED'});
+        try{
+          const request=requestDeviceRecovery(db,{accountId:account.id,deviceHash:requestedHash});
+          if(request.created){
+            audit(account.id,'request','device_recovery',request.id,{phone:account.phone});
+            if(account.managed_by_reseller_id)notify(account.managed_by_reseller_id,'درخواست آزادسازی دستگاه',`${account.name} درخواست فعال‌سازی روی دستگاه جدید را ارسال کرد.`);
+          }
+          return json(res,202,request);
+        }catch(error){return json(res,error.status||400,deviceRecoveryErrorBody(error));}
+      }
+      const publicDeviceRecovery=path.match(/^\/api\/device-recovery\/request\/([A-Za-z0-9-]{20,80})$/);
+      if(req.method==='GET'&&publicDeviceRecovery){
+        try{return json(res,200,deviceRecoveryStatus(db,publicDeviceRecovery[1]));}
+        catch(error){return json(res,error.status||400,deviceRecoveryErrorBody(error));}
+      }
       if(req.method==='POST'&&path==='/api/customer/register'){
         const b=await readJson(req),phone=normalizePhone(b.phone);if(!b.name?.trim()||!/^09\d{9}$/.test(phone))return json(res,400,{error:'INVALID_ACCOUNT'});
         let password;try{password=hashPassword(b.password)}catch(e){return json(res,400,{error:e.message});}
-        const id=randomUUID(),now=new Date().toISOString(),bound=deviceHash(req);try{db.prepare(`INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt,device_binding_hash,device_bound_at) VALUES(?,?,?,'customer','active',0,?,?,?,?,?,?)`).run(id,phone,b.name.trim(),now,now,password.hash,password.salt,bound||null,bound?now:null);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(randomUUID(),id,now);}catch{return json(res,409,{error:'PHONE_ALREADY_EXISTS'});}
-        const session=createSession(db,id);audit(phone,'register','account',id);return json(res,201,{...session,account:{id,name:b.name.trim(),phone}});
+        const id=randomUUID(),now=new Date().toISOString();try{db.prepare(`INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt) VALUES(?,?,?,'customer','active',0,?,?,?,?)`).run(id,phone,b.name.trim(),now,now,password.hash,password.salt);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(randomUUID(),id,now);}catch{return json(res,409,{error:'PHONE_ALREADY_EXISTS'});}
+        const account=db.prepare('SELECT * FROM accounts WHERE id=?').get(id);let claimed=null;try{claimed=claimCustomerDevice(account,req);}catch(error){return json(res,error.status||403,deviceErrorBody(error));}const session=createSession(db,id,undefined,claimed?.id||null);audit(phone,'register','account',id);return json(res,201,{...session,account:{id,name:b.name.trim(),phone}});
       }
       if(req.method==='POST'&&path==='/api/customer/login'){
-        const b=await readJson(req),phone=normalizePhone(b.phone);if(!/^09\d{9}$/.test(phone)||typeof b.password!=='string')return json(res,401,{error:'INVALID_CREDENTIALS'});const account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(phone);if(!account||!verifyPassword(b.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});try{claimCustomerDevice(account,req)}catch(e){return json(res,403,{error:e.message})}const session=createSession(db,account.id);return json(res,200,{...session,account:{id:account.id,name:account.name,phone:account.phone}});
+        const b=await readJson(req),phone=normalizePhone(b.phone);if(!/^09\d{9}$/.test(phone)||typeof b.password!=='string')return json(res,401,{error:'INVALID_CREDENTIALS'});const account=db.prepare("SELECT * FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(phone);if(!account||!verifyPassword(b.password,account.password_salt,account.password_hash))return json(res,401,{error:'INVALID_CREDENTIALS'});let claimed=null;try{claimed=claimCustomerDevice(account,req)}catch(error){return json(res,error.status||403,deviceErrorBody(error))}const session=createSession(db,account.id,undefined,claimed?.id||null);return json(res,200,{...session,account:{id:account.id,name:account.name,phone:account.phone}});
       }
       if(req.method==='POST'&&path==='/api/customer/device/bind'){
         const account=accountFromRequest(db,req);if(!account||account.role!=='customer')return json(res,401,{error:'UNAUTHORIZED'});
-        try{claimCustomerDevice(account,req)}catch(e){return json(res,403,{error:e.message})}
-        return json(res,200,{bound:true});
+        try{const claimed=claimCustomerDevice(account,req,{required:true});return json(res,200,{bound:true,deviceId:claimed.id,...deviceSummary(db,account.id)});}catch(error){return json(res,error.status||403,deviceErrorBody(error))}
       }
       if(req.method==='POST'&&path==='/api/customer/password-reset/request'){
         const b=await readJson(req),phone=normalizePhone(b.phone);if(!/^09\d{9}$/.test(phone))return json(res,400,{error:'INVALID_PHONE'});
@@ -478,7 +491,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const b=await readJson(req),phone=normalizePhone(b.phone),row=db.prepare(`SELECT c.*,a.phone FROM password_reset_codes c JOIN accounts a ON a.id=c.account_id WHERE c.id=? AND a.phone=? AND c.consumed_at IS NULL`).get(b.resetId,phone);
         if(!row||row.expires_at<=new Date().toISOString()||row.attempts>=5)return json(res,400,{error:'RESET_CODE_INVALID'});
         if(row.code_hash!==codeHash(String(b.code||''))){db.prepare('UPDATE password_reset_codes SET attempts=attempts+1 WHERE id=?').run(row.id);return json(res,400,{error:'RESET_CODE_INVALID'});}
-        let password;try{password=hashPassword(b.newPassword)}catch(e){return json(res,400,{error:e.message});}const now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE accounts SET password_hash=?,password_salt=?,device_binding_hash=NULL,device_bound_at=NULL,updated_at=? WHERE id=?').run(password.hash,password.salt,now,row.account_id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(row.account_id);db.prepare('UPDATE password_reset_codes SET consumed_at=? WHERE id=?').run(now,row.id);db.exec('COMMIT');}catch{db.exec('ROLLBACK');return json(res,500,{error:'PASSWORD_RESET_FAILED'});}audit(phone,'confirm','password_reset_code',row.id);return json(res,200,{reset:true});
+        let password;try{password=hashPassword(b.newPassword)}catch(e){return json(res,400,{error:e.message});}const now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE accounts SET password_hash=?,password_salt=?,device_binding_hash=NULL,device_bound_at=NULL,updated_at=? WHERE id=?').run(password.hash,password.salt,now,row.account_id);db.prepare("UPDATE account_devices SET status='revoked',revoked_at=COALESCE(revoked_at,?),revoked_by=COALESCE(revoked_by,'password-reset') WHERE account_id=? AND status='active'").run(now,row.account_id);db.prepare("UPDATE hysteria_tickets SET revoked_at=COALESCE(revoked_at,?) WHERE account_id=? AND revoked_at IS NULL").run(now,row.account_id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(row.account_id);db.prepare('UPDATE password_reset_codes SET consumed_at=? WHERE id=?').run(now,row.id);db.exec('COMMIT');}catch{db.exec('ROLLBACK');return json(res,500,{error:'PASSWORD_RESET_FAILED'});}audit(phone,'confirm','password_reset_code',row.id);return json(res,200,{reset:true});
       }
       if(req.method==='POST'&&path==='/api/customer/password-reset-requests'){
         const b=await readJson(req),phone=String(b.phone||'').trim();
@@ -492,7 +505,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const hysteriaTicket=path.match(/^\/api\/customer\/subscriptions\/([^/]+)\/connect-ticket$/);
         if(req.method==='POST'&&hysteriaTicket){
           const hash=deviceHash(req);if(!hash)return json(res,403,{error:'DEVICE_REQUIRED'});
-          try{claimCustomerDevice(account,req);}catch(error){return json(res,403,{error:error.message});}
+          try{claimCustomerDevice(account,req,{required:true});}catch(error){return json(res,error.status||403,deviceErrorBody(error));}
           const body=await readJson(req),routeId=String(body.routeId||'auto').trim();
           if(routeId!=='auto'&&!/^[A-Za-z0-9_.-]{2,80}$/.test(routeId))return json(res,400,{error:'INVALID_HYSTERIA2_ROUTE'});
           try{
@@ -507,18 +520,35 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const wallet=getWalletStatement(db,account.id,25),panelStats=await readPanelStats();
         const rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.status,o.created_at,o.tracking_token,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.control_status,s.subscription_url,s.access_token subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.flag_emoji,l.city,(SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=o.location_id AND e.active=1) route_count FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.order_kind='purchase' ORDER BY o.created_at DESC LIMIT 100`).all(account.id);
           const orders=rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats));
-          const topups=db.prepare('SELECT id,amount_toman,receipt_reference,receipt_image_url,status,review_note,created_at,reviewed_at FROM wallet_topups WHERE account_id=? ORDER BY created_at DESC LIMIT 50').all(account.id),notifications=db.prepare('SELECT id,title,body,read_at,created_at FROM notifications WHERE account_id=? ORDER BY created_at DESC LIMIT 30').all(account.id),debts=db.prepare(`SELECT d.id,d.amount_toman,d.note,d.status,d.created_at,d.payment_reported_at,a.name reseller_name FROM reseller_debts d JOIN accounts a ON a.id=d.reseller_id WHERE d.customer_account_id=? AND d.status IN ('open','payment_reported') ORDER BY d.created_at DESC`).all(account.id);
-          return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,orders,topups,notifications,debts});
+          const topups=db.prepare('SELECT id,amount_toman,receipt_reference,receipt_image_url,status,review_note,created_at,reviewed_at FROM wallet_topups WHERE account_id=? ORDER BY created_at DESC LIMIT 50').all(account.id),notifications=db.prepare('SELECT id,title,body,read_at,created_at FROM notifications WHERE account_id=? AND dismissed_at IS NULL ORDER BY created_at DESC LIMIT 30').all(account.id),debts=db.prepare(`SELECT d.id,d.amount_toman,d.note,d.status,d.created_at,d.payment_reported_at,a.name reseller_name FROM reseller_debts d JOIN accounts a ON a.id=d.reseller_id WHERE d.customer_account_id=? AND d.status IN ('open','payment_reported') ORDER BY d.created_at DESC`).all(account.id);
+          return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,orders,topups,notifications,debts,device:deviceSummary(db,account.id)});
         }
         const debtPayment=path.match(/^\/api\/customer\/debts\/([^/]+)\/report-payment$/);
         if(debtPayment&&req.method==='POST'){
           const debt=db.prepare("SELECT * FROM reseller_debts WHERE id=? AND customer_account_id=? AND status='open'").get(debtPayment[1],account.id);if(!debt)return json(res,404,{error:'DEBT_NOT_FOUND'});const now=new Date().toISOString();db.prepare("UPDATE reseller_debts SET status='payment_reported',payment_reported_at=?,updated_at=? WHERE id=?").run(now,now,debt.id);notify(debt.reseller_id,'اعلام پرداخت بدهی',`${account.name} پرداخت بدهی ${debt.amount_toman.toLocaleString('fa-IR')} تومان را اعلام کرد.`);audit(account.id,'report_payment','reseller_debt',debt.id);return json(res,200,{status:'payment_reported'});
         }
         if(req.method==='POST'&&path==='/api/customer/discount/validate'){const b=await readJson(req),code=String(b.code||'').trim().toUpperCase(),discount=db.prepare(`SELECT d.*,(SELECT COUNT(*) FROM discount_redemptions WHERE discount_id=d.id) used,(SELECT COUNT(*) FROM discount_redemptions WHERE discount_id=d.id AND account_id=?) customer_used FROM discount_codes d WHERE d.code=? AND d.active=1`).get(account.id,code);if(!discount||(discount.expires_at&&discount.expires_at<=new Date().toISOString())||(discount.max_uses&&discount.used>=discount.max_uses)||discount.customer_used>=discount.per_customer_limit)return json(res,404,{error:'DISCOUNT_NOT_AVAILABLE'});return json(res,200,{code:discount.code,percent:discount.percent});}
-        if(req.method==='GET'&&path==='/api/customer/tickets'){const tickets=db.prepare(`SELECT t.*,(SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1) last_message FROM support_tickets t WHERE account_id=? ORDER BY updated_at DESC`).all(account.id);return json(res,200,tickets);}
+        if(req.method==='POST'&&path==='/api/customer/change-password'){
+          const b=await readJson(req);
+          if(!verifyPassword(b.currentPassword,account.password_salt,account.password_hash))return json(res,400,{error:'INVALID_CURRENT_PASSWORD'});
+          if(b.currentPassword===b.newPassword)return json(res,400,{error:'PASSWORD_UNCHANGED'});
+          let password;try{password=hashPassword(b.newPassword)}catch(error){return json(res,400,{error:error.message});}
+          const rawToken=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1],tokenHash=rawToken?createHash('sha256').update(rawToken).digest('hex'):'';
+          if(!tokenHash)return json(res,401,{error:'UNAUTHORIZED'});
+          const now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');
+          try{
+            db.prepare('UPDATE accounts SET password_hash=?,password_salt=?,updated_at=? WHERE id=?').run(password.hash,password.salt,now,account.id);
+            db.prepare('DELETE FROM account_sessions WHERE account_id=? AND token_hash<>?').run(account.id,tokenHash);
+            db.exec('COMMIT');
+          }catch(error){db.exec('ROLLBACK');return json(res,500,{error:'PASSWORD_CHANGE_FAILED'});}
+          audit(account.id,'change_password','account',account.id);return json(res,200,{changed:true,otherSessionsRevoked:true});
+        }
+        if(req.method==='GET'&&path==='/api/customer/tickets'){const tickets=db.prepare(`SELECT t.*,(SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1) last_message FROM support_tickets t WHERE account_id=? AND owner_archived_at IS NULL ORDER BY updated_at DESC`).all(account.id);return json(res,200,tickets);}
         if(req.method==='POST'&&path==='/api/customer/tickets'){const b=await readJson(req),subject=String(b.subject||'').trim(),body=String(b.body||'').trim();if(subject.length<3||body.length<3)return json(res,400,{error:'INVALID_TICKET'});const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO support_tickets(id,account_id,subject,status,created_at,updated_at) VALUES(?,?,?,'open',?,?)`).run(id,account.id,subject,now,now);db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),id,body,now);return json(res,201,{id,status:'open'});}
-        const customerTicket=path.match(/^\/api\/customer\/tickets\/([^/]+)$/);if(customerTicket&&req.method==='GET'){const ticket=db.prepare('SELECT * FROM support_tickets WHERE id=? AND account_id=?').get(customerTicket[1],account.id);if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});return json(res,200,{...ticket,messages:db.prepare('SELECT id,sender_role,body,created_at FROM ticket_messages WHERE ticket_id=? ORDER BY created_at').all(ticket.id)});}if(customerTicket&&req.method==='POST'){const ticket=db.prepare("SELECT * FROM support_tickets WHERE id=? AND account_id=? AND status<>'closed'").get(customerTicket[1],account.id),b=await readJson(req),body=String(b.body||'').trim();if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});if(body.length<2)return json(res,400,{error:'INVALID_MESSAGE'});const now=new Date().toISOString();db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),ticket.id,body,now);db.prepare("UPDATE support_tickets SET status='open',updated_at=? WHERE id=?").run(now,ticket.id);return json(res,201,{sent:true});}
+        const customerTicket=path.match(/^\/api\/customer\/tickets\/([^/]+)$/);if(customerTicket&&req.method==='GET'){const ticket=db.prepare('SELECT * FROM support_tickets WHERE id=? AND account_id=?').get(customerTicket[1],account.id);if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});return json(res,200,{...ticket,messages:db.prepare('SELECT id,sender_role,body,created_at FROM ticket_messages WHERE ticket_id=? ORDER BY created_at').all(ticket.id)});}if(customerTicket&&req.method==='POST'){const ticket=db.prepare("SELECT * FROM support_tickets WHERE id=? AND account_id=? AND status<>'closed'").get(customerTicket[1],account.id),b=await readJson(req),body=String(b.body||'').trim();if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});if(body.length<2)return json(res,400,{error:'INVALID_MESSAGE'});const now=new Date().toISOString();db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),ticket.id,body,now);db.prepare("UPDATE support_tickets SET status='open',owner_archived_at=NULL,updated_at=? WHERE id=?").run(now,ticket.id);return json(res,201,{sent:true});}
         if(req.method==='POST'&&path==='/api/customer/notifications/read'){db.prepare('UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE account_id=?').run(new Date().toISOString(),account.id);return json(res,200,{success:true});}
+        if(req.method==='DELETE'&&path==='/api/customer/notifications'){const now=new Date().toISOString(),result=db.prepare('UPDATE notifications SET dismissed_at=?,read_at=COALESCE(read_at,?) WHERE account_id=? AND dismissed_at IS NULL').run(now,now,account.id);return json(res,200,{cleared:Number(result.changes)});}
+        if(req.method==='DELETE'&&path==='/api/customer/tickets'){const now=new Date().toISOString(),result=db.prepare('UPDATE support_tickets SET owner_archived_at=? WHERE account_id=? AND owner_archived_at IS NULL').run(now,account.id);return json(res,200,{cleared:Number(result.changes)});}
         if(req.method==='POST'&&path==='/api/customer/wallet/topups'){const b=await readJson(req),amount=Number(b.amountToman);if(!Number.isInteger(amount)||amount<1000||(!b.receiptReference&&!b.receiptImageUrl))return json(res,400,{error:'INVALID_TOPUP'});const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO wallet_topups(id,account_id,amount_toman,receipt_reference,receipt_image_url,status,created_at) VALUES(?,?,?,?,?,'under_review',?)`).run(id,account.id,amount,b.receiptReference||null,b.receiptImageUrl||null,now);audit(account.id,'create','wallet_topup',id,{amountToman:amount});return json(res,201,{id,status:'under_review',amountToman:amount});}
         if(req.method==='POST'&&path==='/api/customer/wallet/purchase'){
           const b=await readJson(req),plan=db.prepare('SELECT * FROM plans WHERE id=? AND active=1').get(b.planId);if(!plan)return json(res,404,{error:'PLAN_NOT_FOUND'});const location=selectLocationForPlan(db,plan.id);if(!location)return json(res,409,{error:'NO_CAPACITY'});
@@ -545,7 +575,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             (SELECT COUNT(*) FROM orders o JOIN subscriptions s ON s.order_id=o.id WHERE o.reseller_id=? AND o.order_kind='purchase' AND s.status='active' AND COALESCE(s.control_status,'active')='active') active_subscriptions,
             (SELECT COALESCE(SUM(reseller_sale_price_toman),0) FROM orders WHERE reseller_id=? AND status='approved') total_revenue_toman,
             (SELECT COALESCE(SUM(CAST(amount_transferred_irr/10 AS INTEGER)),0) FROM orders WHERE reseller_id=? AND status='approved') total_cost_toman`).get(account.id,account.id,account.id,account.id,account.id);
-          const notifications=db.prepare('SELECT id,title,body,read_at,created_at FROM notifications WHERE account_id=? ORDER BY created_at DESC LIMIT 30').all(account.id);
+          const notifications=db.prepare('SELECT id,title,body,read_at,created_at FROM notifications WHERE account_id=? AND dismissed_at IS NULL ORDER BY created_at DESC LIMIT 30').all(account.id);
           const debts=db.prepare(`SELECT d.id,d.customer_account_id,d.amount_toman,d.note,d.status,d.created_at,d.payment_reported_at,a.name customer_name,a.phone customer_phone FROM reseller_debts d JOIN accounts a ON a.id=d.customer_account_id WHERE d.reseller_id=? AND d.status IN ('open','payment_reported') ORDER BY d.created_at DESC LIMIT 100`).all(account.id);
           const walletTransfers=db.prepare(`SELECT t.id,t.customer_account_id,t.amount_toman,t.reversed_amount_toman,t.note,t.status,t.created_at,a.name customer_name,a.phone customer_phone FROM reseller_wallet_transfers t JOIN accounts a ON a.id=t.customer_account_id WHERE t.reseller_id=? ORDER BY t.created_at DESC LIMIT 100`).all(account.id);
           return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,notifications,debts,walletTransfers,customersCount:summary.customers_count,salesCount:summary.sales_count,activeSubscriptions:summary.active_subscriptions,totalRevenueToman:summary.total_revenue_toman,totalProfitToman:summary.total_revenue_toman-summary.total_cost_toman});
@@ -574,6 +604,42 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           let password;try{password=hashPassword(suppliedPassword||temporaryPassword)}catch(e){return json(res,400,{error:e.message});}
           if(db.prepare('SELECT id FROM accounts WHERE phone=?').get(customer.phone)||db.prepare('SELECT id FROM reseller_customers WHERE phone=?').get(customer.phone))return json(res,409,{error:'PHONE_ALREADY_EXISTS'});
           const id=randomUUID(),customerAccountId=randomUUID(),now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{db.prepare(`INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt,managed_by_reseller_id) VALUES(?,?,?,'customer','active',0,?,?,?,?,?)`).run(customerAccountId,customer.phone,customer.name,now,now,password.hash,password.salt,account.id);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(randomUUID(),customerAccountId,now);db.prepare("INSERT INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at,account_id) VALUES(?,?,?,?,?,'active',?,?,?)").run(id,account.id,customer.name,customer.phone,customer.note,now,now,customerAccountId);db.exec('COMMIT');}catch{db.exec('ROLLBACK');return json(res,409,{error:'PHONE_ALREADY_EXISTS'});}audit(account.id,'create','reseller_customer',id,{accountId:customerAccountId});notify(customerAccountId,'حساب شما ساخته شد','همکار فروش نیورا حساب کاربری شما را ایجاد کرد.');return json(res,201,{id,...customer,account_id:customerAccountId,created_at:now,updated_at:now,...(temporaryPassword?{temporaryPassword}:{})});
+        }
+        const managedDeviceCustomer=id=>db.prepare(`SELECT rc.id,a.id account_id FROM reseller_customers rc
+          JOIN accounts a ON a.id=rc.account_id AND a.role='customer' AND a.managed_by_reseller_id=rc.reseller_id
+          WHERE rc.id=? AND rc.reseller_id=? AND rc.status='active'`).get(id,account.id);
+        if(req.method==='GET'&&path==='/api/reseller/device-recovery-requests'){
+          return json(res,200,listDeviceRecoveryRequests(db,{resellerId:account.id,status:url.searchParams.get('status')||null}));
+        }
+        const resellerDeviceRecoveryAction=path.match(/^\/api\/reseller\/device-recovery-requests\/([^/]+)\/(approve|reject)$/);
+        if(req.method==='POST'&&resellerDeviceRecoveryAction){
+          const request=db.prepare('SELECT account_id FROM device_recovery_requests WHERE id=?').get(resellerDeviceRecoveryAction[1]);
+          try{
+            const result=resolveDeviceRecovery(db,resellerDeviceRecoveryAction[1],{action:resellerDeviceRecoveryAction[2],actor:account.id,resellerId:account.id});
+            if(request&&result.resolvedNow){notify(request.account_id,result.status==='approved'?'دستگاه جدید تأیید شد':'درخواست دستگاه رد شد',result.message);audit(account.id,resellerDeviceRecoveryAction[2],'device_recovery',resellerDeviceRecoveryAction[1]);}
+            return json(res,200,result);
+          }catch(error){return json(res,error.status||400,deviceRecoveryErrorBody(error));}
+        }
+        const resellerDevicesMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)\/devices$/);
+        if(req.method==='GET'&&resellerDevicesMatch){
+          const customer=managedDeviceCustomer(resellerDevicesMatch[1]);if(!customer)return json(res,403,{error:'CUSTOMER_DEVICE_NOT_MANAGED'});
+          const recoveryRequests=listDeviceRecoveryRequests(db,{resellerId:account.id}).filter(request=>request.account_id===customer.account_id&&request.status==='pending');
+          return json(res,200,{...deviceSummary(db,customer.account_id),devices:listAccountDevices(db,customer.account_id),recoveryRequests});
+        }
+        const resellerDeviceLimitMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)\/device-limit$/);
+        if(req.method==='PATCH'&&resellerDeviceLimitMatch){
+          const customer=managedDeviceCustomer(resellerDeviceLimitMatch[1]);if(!customer)return json(res,403,{error:'CUSTOMER_DEVICE_NOT_MANAGED'});
+          const body=await readJson(req),limit=body.deviceLimit===undefined?body.limit:body.deviceLimit;try{const result=setDeviceLimitOverride(db,customer.account_id,limit);audit(account.id,'set_device_limit','reseller_customer',customer.id,{limit:result.deviceLimitOverride});return json(res,200,result);}catch(error){return json(res,error.status||400,deviceErrorBody(error));}
+        }
+        const resellerDeviceMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)\/devices\/([^/]+)$/);
+        if(req.method==='DELETE'&&resellerDeviceMatch){
+          const customer=managedDeviceCustomer(resellerDeviceMatch[1]);if(!customer)return json(res,403,{error:'CUSTOMER_DEVICE_NOT_MANAGED'});
+          try{const result=revokeAccountDevice(db,customer.account_id,resellerDeviceMatch[2],account.id);audit(account.id,'revoke_device','reseller_customer',customer.id,{deviceId:resellerDeviceMatch[2]});return json(res,200,result);}catch(error){return json(res,error.status||400,deviceErrorBody(error));}
+        }
+        const resellerDeviceResetMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)\/device-reset$/);
+        if(req.method==='POST'&&resellerDeviceResetMatch){
+          const customer=managedDeviceCustomer(resellerDeviceResetMatch[1]);if(!customer)return json(res,403,{error:'CUSTOMER_DEVICE_NOT_MANAGED'});
+          try{resetAccountDevices(db,customer.account_id,account.id);audit(account.id,'reset_device','reseller_customer',customer.id);notify(customer.account_id,'دستگاه‌های حساب آزاد شد','اکنون می‌توانید حساب را روی دستگاه جدید فعال کنید.');return json(res,200,{deviceBound:false,sessionsRevoked:true});}catch(error){return json(res,error.status||400,deviceErrorBody(error));}
         }
         const resellerResetMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)\/reset-password$/);
         if(resellerResetMatch&&req.method==='POST'){
@@ -619,9 +685,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if(resellerDebtAction&&req.method==='POST'){
           const debt=db.prepare("SELECT d.*,a.name customer_name FROM reseller_debts d JOIN accounts a ON a.id=d.customer_account_id WHERE d.id=? AND d.reseller_id=? AND d.status IN ('open','payment_reported')").get(resellerDebtAction[1],account.id);if(!debt)return json(res,404,{error:'DEBT_NOT_FOUND'});const now=new Date().toISOString(),action=resellerDebtAction[2];db.prepare("UPDATE reseller_debts SET status=?,settled_at=?,settled_by=?,updated_at=? WHERE id=?").run(action==='settle'?'settled':'cancelled',now,account.id,now,debt.id);notify(debt.customer_account_id,action==='settle'?'پرداخت بدهی تأیید شد':'بدهی لغو شد',debt.note);audit(account.id,action,'reseller_debt',debt.id);return json(res,200,{status:action==='settle'?'settled':'cancelled'});
         }
-        if(req.method==='GET'&&path==='/api/reseller/tickets'){const tickets=db.prepare(`SELECT t.*,(SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1) last_message FROM support_tickets t WHERE account_id=? ORDER BY updated_at DESC`).all(account.id);return json(res,200,tickets);}
+        if(req.method==='GET'&&path==='/api/reseller/tickets'){const tickets=db.prepare(`SELECT t.*,(SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1) last_message FROM support_tickets t WHERE account_id=? AND owner_archived_at IS NULL ORDER BY updated_at DESC`).all(account.id);return json(res,200,tickets);}
         if(req.method==='POST'&&path==='/api/reseller/tickets'){const b=await readJson(req),subject=String(b.subject||'').trim(),body=String(b.body||'').trim();if(subject.length<3||body.length<3)return json(res,400,{error:'INVALID_TICKET'});const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO support_tickets(id,account_id,subject,status,created_at,updated_at) VALUES(?,?,?,'open',?,?)`).run(id,account.id,subject,now,now);db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),id,body,now);return json(res,201,{id,status:'open'});}
-        const resellerTicket=path.match(/^\/api\/reseller\/tickets\/([^/]+)$/);if(resellerTicket&&req.method==='GET'){const ticket=db.prepare('SELECT * FROM support_tickets WHERE id=? AND account_id=?').get(resellerTicket[1],account.id);if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});return json(res,200,{...ticket,messages:db.prepare('SELECT id,sender_role,body,created_at FROM ticket_messages WHERE ticket_id=? ORDER BY created_at').all(ticket.id)});}if(resellerTicket&&req.method==='POST'){const ticket=db.prepare("SELECT * FROM support_tickets WHERE id=? AND account_id=? AND status<>'closed'").get(resellerTicket[1],account.id),b=await readJson(req),body=String(b.body||'').trim();if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});if(body.length<2)return json(res,400,{error:'INVALID_MESSAGE'});const now=new Date().toISOString();db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),ticket.id,body,now);db.prepare("UPDATE support_tickets SET status='open',updated_at=? WHERE id=?").run(now,ticket.id);return json(res,201,{sent:true});}
+        const resellerTicket=path.match(/^\/api\/reseller\/tickets\/([^/]+)$/);if(resellerTicket&&req.method==='GET'){const ticket=db.prepare('SELECT * FROM support_tickets WHERE id=? AND account_id=?').get(resellerTicket[1],account.id);if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});return json(res,200,{...ticket,messages:db.prepare('SELECT id,sender_role,body,created_at FROM ticket_messages WHERE ticket_id=? ORDER BY created_at').all(ticket.id)});}if(resellerTicket&&req.method==='POST'){const ticket=db.prepare("SELECT * FROM support_tickets WHERE id=? AND account_id=? AND status<>'closed'").get(resellerTicket[1],account.id),b=await readJson(req),body=String(b.body||'').trim();if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});if(body.length<2)return json(res,400,{error:'INVALID_MESSAGE'});const now=new Date().toISOString();db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),ticket.id,body,now);db.prepare("UPDATE support_tickets SET status='open',owner_archived_at=NULL,updated_at=? WHERE id=?").run(now,ticket.id);return json(res,201,{sent:true});}
+        if(req.method==='DELETE'&&path==='/api/reseller/notifications'){const now=new Date().toISOString(),result=db.prepare('UPDATE notifications SET dismissed_at=?,read_at=COALESCE(read_at,?) WHERE account_id=? AND dismissed_at IS NULL').run(now,now,account.id);return json(res,200,{cleared:Number(result.changes)});}
+        if(req.method==='DELETE'&&path==='/api/reseller/tickets'){const now=new Date().toISOString(),result=db.prepare('UPDATE support_tickets SET owner_archived_at=? WHERE account_id=? AND owner_archived_at IS NULL').run(now,account.id);return json(res,200,{cleared:Number(result.changes)});}
         const resellerCustomerMatch=path.match(/^\/api\/reseller\/customers\/([^/]+)$/);
         if(resellerCustomerMatch&&req.method==='GET'){
           const customer=db.prepare("SELECT rc.*,CASE WHEN a.managed_by_reseller_id=rc.reseller_id THEN 1 ELSE 0 END password_managed FROM reseller_customers rc LEFT JOIN accounts a ON a.id=rc.account_id WHERE rc.id=? AND rc.reseller_id=? AND rc.status='active'").get(resellerCustomerMatch[1],account.id);if(!customer)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});
@@ -779,8 +847,21 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='POST'&&path==='/api/admin/discounts'){const b=await readJson(req),code=String(b.code||'').trim().toUpperCase(),percent=Number(b.percent),maxUses=Math.max(Number(b.maxUses)||0,0),limit=Math.max(Number(b.perCustomerLimit)||1,1);if(!/^[A-Z0-9_-]{3,30}$/.test(code)||!Number.isInteger(percent)||percent<1||percent>100)return json(res,400,{error:'INVALID_DISCOUNT'});const id=randomUUID(),now=new Date().toISOString();try{db.prepare(`INSERT INTO discount_codes(id,code,percent,max_uses,per_customer_limit,expires_at,active,created_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?)`).run(id,code,percent,maxUses,limit,b.expiresAt||null,now,now);}catch{return json(res,409,{error:'DISCOUNT_EXISTS'});}return json(res,201,{id,code});}
       const discountMatch=path.match(/^\/api\/admin\/discounts\/([^/]+)$/);if(req.method==='PATCH'&&discountMatch){const old=db.prepare('SELECT * FROM discount_codes WHERE id=?').get(discountMatch[1]);if(!old)return json(res,404,{error:'DISCOUNT_NOT_FOUND'});const b=await readJson(req),percent=Number(b.percent??old.percent),maxUses=Number(b.maxUses??old.max_uses),limit=Number(b.perCustomerLimit??old.per_customer_limit);if(!Number.isInteger(percent)||percent<1||percent>100||maxUses<0||limit<1)return json(res,400,{error:'INVALID_DISCOUNT'});db.prepare('UPDATE discount_codes SET percent=?,max_uses=?,per_customer_limit=?,expires_at=?,active=?,updated_at=? WHERE id=?').run(percent,maxUses,limit,b.expiresAt??old.expires_at,(b.active??Boolean(old.active))?1:0,new Date().toISOString(),old.id);return json(res,200,{id:old.id});}
       if(req.method==='GET'&&path==='/api/admin/tickets'){return json(res,200,db.prepare(`SELECT t.*,a.name customer_name,a.phone,(SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1) last_message FROM support_tickets t JOIN accounts a ON a.id=t.account_id ORDER BY CASE t.status WHEN 'open' THEN 0 WHEN 'answered' THEN 1 ELSE 2 END,t.updated_at DESC`).all());}
-      if(req.method==='GET'&&path==='/api/admin/notifications'){const openTickets=db.prepare("SELECT COUNT(*) count FROM support_tickets WHERE status='open'").get().count,pendingOrders=db.prepare("SELECT COUNT(*) count FROM orders WHERE status='under_review'").get().count,pendingTopups=db.prepare("SELECT COUNT(*) count FROM wallet_topups WHERE status='under_review'").get().count,pendingResets=db.prepare("SELECT COUNT(*) count FROM password_reset_requests WHERE status='pending'").get().count,latest=db.prepare(`SELECT 'ticket' type,t.subject title,a.name||' · '||COALESCE((SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1),'') body,t.updated_at created_at FROM support_tickets t JOIN accounts a ON a.id=t.account_id WHERE t.status='open' UNION ALL SELECT 'order','پرداخت در انتظار بررسی',customer_name||' · '||phone,created_at FROM orders WHERE status='under_review' UNION ALL SELECT 'topup','شارژ کیف پول در انتظار بررسی',a.name||' · '||w.amount_toman||' تومان',w.created_at FROM wallet_topups w JOIN accounts a ON a.id=w.account_id WHERE w.status='under_review' ORDER BY created_at DESC LIMIT 30`).all();return json(res,200,{counts:{openTickets,pendingOrders,pendingTopups,pendingResets},items:latest});}
-      const adminTicket=path.match(/^\/api\/admin\/tickets\/([^/]+)$/);if(adminTicket&&req.method==='GET'){const ticket=db.prepare(`SELECT t.*,a.name customer_name,a.phone FROM support_tickets t JOIN accounts a ON a.id=t.account_id WHERE t.id=?`).get(adminTicket[1]);if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});return json(res,200,{...ticket,messages:db.prepare('SELECT id,sender_role,body,created_at FROM ticket_messages WHERE ticket_id=? ORDER BY created_at').all(ticket.id)});}if(adminTicket&&req.method==='POST'){const ticket=db.prepare('SELECT * FROM support_tickets WHERE id=?').get(adminTicket[1]),b=await readJson(req),body=String(b.body||'').trim();if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});if(b.close===true){db.prepare("UPDATE support_tickets SET status='closed',updated_at=? WHERE id=?").run(new Date().toISOString(),ticket.id);notify(ticket.account_id,'تیکت بسته شد',ticket.subject);return json(res,200,{status:'closed'});}if(body.length<2)return json(res,400,{error:'INVALID_MESSAGE'});const now=new Date().toISOString();db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'admin',?,?)`).run(randomUUID(),ticket.id,body,now);db.prepare("UPDATE support_tickets SET status='answered',updated_at=? WHERE id=?").run(now,ticket.id);notify(ticket.account_id,'پاسخ پشتیبانی',ticket.subject);return json(res,201,{sent:true});}
+      if(req.method==='GET'&&path==='/api/admin/notifications'){
+        const openTickets=db.prepare("SELECT COUNT(*) count FROM support_tickets WHERE status='open'").get().count;
+        const pendingOrders=db.prepare("SELECT COUNT(*) count FROM orders WHERE status='under_review'").get().count;
+        const pendingTopups=db.prepare("SELECT COUNT(*) count FROM wallet_topups WHERE status='under_review'").get().count;
+        const pendingResets=db.prepare("SELECT COUNT(*) count FROM password_reset_requests WHERE status='pending'").get().count;
+        const pendingDevices=db.prepare("SELECT COUNT(*) count FROM device_recovery_requests WHERE status='pending'").get().count;
+        const latest=db.prepare(`SELECT 'ticket' type,t.subject title,a.name||' · '||COALESCE((SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1),'') body,t.updated_at created_at
+          FROM support_tickets t JOIN accounts a ON a.id=t.account_id WHERE t.status='open'
+          UNION ALL SELECT 'order','پرداخت در انتظار بررسی',customer_name||' · '||phone,created_at FROM orders WHERE status='under_review'
+          UNION ALL SELECT 'topup','شارژ کیف پول در انتظار بررسی',a.name||' · '||w.amount_toman||' تومان',w.created_at FROM wallet_topups w JOIN accounts a ON a.id=w.account_id WHERE w.status='under_review'
+          UNION ALL SELECT 'device_recovery','درخواست آزادسازی دستگاه',a.name||' · '||a.phone,r.requested_at FROM device_recovery_requests r JOIN accounts a ON a.id=r.account_id WHERE r.status='pending'
+          ORDER BY created_at DESC LIMIT 30`).all();
+        return json(res,200,{counts:{openTickets,pendingOrders,pendingTopups,pendingResets,pendingDevices},items:latest});
+      }
+      const adminTicket=path.match(/^\/api\/admin\/tickets\/([^/]+)$/);if(adminTicket&&req.method==='GET'){const ticket=db.prepare(`SELECT t.*,a.name customer_name,a.phone FROM support_tickets t JOIN accounts a ON a.id=t.account_id WHERE t.id=?`).get(adminTicket[1]);if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});return json(res,200,{...ticket,messages:db.prepare('SELECT id,sender_role,body,created_at FROM ticket_messages WHERE ticket_id=? ORDER BY created_at').all(ticket.id)});}if(adminTicket&&req.method==='POST'){const ticket=db.prepare('SELECT * FROM support_tickets WHERE id=?').get(adminTicket[1]),b=await readJson(req),body=String(b.body||'').trim();if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});if(b.close===true){db.prepare("UPDATE support_tickets SET status='closed',owner_archived_at=NULL,updated_at=? WHERE id=?").run(new Date().toISOString(),ticket.id);notify(ticket.account_id,'تیکت بسته شد',ticket.subject);return json(res,200,{status:'closed'});}if(body.length<2)return json(res,400,{error:'INVALID_MESSAGE'});const now=new Date().toISOString();db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'admin',?,?)`).run(randomUUID(),ticket.id,body,now);db.prepare("UPDATE support_tickets SET status='answered',owner_archived_at=NULL,updated_at=? WHERE id=?").run(now,ticket.id);notify(ticket.account_id,'پاسخ پشتیبانی',ticket.subject);return json(res,201,{sent:true});}
 
       if (req.method === 'GET' && path === '/api/admin/plans') {
         return json(res, 200, db.prepare('SELECT * FROM plans ORDER BY sort_order,name').all().map(planFromRow));
@@ -848,9 +929,21 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
       if (req.method === 'GET' && path === '/api/admin/accounts') {
         const role=url.searchParams.get('role');
-        const base=`SELECT a.id,a.phone,a.name,a.role,a.status,a.default_discount_percent,a.created_at,a.updated_at,a.device_bound_at,CASE WHEN a.device_binding_hash IS NULL THEN 0 ELSE 1 END device_bound,COALESCE(w.balance_toman,0) balance_toman FROM accounts a LEFT JOIN wallet_accounts w ON w.account_id=a.id`;
+        const base=`SELECT a.id,a.phone,a.name,a.role,a.status,a.default_discount_percent,a.device_limit_override,a.created_at,a.updated_at,a.device_bound_at,CASE WHEN EXISTS(SELECT 1 FROM account_devices d WHERE d.account_id=a.id AND d.status='active') OR a.device_binding_hash IS NOT NULL THEN 1 ELSE 0 END device_bound,(SELECT COUNT(*) FROM device_recovery_requests r WHERE r.account_id=a.id AND r.status='pending') device_recovery_pending,COALESCE(w.balance_toman,0) balance_toman FROM accounts a LEFT JOIN wallet_accounts w ON w.account_id=a.id`;
         const rows=role?db.prepare(`${base} WHERE a.role=? ORDER BY a.created_at DESC`).all(role):db.prepare(`${base} ORDER BY a.created_at DESC`).all();
-        return json(res,200,rows);
+        return json(res,200,rows.map(row=>row.role==='customer'?{...row,...deviceSummary(db,row.id)}:row));
+      }
+      if(req.method==='GET'&&path==='/api/admin/device-recovery-requests'){
+        return json(res,200,listDeviceRecoveryRequests(db,{status:url.searchParams.get('status')||null}));
+      }
+      const adminDeviceRecoveryAction=path.match(/^\/api\/admin\/device-recovery-requests\/([^/]+)\/(approve|reject)$/);
+      if(req.method==='POST'&&adminDeviceRecoveryAction){
+        const request=db.prepare('SELECT account_id FROM device_recovery_requests WHERE id=?').get(adminDeviceRecoveryAction[1]);
+        try{
+          const result=resolveDeviceRecovery(db,adminDeviceRecoveryAction[1],{action:adminDeviceRecoveryAction[2],actor:'admin'});
+          if(request&&result.resolvedNow){notify(request.account_id,result.status==='approved'?'دستگاه جدید تأیید شد':'درخواست دستگاه رد شد',result.message);audit('admin',adminDeviceRecoveryAction[2],'device_recovery',adminDeviceRecoveryAction[1]);}
+          return json(res,200,result);
+        }catch(error){return json(res,error.status||400,deviceRecoveryErrorBody(error));}
       }
       if(req.method==='GET'&&path==='/api/admin/password-reset-requests'){
         return json(res,200,db.prepare(`SELECT r.id,r.status,r.requested_at,r.resolved_at,a.id account_id,a.name,a.phone FROM password_reset_requests r JOIN accounts a ON a.id=r.account_id ORDER BY CASE r.status WHEN 'pending' THEN 0 ELSE 1 END,r.requested_at DESC LIMIT 200`).all());
@@ -868,10 +961,24 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         audit('admin','create','account',id,{role:b.role,phone:b.phone});
         return json(res,201,{id,phone:b.phone,name:b.name.trim(),role:b.role,status:'active',defaultDiscountPercent:Number(b.defaultDiscountPercent)||0});
       }
+      const accountDevicesMatch=path.match(/^\/api\/admin\/accounts\/([^/]+)\/devices$/);
+      if(req.method==='GET'&&accountDevicesMatch){
+        const account=db.prepare("SELECT id FROM accounts WHERE id=? AND role='customer'").get(accountDevicesMatch[1]);if(!account)return json(res,404,{error:'ACCOUNT_NOT_FOUND'});
+        const recoveryRequests=listDeviceRecoveryRequests(db).filter(request=>request.account_id===account.id&&request.status==='pending');
+        return json(res,200,{...deviceSummary(db,account.id),devices:listAccountDevices(db,account.id),recoveryRequests});
+      }
+      const accountDeviceLimitMatch=path.match(/^\/api\/admin\/accounts\/([^/]+)\/device-limit$/);
+      if(req.method==='PATCH'&&accountDeviceLimitMatch){
+        const body=await readJson(req),limit=body.deviceLimit===undefined?body.limit:body.deviceLimit;try{const result=setDeviceLimitOverride(db,accountDeviceLimitMatch[1],limit);audit('admin','set_device_limit','account',accountDeviceLimitMatch[1],{limit:result.deviceLimitOverride});return json(res,200,result);}catch(error){return json(res,error.status||400,deviceErrorBody(error));}
+      }
+      const accountDeviceMatch=path.match(/^\/api\/admin\/accounts\/([^/]+)\/devices\/([^/]+)$/);
+      if(req.method==='DELETE'&&accountDeviceMatch){
+        try{const result=revokeAccountDevice(db,accountDeviceMatch[1],accountDeviceMatch[2],'admin');audit('admin','revoke_device','account',accountDeviceMatch[1],{deviceId:accountDeviceMatch[2]});return json(res,200,result);}catch(error){return json(res,error.status||400,deviceErrorBody(error));}
+      }
       const accountDeviceResetMatch=path.match(/^\/api\/admin\/accounts\/([^/]+)\/device-reset$/);
       if(req.method==='POST'&&accountDeviceResetMatch){
         const account=db.prepare("SELECT id,phone FROM accounts WHERE id=? AND role='customer'").get(accountDeviceResetMatch[1]);if(!account)return json(res,404,{error:'ACCOUNT_NOT_FOUND'});
-        const now=new Date().toISOString();db.exec('BEGIN IMMEDIATE');try{db.prepare('UPDATE accounts SET device_binding_hash=NULL,device_bound_at=NULL,updated_at=? WHERE id=?').run(now,account.id);db.prepare('DELETE FROM account_sessions WHERE account_id=?').run(account.id);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
+        try{resetAccountDevices(db,account.id,'admin');}catch(error){return json(res,error.status||400,deviceErrorBody(error));}
         audit('admin','reset_device','account',account.id,{phone:account.phone});notify(account.id,'دستگاه حساب آزاد شد','اکنون می‌توانید حساب را روی گوشی جدید فعال کنید.');return json(res,200,{id:account.id,deviceBound:false,sessionsRevoked:true});
       }
       const accountMatch=path.match(/^\/api\/admin\/accounts\/([^/]+)$/);

@@ -106,6 +106,24 @@ test('node callback accepts bounded reconnects with one stable traffic identity'
   assert.ok(ctx.db.prepare('SELECT consumed_at FROM hysteria_tickets').get().consumed_at);
 });
 
+test('two authorized devices receive distinct Hysteria identities and can be revoked independently', async t => {
+  const ctx=await fixture();t.after(()=>ctx.server.close());
+  const secondDevice='nivora-test-device-id-0000000002',now=new Date().toISOString();
+  ctx.db.prepare('UPDATE accounts SET device_limit_override=2 WHERE id=?').run(ctx.accountId);
+  ctx.db.prepare(`INSERT INTO account_devices(id,account_id,device_hash,status,first_seen_at,last_seen_at)
+    VALUES('second-device',?,?,'active',?,?)`).run(ctx.accountId,hash(secondDevice),now,now);
+  const firstTicket=await (await issue(ctx)).json();
+  const secondHeaders={...ctx.customerHeaders,'x-nivora-device':secondDevice};
+  const secondTicket=await (await issue(ctx,secondHeaders)).json();
+  const firstToken=decodeURIComponent(new URL(firstTicket.uri).username),secondToken=decodeURIComponent(new URL(secondTicket.uri).username);
+  let firstAuth=await (await authenticate(ctx,firstToken)).json(),secondAuth=await (await authenticate(ctx,secondToken)).json();
+  assert.equal(firstAuth.ok,true);assert.equal(secondAuth.ok,true);assert.notEqual(firstAuth.id,secondAuth.id);
+  ctx.db.prepare("UPDATE account_devices SET status='revoked',revoked_at=? WHERE id='second-device'").run(new Date().toISOString());
+  secondAuth=await (await authenticate(ctx,secondToken)).json();
+  firstAuth=await (await authenticate(ctx,firstToken)).json();
+  assert.deepEqual(secondAuth,{ok:false,id:''});assert.equal(firstAuth.ok,true);
+});
+
 test('node authentication rejects wrong node credentials and tampered HMAC tickets', async t => {
   const ctx=await fixture();t.after(()=>ctx.server.close());
   const ticket=await (await issue(ctx)).json();
@@ -120,7 +138,7 @@ test('node authentication rejects wrong node credentials and tampered HMAC ticke
   assert.deepEqual(await response.json(),{ok:false,id:''});
 });
 
-test('auth callback rechecks suspension and current device binding after ticket issuance', async t => {
+test('auth callback rechecks suspension and current device membership after ticket issuance', async t => {
   const ctx=await fixture();t.after(()=>ctx.server.close());
   let ticket=await (await issue(ctx)).json();
   let token=decodeURIComponent(new URL(ticket.uri).username);
@@ -131,7 +149,7 @@ test('auth callback rechecks suspension and current device binding after ticket 
   ctx.db.prepare("UPDATE subscriptions SET control_status='active' WHERE id=?").run(ctx.subscriptionId);
   ticket=await (await issue(ctx)).json();
   token=decodeURIComponent(new URL(ticket.uri).username);
-  ctx.db.prepare('UPDATE accounts SET device_binding_hash=? WHERE id=?').run(hash('another-device-id-000000000000'),ctx.accountId);
+  ctx.db.prepare("UPDATE account_devices SET status='revoked',revoked_at=? WHERE account_id=? AND status='active'").run(new Date().toISOString(),ctx.accountId);
   response=await authenticate(ctx,token);
   assert.deepEqual(await response.json(),{ok:false,id:''});
 });

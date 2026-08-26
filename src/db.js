@@ -72,6 +72,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       role TEXT NOT NULL CHECK(role IN ('customer','reseller','staff','admin')),
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','suspended')),
       default_discount_percent INTEGER NOT NULL DEFAULT 0 CHECK(default_discount_percent BETWEEN 0 AND 100),
+      device_limit_override INTEGER CHECK(device_limit_override IS NULL OR device_limit_override BETWEEN 1 AND 10),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -166,9 +167,23 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
     CREATE TABLE IF NOT EXISTS account_sessions (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL REFERENCES accounts(id),
+      device_id TEXT REFERENCES account_devices(id),
       token_hash TEXT NOT NULL UNIQUE,
       expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS account_devices (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      device_hash TEXT NOT NULL,
+      label TEXT NOT NULL DEFAULT '',
+      platform TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked')),
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      revoked_at TEXT,
+      revoked_by TEXT,
+      UNIQUE(account_id,device_hash)
     );
     CREATE TABLE IF NOT EXISTS hysteria_nodes (
       id TEXT PRIMARY KEY,
@@ -214,6 +229,15 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       resolved_at TEXT,
       resolved_by TEXT
     );
+    CREATE TABLE IF NOT EXISTS device_recovery_requests (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      requested_device_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','expired')),
+      requested_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_by TEXT
+    );
     CREATE TABLE IF NOT EXISTS wallet_topups (
       id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -250,6 +274,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       account_id TEXT NOT NULL REFERENCES accounts(id),
       subject TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','answered','closed')),
+      owner_archived_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -266,6 +291,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       title TEXT NOT NULL,
       body TEXT NOT NULL,
       read_at TEXT,
+      dismissed_at TEXT,
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS password_reset_codes (
@@ -327,14 +353,27 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!accountColumns.includes('password_salt')) db.exec('ALTER TABLE accounts ADD COLUMN password_salt TEXT');
   if (!accountColumns.includes('device_binding_hash')) db.exec('ALTER TABLE accounts ADD COLUMN device_binding_hash TEXT');
   if (!accountColumns.includes('device_bound_at')) db.exec('ALTER TABLE accounts ADD COLUMN device_bound_at TEXT');
+  if (!accountColumns.includes('device_limit_override')) {
+    // NULL inherits the largest active plan, including for existing accounts.
+    db.exec('ALTER TABLE accounts ADD COLUMN device_limit_override INTEGER CHECK(device_limit_override IS NULL OR device_limit_override BETWEEN 1 AND 10)');
+  }
   if (!accountColumns.includes('managed_by_reseller_id')) db.exec('ALTER TABLE accounts ADD COLUMN managed_by_reseller_id TEXT REFERENCES accounts(id)');
+  const sessionColumns = db.prepare('PRAGMA table_info(account_sessions)').all().map(c => c.name);
+  if (!sessionColumns.includes('device_id')) db.exec('ALTER TABLE account_sessions ADD COLUMN device_id TEXT REFERENCES account_devices(id)');
   const resellerCustomerColumns = db.prepare('PRAGMA table_info(reseller_customers)').all().map(c => c.name);
   if (!resellerCustomerColumns.includes('account_id')) db.exec('ALTER TABLE reseller_customers ADD COLUMN account_id TEXT REFERENCES accounts(id)');
+  const ticketColumns = db.prepare('PRAGMA table_info(support_tickets)').all().map(c => c.name);
+  if (!ticketColumns.includes('owner_archived_at')) db.exec('ALTER TABLE support_tickets ADD COLUMN owner_archived_at TEXT');
+  const notificationColumns = db.prepare('PRAGMA table_info(notifications)').all().map(c => c.name);
+  if (!notificationColumns.includes('dismissed_at')) db.exec('ALTER TABLE notifications ADD COLUMN dismissed_at TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_tracking_token ON orders(tracking_token)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_wallet_topups_account ON wallet_topups(account_id,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tickets_account ON support_tickets(account_id,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_account ON notifications(account_id,created_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_account_devices_account ON account_devices(account_id,status,last_seen_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_resets_status ON password_reset_requests(status,requested_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_device_recovery_status ON device_recovery_requests(status,requested_at DESC)');
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_device_recovery_pending_device ON device_recovery_requests(account_id,requested_device_hash) WHERE status='pending'");
   db.exec('CREATE INDEX IF NOT EXISTS idx_password_reset_codes_account ON password_reset_codes(account_id,created_at DESC)');
   // A customer can buy from more than one reseller.  Keep one private address-
   // book row per reseller instead of globally locking the account to its creator.
@@ -376,6 +415,15 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   db.exec('CREATE INDEX IF NOT EXISTS idx_hysteria_tickets_subscription ON hysteria_tickets(subscription_id,node_id,expires_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_hysteria_tickets_account ON hysteria_tickets(account_id,expires_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_hysteria_tickets_client ON hysteria_tickets(node_id,client_id,created_at)');
+  // Import the previous singleton binding without deleting it. The legacy
+  // columns remain a compatibility shadow for one release and are updated by
+  // the new device service.
+  const legacyDevices = db.prepare(`SELECT id,device_binding_hash,COALESCE(device_bound_at,updated_at,created_at) bound_at
+    FROM accounts WHERE role='customer' AND device_binding_hash IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM account_devices d WHERE d.account_id=accounts.id AND d.device_hash=accounts.device_binding_hash)`).all();
+  const importLegacyDevice = db.prepare(`INSERT OR IGNORE INTO account_devices(id,account_id,device_hash,label,platform,status,first_seen_at,last_seen_at)
+    VALUES(?,?,?,'دستگاه قدیمی','','active',?,?)`);
+  for (const account of legacyDevices) importLegacyDevice.run(randomUUID(),account.id,account.device_binding_hash,account.bound_at,account.bound_at);
   db.exec('UPDATE subscriptions SET upstream_subscription_url=subscription_url WHERE upstream_subscription_url IS NULL AND subscription_url IS NOT NULL');
   const subscriptionsWithoutToken = db.prepare("SELECT s.id FROM subscriptions s JOIN orders o ON o.id=s.order_id WHERE s.access_token IS NULL AND o.order_kind='purchase'").all();
   const addSubscriptionToken = db.prepare('UPDATE subscriptions SET access_token=? WHERE id=?');

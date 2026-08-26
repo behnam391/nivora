@@ -90,4 +90,8 @@ test('device-bound subscription gateway requires the matching customer session a
   response=await fetch(url,{headers:{authorization:`Bearer ${session.token}`,'x-nivora-device':deviceId}});
   assert.equal(response.status,200);
   assert.equal(await response.text(),direct);
+  db.prepare("UPDATE account_devices SET status='revoked',revoked_at=? WHERE account_id=?").run(new Date().toISOString(),accountId);
+  db.prepare('UPDATE accounts SET device_binding_hash=NULL,device_bound_at=NULL WHERE id=?').run(accountId);
+  response=await fetch(url);
+  assert.equal(response.status,401);
 });

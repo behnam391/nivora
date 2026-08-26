@@ -61,9 +61,10 @@ fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
     CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides LayoutDirection.Rtl) {
         when {
             !state.signedIn -> Box(Modifier.fillMaxSize()) {
-                AuthScreen(state.actionBusy, actions)
+                AuthScreen(state, actions)
                 SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp))
             }
+            state.biometricLocked -> BiometricGateScreen(state.biometricMessage, actions::requestBiometricUnlock, actions::logout)
             state.loading && state.account == null && state.reseller == null -> FullScreenLoading()
             state.loadError != null && state.account == null && state.reseller == null -> FullScreenError(state.loadError, actions::refresh, actions::logout)
             state.role == "reseller" -> PartnerAppDashboard(state, actions, snackbar)
@@ -73,7 +74,44 @@ fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
 }
 
 @Composable
-private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
+private fun BiometricGateScreen(message: String?, onUnlock: () -> Unit, onLogout: () -> Unit) {
+    AuroraBackground(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxSize().navigationBarsPadding().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Box(
+                Modifier.size(96.dp).background(Color.White.copy(alpha = .10f), CircleShape).border(1.dp, Color.White.copy(alpha = .20f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Rounded.Fingerprint, null, tint = Color.White, modifier = Modifier.size(52.dp))
+            }
+            Spacer(Modifier.height(24.dp))
+            Text("Nivora قفل است", color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                message ?: "برای مشاهده حساب با اثر انگشت، تشخیص چهره یا قفل امن گوشی تأیید کنید.",
+                color = Color(0xFFC7D8F4),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Spacer(Modifier.height(26.dp))
+            Button(onClick = onUnlock, modifier = Modifier.fillMaxWidth().height(54.dp)) {
+                Icon(Icons.Rounded.LockOpen, null)
+                Spacer(Modifier.width(8.dp))
+                Text("بازکردن امن برنامه")
+            }
+            TextButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
+                Text("خروج از حساب", color = Color(0xFFC7D8F4))
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuthScreen(state: NivoraUiState, actions: NivoraActions) {
+    val busy = state.actionBusy
     val partnerApp = BuildConfig.APP_AUDIENCE == "partner"
     var loginRole by rememberSaveable { mutableStateOf(if (partnerApp) LoginRole.RESELLER else LoginRole.CUSTOMER) }
     var registerMode by rememberSaveable { mutableStateOf(false) }
@@ -189,6 +227,16 @@ private fun AuthScreen(busy: Boolean, actions: NivoraActions) {
         }
     }
     if (recoveryOpen) RecoveryDialog({recoveryOpen=false}){actions.openTelegramRecovery();recoveryOpen=false}
+    state.deviceRecovery?.let { recovery ->
+        DeviceRecoveryDialog(
+            recovery = recovery,
+            busy = busy,
+            onRequest = actions::requestDeviceRecovery,
+            onRefresh = actions::refreshDeviceRecovery,
+            onRetryLogin = actions::retryDeviceRecoveryLogin,
+            onDismiss = actions::dismissDeviceRecovery
+        )
+    }
 }
 
 @Composable
@@ -230,12 +278,100 @@ private fun RecoveryDialog(onDismiss:()->Unit,onTelegram:()->Unit) {
 }
 
 @Composable
+private fun DeviceRecoveryDialog(
+    recovery: DeviceRecoveryUiState,
+    busy: Boolean,
+    onRequest: () -> Unit,
+    onRefresh: () -> Unit,
+    onRetryLogin: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val status = recovery.status
+    val title = when (status) {
+        "pending" -> "درخواست در حال بررسی است"
+        "approved" -> "دستگاه قبلی آزاد شد"
+        "rejected" -> "درخواست تأیید نشد"
+        "expired" -> "زمان درخواست تمام شد"
+        else -> "تغییر دستگاه حساب"
+    }
+    val description = when (status) {
+        "pending" -> "درخواست شما برای پشتیبانی ارسال شده است. پس از بررسی، وضعیت را از همین‌جا تازه کنید."
+        "approved" -> "اکنون می‌توانید همین گوشی را به‌عنوان دستگاه مجاز حساب ثبت کنید."
+        "rejected" -> recovery.message ?: "پشتیبانی درخواست را تأیید نکرد. برای بررسی بیشتر با پشتیبانی تماس بگیرید."
+        "expired" -> "برای ادامه، یک درخواست تازه ارسال کنید."
+        else -> if (recovery.reasonCode == "DEVICE_LIMIT_REACHED")
+            "تعداد دستگاه‌های مجاز این حساب تکمیل شده است. آزادسازی فقط پس از تأیید پشتیبانی انجام می‌شود."
+        else "این حساب روی دستگاه دیگری فعال است. می‌توانید همین حالا درخواست آزادسازی دستگاه قبلی را ارسال کنید."
+    }
+    val statusColor = when (status) {
+        "approved" -> NivoraGreenDark
+        "rejected", "expired" -> NivoraDanger
+        else -> MaterialTheme.colorScheme.primary
+    }
+
+    AppDialog(onDismiss) {
+        DialogTitle(Icons.Rounded.Devices, title, description)
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = statusColor.copy(alpha = .10f),
+            border = BorderStroke(1.dp, statusColor.copy(alpha = .28f))
+        ) {
+            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    when (status) {
+                        "approved" -> Icons.Rounded.CheckCircle
+                        "rejected", "expired" -> Icons.Rounded.ErrorOutline
+                        "pending" -> Icons.Rounded.Schedule
+                        else -> Icons.Rounded.PhoneAndroid
+                    },
+                    null,
+                    tint = statusColor
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(recovery.phone, fontWeight = FontWeight.Bold)
+                    if (status == "pending") Text("در انتظار پاسخ پشتیبانی", color = statusColor, style = MaterialTheme.typography.bodySmall)
+                    recovery.message?.takeIf { status == "pending" || status == "approved" }?.let {
+                        Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+        recovery.error?.let { Text(it, color = NivoraDanger, style = MaterialTheme.typography.bodyMedium) }
+        when (status) {
+            "approved" -> Button(onClick = onRetryLogin, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.AutoMirrored.Rounded.Login, null)
+                Spacer(Modifier.width(7.dp))
+                Text("ورود روی این گوشی")
+            }
+            "pending" -> Button(onClick = onRefresh, enabled = !busy && !recovery.requestId.isNullOrBlank(), modifier = Modifier.fillMaxWidth()) {
+                if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                else Icon(Icons.Rounded.Refresh, null)
+                Spacer(Modifier.width(7.dp))
+                Text(if (recovery.requestId.isNullOrBlank()) "درخواست ثبت شد" else "بررسی وضعیت درخواست")
+            }
+            else -> Button(onClick = onRequest, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                else Icon(Icons.AutoMirrored.Rounded.Send, null)
+                Spacer(Modifier.width(7.dp))
+                Text(if (status == "ready") "ارسال درخواست آزادسازی" else "ارسال درخواست تازه")
+            }
+        }
+        TextButton(onClick = onDismiss, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("بازگشت به ورود") }
+    }
+}
+
+@Composable
 private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar: SnackbarHostState) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
     var purchasePlan by remember { mutableStateOf<Plan?>(null) }
     var renewSubscription by remember { mutableStateOf<Subscription?>(null) }
     var topupOpen by rememberSaveable { mutableStateOf(false) }
     var ticketOpen by rememberSaveable { mutableStateOf(false) }
+    var passwordOpen by rememberSaveable { mutableStateOf(false) }
+    var clearNotificationsConfirm by rememberSaveable { mutableStateOf(false) }
+    var clearTicketsConfirm by rememberSaveable { mutableStateOf(false) }
 
     AuroraBackground(Modifier.fillMaxSize()) {
         Scaffold(
@@ -271,7 +407,17 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
                     )
                     AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0) { purchasePlan = it }
                     AppDestination.WALLET -> WalletScreen(state, onTopup = { topupOpen = true })
-                    AppDestination.SUPPORT -> SupportScreen(state, onNewTicket = { ticketOpen = true }, onOpenTicket = actions::openTicket, onLogout = actions::logout, onNetworkLab = actions::openNetworkLab)
+                    AppDestination.SUPPORT -> SupportScreen(
+                        state,
+                        onNewTicket = { ticketOpen = true },
+                        onOpenTicket = actions::openTicket,
+                        onBiometricChanged = actions::setBiometricEnabled,
+                        onChangePassword = { passwordOpen = true },
+                        onClearNotifications = { clearNotificationsConfirm = true },
+                        onClearTickets = { clearTicketsConfirm = true },
+                        onLogout = actions::logout,
+                        onNetworkLab = actions::openNetworkLab
+                    )
                 }
                 if (state.actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                 if (state.ticketLoading) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(.12f)), contentAlignment = Alignment.Center) {
@@ -315,6 +461,29 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
         busy = state.actionBusy,
         onDismiss = { ticketOpen = false },
         onSubmit = { subject, body -> actions.createTicket(subject, body); ticketOpen = false }
+    )
+    if (passwordOpen) ChangePasswordDialog(
+        busy = state.actionBusy,
+        onDismiss = { passwordOpen = false },
+        onSubmit = { current, fresh -> actions.changePassword(current, fresh); passwordOpen = false }
+    )
+    if (clearNotificationsConfirm) ConfirmDialog(
+        icon = Icons.Rounded.NotificationsOff,
+        title = "پاک‌سازی اعلان‌ها",
+        body = "اعلان‌های فعلی از حساب شما پنهان می‌شوند؛ اعلان‌های تازه همچنان نمایش داده خواهند شد.",
+        confirm = "پاک‌سازی",
+        busy = state.actionBusy,
+        onDismiss = { clearNotificationsConfirm = false },
+        onConfirm = { actions.clearNotifications(); clearNotificationsConfirm = false }
+    )
+    if (clearTicketsConfirm) ConfirmDialog(
+        icon = Icons.Rounded.Inventory2,
+        title = "آرشیو گفتگوها",
+        body = "تیکت‌ها از فهرست شما جمع می‌شوند، اما سابقه برای پشتیبانی محفوظ می‌ماند و با پاسخ تازه دوباره ظاهر می‌شود.",
+        confirm = "آرشیو تیکت‌ها",
+        busy = state.actionBusy,
+        onDismiss = { clearTicketsConfirm = false },
+        onConfirm = { actions.clearTickets(); clearTicketsConfirm = false }
     )
     state.ticketConversation?.let {
         TicketConversationDialog(
@@ -648,6 +817,8 @@ private fun PlansScreen(plans: List<Plan>, balance: Int, onBuy: (Plan) -> Unit) 
 @Composable
 private fun WalletScreen(state: NivoraUiState, onTopup: () -> Unit) {
     val account = state.account ?: return
+    var historyOpen by remember { mutableStateOf(false) }
+    val historyCount = account.topups.size + account.transactions.size
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -658,14 +829,23 @@ private fun WalletScreen(state: NivoraUiState, onTopup: () -> Unit) {
             Text("موجودی، واریزها و خریدهای شما", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         item { WalletBalanceCard(account.balanceToman, onTopup) }
-        item { SectionHeader("درخواست‌های شارژ", "وضعیت بررسی واریزهای کارت‌به‌کارت") }
-        if (account.topups.isEmpty()) item {
-            Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { EmptyState(Icons.AutoMirrored.Rounded.ReceiptLong, "درخواستی ثبت نشده", "پس از کارت‌به‌کارت، شماره پیگیری را اینجا ثبت کنید.") }
-        } else items(account.topups.take(5), key = { it.id }) { TopupRow(it) }
-        item { SectionHeader("گردش حساب", "آخرین تراکنش‌های کیف پول") }
-        if (account.transactions.isEmpty()) item {
-            Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { EmptyState(Icons.Rounded.History, "گردشی وجود ندارد", "خریدها و شارژهای کیف پول اینجا ثبت می‌شوند.") }
-        } else items(account.transactions, key = { it.id }) { TransactionRow(it) }
+        item {
+            SectionHeader(
+                "تاریخچه خرید و کیف پول",
+                if (historyCount == 0) "هنوز سابقه‌ای ثبت نشده است" else "${faNumber(historyCount)} رویداد مالی محفوظ است",
+                if (historyOpen) "جمع‌کردن" else "نمایش تاریخچه"
+            ) { historyOpen = !historyOpen }
+        }
+        if (historyOpen) {
+            item { SectionHeader("درخواست‌های شارژ", "وضعیت بررسی واریزهای کارت‌به‌کارت") }
+            if (account.topups.isEmpty()) item {
+                Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { EmptyState(Icons.AutoMirrored.Rounded.ReceiptLong, "درخواستی ثبت نشده", "پس از کارت‌به‌کارت، شماره پیگیری را اینجا ثبت کنید.") }
+            } else items(account.topups.take(5), key = { it.id }) { TopupRow(it) }
+            item { SectionHeader("گردش حساب", "خریدها، شارژها و بازپرداخت‌ها") }
+            if (account.transactions.isEmpty()) item {
+                Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { EmptyState(Icons.Rounded.History, "گردشی وجود ندارد", "خریدها و شارژهای کیف پول اینجا ثبت می‌شوند.") }
+            } else items(account.transactions, key = { it.id }) { TransactionRow(it) }
+        }
     }
 }
 
@@ -723,7 +903,17 @@ private fun TransactionRow(transaction: WalletTransaction) {
 }
 
 @Composable
-private fun SupportScreen(state: NivoraUiState, onNewTicket: () -> Unit, onOpenTicket: (SupportTicket) -> Unit, onLogout: () -> Unit, onNetworkLab: () -> Unit) {
+private fun SupportScreen(
+    state: NivoraUiState,
+    onNewTicket: () -> Unit,
+    onOpenTicket: (SupportTicket) -> Unit,
+    onBiometricChanged: (Boolean) -> Unit,
+    onChangePassword: () -> Unit,
+    onClearNotifications: () -> Unit,
+    onClearTickets: () -> Unit,
+    onLogout: () -> Unit,
+    onNetworkLab: () -> Unit
+) {
     val account = state.account ?: return
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -749,11 +939,52 @@ private fun SupportScreen(state: NivoraUiState, onNewTicket: () -> Unit, onOpenT
                 }
             }
         }
-        item { SectionHeader("اعلان‌ها", if (account.notifications.isEmpty()) "اعلان تازه‌ای ندارید" else "آخرین پیام‌های حساب") }
+        item {
+            Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) {
+                Column {
+                    Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            Modifier.size(46.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(15.dp)),
+                            contentAlignment = Alignment.Center
+                        ) { Icon(Icons.Rounded.Fingerprint, null, tint = MaterialTheme.colorScheme.primary) }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("ورود با قفل امن گوشی", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (state.biometricEnabled) "در شروع برنامه، اثر انگشت، چهره یا قفل گوشی درخواست می‌شود."
+                                else "اختیاری است و رمز Nivora روی گوشی ذخیره نمی‌شود.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Switch(checked = state.biometricEnabled, onCheckedChange = onBiometricChanged)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(.18f))
+                    TextButton(onClick = onChangePassword, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 3.dp)) {
+                        Icon(Icons.Rounded.Password, null)
+                        Spacer(Modifier.width(7.dp))
+                        Text("تغییر رمز عبور حساب")
+                    }
+                }
+            }
+        }
+        item { SectionHeader("اعلان‌ها", if (account.notifications.isEmpty()) "اعلان تازه‌ای ندارید" else "آخرین پیام‌های حساب", if (account.notifications.isEmpty()) null else "پاک‌سازی", if (account.notifications.isEmpty()) null else onClearNotifications) }
         if (account.notifications.isEmpty()) item {
             Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { EmptyState(Icons.Rounded.NotificationsNone, "همه‌چیز آرام است", "اعلان خرید، تمدید و پاسخ پشتیبانی اینجا نمایش داده می‌شود.") }
         } else items(account.notifications.take(8), key = { it.id }) { NotificationRow(it) }
-        item { SectionHeader("تیکت‌های پشتیبانی", "پاسخ‌ها را از همین بخش دنبال کنید", "تیکت جدید", onNewTicket) }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                SectionHeader("تیکت‌های پشتیبانی", "پاسخ‌ها را از همین بخش دنبال کنید")
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(onClick = onNewTicket, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Rounded.AddComment, null); Spacer(Modifier.width(6.dp)); Text("تیکت جدید")
+                    }
+                    if (state.tickets.isNotEmpty()) OutlinedButton(onClick = onClearTickets, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Rounded.Inventory2, null); Spacer(Modifier.width(6.dp)); Text("آرشیو همه")
+                    }
+                }
+            }
+        }
         if (state.tickets.isEmpty()) item {
             Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { EmptyState(Icons.Rounded.Forum, "گفتگویی ندارید", "اگر پرسشی دارید برای تیم پشتیبانی پیام بفرستید.", "ارسال پیام", onNewTicket) }
         } else items(state.tickets, key = { it.id }) { TicketRow(it) { onOpenTicket(it) } }
@@ -1055,6 +1286,50 @@ private fun TicketConversationDialog(
             ) { Icon(Icons.AutoMirrored.Rounded.Send, null); Spacer(Modifier.width(7.dp)); Text("ارسال پاسخ") }
         }
         TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("بستن") }
+    }
+}
+
+@Composable
+private fun ChangePasswordDialog(busy: Boolean, onDismiss: () -> Unit, onSubmit: (String, String) -> Unit) {
+    var current by rememberSaveable { mutableStateOf("") }
+    var fresh by rememberSaveable { mutableStateOf("") }
+    var confirm by rememberSaveable { mutableStateOf("") }
+    val valid = current.length >= 8 && fresh.length >= 8 && fresh == confirm && fresh != current
+    AppDialog(onDismiss) {
+        DialogTitle(Icons.Rounded.Password, "تغییر رمز عبور", "پس از تغییر، همه نشست‌های دیگر حساب بسته می‌شوند و همین گوشی وارد می‌ماند.")
+        OutlinedTextField(
+            value = current,
+            onValueChange = { current = it.take(128) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("رمز فعلی") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next)
+        )
+        OutlinedTextField(
+            value = fresh,
+            onValueChange = { fresh = it.take(128) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("رمز جدید؛ حداقل ۸ نویسه") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next)
+        )
+        OutlinedTextField(
+            value = confirm,
+            onValueChange = { confirm = it.take(128) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("تکرار رمز جدید") },
+            isError = confirm.isNotEmpty() && confirm != fresh,
+            supportingText = if (confirm.isNotEmpty() && confirm != fresh) {{ Text("تکرار رمز یکسان نیست") }} else null,
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done)
+        )
+        Button(onClick = { onSubmit(current, fresh) }, enabled = valid && !busy, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Rounded.Security, null); Spacer(Modifier.width(7.dp)); Text("ثبت رمز جدید")
+        }
+        TextButton(onClick = onDismiss, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("انصراف") }
     }
 }
 

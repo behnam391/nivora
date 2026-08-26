@@ -6,6 +6,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.KeyguardManager
 import android.media.AudioAttributes
 import android.content.*
 import android.content.pm.PackageManager
@@ -14,7 +15,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +24,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.activity.compose.setContent
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
@@ -44,7 +47,15 @@ import java.util.concurrent.CompletableFuture
 import java.util.UUID
 import kotlin.concurrent.thread
 
-class MainActivity : ComponentActivity(), NivoraActions {
+class MainActivity : FragmentActivity(), NivoraActions {
+    private companion object {
+        val BIOMETRIC_AUTHENTICATORS =
+            BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+    }
+
+    private data class DeviceRecoveryCredentials(val phone: String, val password: String)
+    private enum class BiometricPurpose { ENABLE, UNLOCK }
+
     private val deviceId by lazy {
         getSharedPreferences("nivora_device", MODE_PRIVATE).getString("id", null)
             ?: UUID.randomUUID().toString().replace("-", "").also { getSharedPreferences("nivora_device", MODE_PRIVATE).edit().putString("id", it).apply() }
@@ -56,6 +67,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
     private val selection by lazy { getSharedPreferences("selection", MODE_PRIVATE) }
     private val vpnPreferences by lazy { getSharedPreferences("vpn", MODE_PRIVATE) }
     private val alertPreferences by lazy { getSharedPreferences("alerts", MODE_PRIVATE) }
+    private val biometricPreferences by lazy { getSharedPreferences("biometric_gate", MODE_PRIVATE) }
     private var state by mutableStateOf(NivoraUiState())
     private var receiverRegistered = false
     private var networkCallbackRegistered = false
@@ -65,6 +77,11 @@ class MainActivity : ComponentActivity(), NivoraActions {
     @Volatile private var activeSessionToken: String? = null
     @Volatile private var liveSessionValidated = false
     @Volatile private var dashboardValidationInFlight = false
+    private var deviceRecoveryCredentials: DeviceRecoveryCredentials? = null
+    private lateinit var biometricPrompt: BiometricPrompt
+    private var biometricPromptActive = false
+    private var suppressBiometricCallback = false
+    private var biometricPurpose = BiometricPurpose.UNLOCK
     private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) {
             if (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) ||
@@ -89,7 +106,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
             }
         }
     }
-    private val notificationPoll=object:Runnable{override fun run(){if(activeSessionToken!=null)loadDashboard(false);handler.postDelayed(this,60_000)}}
+    private val notificationPoll=object:Runnable{override fun run(){if(activeSessionToken!=null&&!state.biometricLocked)loadDashboard(false);handler.postDelayed(this,60_000)}}
 
     private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) startSelectedVpn()
@@ -116,6 +133,7 @@ class MainActivity : ComponentActivity(), NivoraActions {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
         session = SecureSessionStore(this)
+        biometricPrompt = createBiometricPrompt()
         val customerAudience = BuildConfig.APP_AUDIENCE == "customer"
         if (customerAudience) {
             registerVpnReceiver()
@@ -135,28 +153,56 @@ class MainActivity : ComponentActivity(), NivoraActions {
         val storedRole = session.role()
         val signedIn = storedToken != null && storedRole == expectedRole
         if (!signedIn && storedToken != null) session.clear()
+        if (!signedIn) biometricPreferences.edit().clear().apply()
         activeSessionToken = storedToken.takeIf { signedIn }
+        val biometricEnabled = BiometricGatePolicy.shouldGate(
+            BuildConfig.APP_AUDIENCE,
+            hasSession = signedIn,
+            enabled = biometricPreferences.getBoolean("enabled", false)
+        )
         liveSessionValidated = false
         state = state.copy(
             signedIn = signedIn,
-            loading = signedIn,
+            loading = signedIn && !biometricEnabled,
             role = storedRole,
             vpnState = correctedState,
             vpnError = friendlyVpnError(vpnPreferences.getString("error", null)),
-            smartRoute = vpnPreferences.getString("smart_route", null)
+            smartRoute = vpnPreferences.getString("smart_route", null),
+            biometricEnabled = biometricEnabled,
+            biometricLocked = biometricEnabled
         )
         setContent {
             NivoraTheme(darkTheme = true) {
                 Surface { NivoraApp(state, this@MainActivity) }
             }
         }
-        activeSessionToken?.let { token ->
+        if (!biometricEnabled) activeSessionToken?.let { token ->
             if (expectedRole == "customer") loadCachedCustomerDashboard(token)
             loadDashboard(initial = true)
         }
         if(signedIn)scheduleNotificationWorker()
         if(signedIn&&Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         handler.postDelayed(notificationPoll,60_000)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (state.biometricLocked && !biometricPromptActive) {
+            handler.post { if (state.biometricLocked && !biometricPromptActive) requestBiometricUnlock() }
+        }
+    }
+
+    override fun onStop() {
+        if (BiometricGatePolicy.shouldRelock(
+                BuildConfig.APP_AUDIENCE,
+                hasSession = activeSessionToken != null,
+                enabled = biometricPreferences.getBoolean("enabled", false),
+                promptActive = biometricPromptActive,
+                changingConfigurations = isChangingConfigurations
+            )) {
+            state = state.copy(biometricLocked = true, biometricMessage = null)
+        }
+        super.onStop()
     }
 
     override fun onDestroy() {
@@ -168,18 +214,48 @@ class MainActivity : ComponentActivity(), NivoraActions {
         super.onDestroy()
     }
 
-    override fun login(phone: String, password: String, role: LoginRole) = runAction(
-        work = { api.login(phone, password, if (role == LoginRole.RESELLER) "reseller" else "customer") },
-        success = {
-            session.save(it.token, it.role)
-            activeSessionToken = it.token
-            liveSessionValidated = false
-            dashboardValidationInFlight = false
-            scheduleNotificationWorker()
-            state = state.copy(signedIn = true, loading = true, role = it.role, account = null, reseller = null, loadError = null)
-            loadDashboard(initial = true)
-        }
-    )
+    override fun login(phone: String, password: String, role: LoginRole) {
+        if (state.actionBusy) return
+        state = state.copy(actionBusy = true, deviceRecovery = null)
+        background(
+            work = { api.login(phone, password, if (role == LoginRole.RESELLER) "reseller" else "customer") },
+            success = {
+                deviceRecoveryCredentials = null
+                session.save(it.token, it.role)
+                activeSessionToken = it.token
+                liveSessionValidated = false
+                dashboardValidationInFlight = false
+                scheduleNotificationWorker()
+                state = state.copy(
+                    signedIn = true,
+                    loading = true,
+                    actionBusy = false,
+                    role = it.role,
+                    account = null,
+                    reseller = null,
+                    loadError = null,
+                    deviceRecovery = null
+                )
+                loadDashboard(initial = true)
+            },
+            failure = { error ->
+                val code = (rootCause(error) as? ApiException)?.code.orEmpty()
+                state = state.copy(actionBusy = false)
+                if (role == LoginRole.CUSTOMER && DeviceRecoveryPolicy.canRequest(code)) {
+                    deviceRecoveryCredentials = DeviceRecoveryCredentials(phone, password)
+                    state = state.copy(
+                        deviceRecovery = DeviceRecoveryUiState(
+                            phone = phone,
+                            reasonCode = code
+                        )
+                    )
+                } else {
+                    deviceRecoveryCredentials = null
+                    showNotice(friendly(error), true)
+                }
+            }
+        )
+    }
 
     override fun register(name: String, phone: String, password: String) = runAction(
         work = { api.register(name, phone, password) },
@@ -200,6 +276,113 @@ class MainActivity : ComponentActivity(), NivoraActions {
     )
     override fun openTelegramRecovery()=background(work={api.telegramBotUsername()},success={username->if(username.isBlank())showNotice("ربات بازیابی هنوز فعال نشده است",true)else startActivity(Intent(Intent.ACTION_VIEW,android.net.Uri.parse("https://t.me/$username?start=recovery")))},failure={showNotice(friendly(it),true)})
     override fun confirmPasswordReset(phone:String,resetId:String,code:String,newPassword:String)=runAction(work={api.confirmPasswordReset(phone,resetId,code,newPassword)},success={showNotice("رمز عبور با موفقیت تغییر کرد")})
+
+    override fun requestDeviceRecovery() {
+        val credentials = deviceRecoveryCredentials
+        val current = state.deviceRecovery
+        if (credentials == null || current == null || state.actionBusy) return
+        state = state.copy(actionBusy = true, deviceRecovery = current.copy(error = null))
+        background(
+            work = { api.requestDeviceRecovery(credentials.phone, credentials.password) },
+            success = { request ->
+                state = state.copy(
+                    actionBusy = false,
+                    deviceRecovery = current.copy(
+                        requestId = request.id,
+                        status = request.status,
+                        message = request.message,
+                        error = null
+                    )
+                )
+            },
+            failure = { error ->
+                val apiError = rootCause(error) as? ApiException
+                if (apiError?.code == "DEVICE_SLOT_AVAILABLE") {
+                    state = state.copy(
+                        actionBusy = false,
+                        deviceRecovery = current.copy(
+                            status = "approved",
+                            message = "یک جایگاه آزاد است؛ دوباره ورود را بزنید.",
+                            error = null
+                        )
+                    )
+                    return@background
+                }
+                state = state.copy(
+                    actionBusy = false,
+                    deviceRecovery = current.copy(error = deviceRecoveryError(error))
+                )
+            }
+        )
+    }
+
+    override fun refreshDeviceRecovery() {
+        val current = state.deviceRecovery ?: return
+        val requestId = current.requestId
+        if (requestId.isNullOrBlank() || state.actionBusy) return
+        state = state.copy(actionBusy = true, deviceRecovery = current.copy(error = null))
+        background(
+            work = { api.deviceRecoveryStatus(requestId) },
+            success = { request ->
+                state = state.copy(
+                    actionBusy = false,
+                    deviceRecovery = current.copy(
+                        requestId = request.id ?: requestId,
+                        status = request.status,
+                        message = request.message,
+                        error = null
+                    )
+                )
+            },
+            failure = { error ->
+                state = state.copy(
+                    actionBusy = false,
+                    deviceRecovery = current.copy(error = deviceRecoveryError(error))
+                )
+            }
+        )
+    }
+
+    override fun retryDeviceRecoveryLogin() {
+        val credentials = deviceRecoveryCredentials ?: return
+        state = state.copy(deviceRecovery = null)
+        login(credentials.phone, credentials.password, LoginRole.CUSTOMER)
+    }
+
+    override fun dismissDeviceRecovery() {
+        deviceRecoveryCredentials = null
+        state = state.copy(deviceRecovery = null)
+    }
+
+    override fun setBiometricEnabled(enabled: Boolean) {
+        if (BuildConfig.APP_AUDIENCE != "customer") return
+        if (!enabled) {
+            biometricPreferences.edit().clear().apply()
+            state = state.copy(biometricEnabled = false, biometricLocked = false, biometricMessage = null)
+            showNotice("ورود بیومتریک خاموش شد")
+            return
+        }
+        if (activeSessionToken == null || !state.signedIn) {
+            showNotice("ابتدا با شماره موبایل و رمز نیورا وارد شوید", true)
+            return
+        }
+        val unavailable = biometricUnavailableMessage()
+        if (unavailable != null) {
+            showNotice(unavailable, true)
+            return
+        }
+        showBiometricPrompt(BiometricPurpose.ENABLE)
+    }
+
+    override fun requestBiometricUnlock() {
+        if (BuildConfig.APP_AUDIENCE != "customer" || activeSessionToken == null || !state.biometricLocked) return
+        val unavailable = biometricUnavailableMessage()
+        if (unavailable != null) {
+            state = state.copy(biometricMessage = unavailable)
+            return
+        }
+        showBiometricPrompt(BiometricPurpose.UNLOCK)
+    }
 
     override fun refresh() = loadDashboard(initial = false)
 
@@ -384,6 +567,40 @@ class MainActivity : ComponentActivity(), NivoraActions {
         )
     }
 
+    override fun changePassword(currentPassword: String, newPassword: String) = withToken { token ->
+        if (state.role != "customer") return@withToken
+        runAction(
+            work = { api.changePassword(token, currentPassword, newPassword) },
+            success = { showNotice("رمز عبور با موفقیت تغییر کرد؛ نشست‌های دیگر بسته شدند") }
+        )
+    }
+
+    override fun clearNotifications() = withToken { token ->
+        runAction(
+            work = { api.clearNotifications(token, state.role) },
+            success = {
+                state = if (state.role == "reseller") {
+                    state.copy(reseller = state.reseller?.copy(notifications = emptyList()))
+                } else {
+                    state.copy(account = state.account?.copy(notifications = emptyList()))
+                }
+                showNotice("اعلان‌های نمایش‌داده‌شده پاک‌سازی شدند")
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
+    override fun clearTickets() = withToken { token ->
+        runAction(
+            work = { api.clearTickets(token, state.role) },
+            success = {
+                state = state.copy(tickets = emptyList(), ticketConversation = null)
+                showNotice("گفتگوهای پشتیبانی آرشیو شدند")
+                loadDashboard(initial = false)
+            }
+        )
+    }
+
     override fun openNetworkLab() {
         if (BuildConfig.APP_AUDIENCE == "customer" && BuildConfig.NETWORK_LAB_ENABLED) startActivity(Intent(this, NetworkLabActivity::class.java))
     }
@@ -518,6 +735,10 @@ class MainActivity : ComponentActivity(), NivoraActions {
         activeSessionToken = null
         liveSessionValidated = false
         dashboardValidationInFlight = false
+        suppressBiometricCallback = true
+        biometricPromptActive = false
+        if (::biometricPrompt.isInitialized) runCatching { biometricPrompt.cancelAuthentication() }
+        biometricPreferences.edit().clear().apply()
         if (BuildConfig.APP_AUDIENCE == "customer") sendVpnStopCommand()
         session.clear()
         SubscriptionBundleStore(this).clear()
@@ -811,6 +1032,108 @@ class MainActivity : ComponentActivity(), NivoraActions {
         state = state.copy(notice = UiNotice(noticeIds.incrementAndGet(), text, error))
     }
 
+    private fun createBiometricPrompt(): BiometricPrompt = BiometricPrompt(
+        this,
+        ContextCompat.getMainExecutor(this),
+        object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                biometricPromptActive = false
+                if (suppressBiometricCallback) return
+                when (biometricPurpose) {
+                    BiometricPurpose.ENABLE -> {
+                        biometricPreferences.edit().putBoolean("enabled", true).apply()
+                        state = state.copy(biometricEnabled = true, biometricLocked = false, biometricMessage = null)
+                        showNotice("ورود بیومتریک فعال شد")
+                    }
+                    BiometricPurpose.UNLOCK -> {
+                        state = state.copy(biometricLocked = false, biometricMessage = null)
+                        val token = activeSessionToken
+                        if (token != null && state.account == null) {
+                            state = state.copy(loading = true)
+                            loadCachedCustomerDashboard(token)
+                            loadDashboard(initial = true)
+                        } else if (token != null) {
+                            loadDashboard(initial = false)
+                        }
+                    }
+                }
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                biometricPromptActive = false
+                if (suppressBiometricCallback) return
+                val message = biometricPromptError(errorCode)
+                if (biometricPurpose == BiometricPurpose.ENABLE) {
+                    showNotice(message, true)
+                } else {
+                    state = state.copy(biometricLocked = true, biometricMessage = message)
+                }
+            }
+
+            override fun onAuthenticationFailed() {
+                if (suppressBiometricCallback) return
+                if (biometricPurpose == BiometricPurpose.UNLOCK) {
+                    state = state.copy(biometricMessage = "اثر انگشت یا چهره شناخته نشد؛ دوباره امتحان کنید.")
+                }
+            }
+        }
+    )
+
+    private fun showBiometricPrompt(purpose: BiometricPurpose) {
+        if (biometricPromptActive) return
+        suppressBiometricCallback = false
+        biometricPurpose = purpose
+        biometricPromptActive = true
+        if (purpose == BiometricPurpose.UNLOCK) state = state.copy(biometricMessage = null)
+        val builder = BiometricPrompt.PromptInfo.Builder()
+            .setTitle(if (purpose == BiometricPurpose.ENABLE) "فعال‌سازی ورود امن" else "بازکردن Nivora")
+            .setSubtitle("با اثر انگشت، تشخیص چهره یا قفل امن گوشی تأیید کنید")
+            .setConfirmationRequired(false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            builder.setAllowedAuthenticators(BIOMETRIC_AUTHENTICATORS)
+        } else {
+            @Suppress("DEPRECATION")
+            builder.setDeviceCredentialAllowed(true)
+        }
+        runCatching { biometricPrompt.authenticate(builder.build()) }
+            .onFailure { error ->
+                biometricPromptActive = false
+                val message = error.message?.takeIf(String::isNotBlank) ?: "قفل امن گوشی در دسترس نیست."
+                if (purpose == BiometricPurpose.ENABLE) showNotice(message, true)
+                else state = state.copy(biometricMessage = message)
+            }
+    }
+
+    private fun biometricUnavailableMessage(): String? {
+        val manager = BiometricManager.from(this)
+        val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            manager.canAuthenticate(BIOMETRIC_AUTHENTICATORS)
+        } else {
+            val biometric = manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK)
+            val secureLock = getSystemService(KeyguardManager::class.java)?.isDeviceSecure == true
+            if (biometric == BiometricManager.BIOMETRIC_SUCCESS || secureLock) BiometricManager.BIOMETRIC_SUCCESS else biometric
+        }
+        return when (result) {
+            BiometricManager.BIOMETRIC_SUCCESS -> null
+            BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> "حسگر امنیتی گوشی موقتاً در دسترس نیست؛ کمی بعد دوباره امتحان کنید."
+            BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE,
+            BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "ابتدا در تنظیمات گوشی اثر انگشت، چهره، PIN، الگو یا رمز امن تنظیم کنید."
+            else -> "قفل امن این دستگاه برای ورود بیومتریک آماده نیست."
+        }
+    }
+
+    private fun biometricPromptError(errorCode: Int): String = when (errorCode) {
+        BiometricPrompt.ERROR_USER_CANCELED,
+        BiometricPrompt.ERROR_CANCELED,
+        BiometricPrompt.ERROR_NEGATIVE_BUTTON -> "تأیید لغو شد؛ برای ادامه دوباره دکمه بازکردن را بزنید."
+        BiometricPrompt.ERROR_LOCKOUT,
+        BiometricPrompt.ERROR_LOCKOUT_PERMANENT -> "تلاش‌های ناموفق زیاد بود؛ با قفل امن گوشی وارد شوید یا کمی صبر کنید."
+        BiometricPrompt.ERROR_NO_BIOMETRICS,
+        BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL -> "ابتدا در تنظیمات گوشی یک روش قفل امن فعال کنید."
+        BiometricPrompt.ERROR_HW_UNAVAILABLE -> "حسگر امنیتی گوشی موقتاً در دسترس نیست."
+        else -> "تأیید امن انجام نشد؛ دوباره امتحان کنید."
+    }
+
     private fun showNewNotifications(items:List<CustomerNotification>){
         val seen=alertPreferences.getStringSet("seen_ids",emptySet())?.toMutableSet()?:mutableSetOf()
         val initialized=alertPreferences.getBoolean("initialized",false)
@@ -835,11 +1158,13 @@ class MainActivity : ComponentActivity(), NivoraActions {
         val code = (resolved as? ApiException)?.code ?: resolved.message.orEmpty()
         return when (code) {
             "INVALID_CREDENTIALS" -> "شماره موبایل یا رمز عبور صحیح نیست"
-            "DEVICE_ALREADY_BOUND" -> "این حساب روی گوشی دیگری فعال است؛ از پشتیبانی بخواهید دستگاه قبلی را آزاد کند"
+            "INVALID_CURRENT_PASSWORD" -> "رمز عبور فعلی صحیح نیست"
+            "PASSWORD_UNCHANGED" -> "رمز جدید باید با رمز فعلی متفاوت باشد"
+            "WEAK_PASSWORD" -> "رمز جدید باید حداقل ۸ نویسه باشد"
+            "DEVICE_ALREADY_BOUND", "DEVICE_LIMIT_REACHED" -> "ظرفیت دستگاه‌های این حساب تکمیل است"
             "DEVICE_REQUIRED" -> "شناسه امن دستگاه در دسترس نیست؛ برنامه را دوباره باز کنید"
             "PHONE_ALREADY_EXISTS" -> "این شماره موبایل قبلاً ثبت شده است"
             "INVALID_ACCOUNT", "INVALID_PHONE" -> "اطلاعات واردشده معتبر نیست"
-            "WEAK_PASSWORD" -> "رمز عبور باید حداقل ۸ کاراکتر باشد"
             "INSUFFICIENT_BALANCE" -> "موجودی کیف پول کافی نیست"
             "NO_CAPACITY" -> "ظرفیت این پلن فعلاً تکمیل است"
             "DISCOUNT_NOT_AVAILABLE" -> "کد تخفیف معتبر یا قابل استفاده نیست"
@@ -866,6 +1191,20 @@ class MainActivity : ComponentActivity(), NivoraActions {
                 is UnknownHostException, is ConnectException -> "اینترنت یا دسترسی به سرور برقرار نیست"
                 else -> "خطایی رخ داد؛ دوباره تلاش کنید"
             }
+        }
+    }
+
+    private fun deviceRecoveryError(error: Throwable): String {
+        val resolved = rootCause(error)
+        val apiError = resolved as? ApiException
+        return when {
+            apiError?.status == 404 || apiError?.status == 405 || apiError?.status == 501 ->
+                "سامانه درخواست آزادسازی هنوز روی سرور فعال نشده است؛ کمی بعد دوباره امتحان کنید."
+            apiError?.code == "INVALID_CREDENTIALS" -> "رمز عبور صحیح نیست؛ دوباره وارد شوید."
+            apiError?.code == "DEVICE_RECOVERY_ALREADY_PENDING" -> "درخواست قبلی شما هنوز در انتظار بررسی است."
+            apiError?.code == "DEVICE_SLOT_AVAILABLE" -> "یک جایگاه آزاد است؛ دوباره ورود را بزنید."
+            apiError?.code == "RATE_LIMITED" -> "تعداد درخواست‌ها زیاد بود؛ چند دقیقه بعد دوباره امتحان کنید."
+            else -> friendly(error)
         }
     }
 
