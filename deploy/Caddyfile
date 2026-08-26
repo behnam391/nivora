@@ -1,5 +1,5 @@
-# Replace vpn.example.com with the dedicated domain/subdomain for this store.
-vpn.example.com {
+# Public cover page and application hostnames.
+b.nivorali.com, nivorali.com, www.nivorali.com {
     encode zstd gzip
     reverse_proxy 127.0.0.1:8787
     header {
