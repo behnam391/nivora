@@ -5,7 +5,7 @@ import { extname, resolve } from 'node:path';
 import { getWalletStatement, postWalletTransaction, transferWalletBalance } from './wallet.js';
 import { accountFromRequest, createSession, hashPassword, verifyPassword } from './auth.js';
 import { selectLocationForPlan } from './capacity.js';
-import { createRequestGuard } from './security.js';
+import { createKeyedRateLimiter, createRequestGuard } from './security.js';
 import { enrichSubscription, readPanelStats } from './subscription-stats.js';
 import { buildMultiEndpointSubscription, fetchCleanIpSource, fetchSubscriptionText, keepStableRealityRoutes, measureCloudflareEndpoint, measureTcpEndpoint, parseCleanIpList } from './multi-endpoint.js';
 import { evaluateOrder, sweepPendingOrders, ingestBankMessage, loadAutoReviewConfig } from './auto-review.js';
@@ -18,6 +18,7 @@ import { createThreeXuiProvisioner } from './providers/three-x-ui.js';
 import { createHysteriaTicketService, HysteriaAuthError } from './hysteria-auth.js';
 import { claimCustomerDevice as claimDevice, deviceErrorBody, deviceSummary, hashDeviceId, listAccountDevices, readDeviceId, resetAccountDevices, revokeAccountDevice, setDeviceLimitOverride } from './device-bindings.js';
 import { deviceRecoveryErrorBody, deviceRecoveryStatus, listDeviceRecoveryRequests, requestDeviceRecovery, resolveDeviceRecovery } from './device-recovery.js';
+import { createEmergencyPool, EmergencyPoolError, normalizeEmergencyConfig } from './emergency-pool.js';
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -129,7 +130,7 @@ const validEndpoint = endpoint => endpoint.label.length >= 2 && endpoint.host.le
   Number.isInteger(endpoint.port) && endpoint.port >= 1 && endpoint.port <= 65535 &&
   Number.isInteger(endpoint.priority) && endpoint.priority >= 0 && endpoint.priority <= 10_000;
 
-export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', adminUsername = process.env.ADMIN_USERNAME || '', adminPasswordSalt = process.env.ADMIN_PASSWORD_SALT || '', adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || '', provisioner = null, neuralMeshManifest = null, enforceDeviceGateway = process.env.ENFORCE_DEVICE_GATEWAY === 'true', hysteriaTicketSecret = process.env.HYSTERIA2_TICKET_SECRET || '', hysteriaTicketTtlSeconds = process.env.HYSTERIA2_TICKET_TTL_SECONDS || 45, hysteriaResumeSeconds = process.env.HYSTERIA2_RESUME_SECONDS || 43_200, hysteriaStatsMaxAgeSeconds = process.env.HYSTERIA2_STATS_MAX_AGE_SECONDS || 180, panelStatsReader = readPanelStats } = {}) {
+export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-only-change-me', adminUsername = process.env.ADMIN_USERNAME || '', adminPasswordSalt = process.env.ADMIN_PASSWORD_SALT || '', adminPasswordHash = process.env.ADMIN_PASSWORD_HASH || '', provisioner = null, neuralMeshManifest = null, emergencyPool: suppliedEmergencyPool = null, enforceDeviceGateway = process.env.ENFORCE_DEVICE_GATEWAY === 'true', hysteriaTicketSecret = process.env.HYSTERIA2_TICKET_SECRET || '', hysteriaTicketTtlSeconds = process.env.HYSTERIA2_TICKET_TTL_SECONDS || 45, hysteriaResumeSeconds = process.env.HYSTERIA2_RESUME_SECONDS || 43_200, hysteriaStatsMaxAgeSeconds = process.env.HYSTERIA2_STATS_MAX_AGE_SECONDS || 180, panelStatsReader = readPanelStats } = {}) {
   // 3x-ui subscription rendering is deterministic but its HTTPS endpoint can
   // be slow. Keep a short-lived in-memory copy so cold devices do not queue on
   // the panel; server-side client expiry/traffic enforcement remains intact.
@@ -169,6 +170,56 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   const settingsKey=createHash('sha256').update(process.env.SETTINGS_ENCRYPTION_KEY||adminToken).digest();
   const encrypt=value=>{const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',settingsKey,iv),data=Buffer.concat([cipher.update(value,'utf8'),cipher.final()]);return `${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${data.toString('base64url')}`};
   const decrypt=value=>{try{const [a,b,c]=value.split('.'),iv=Buffer.from(a,'base64url'),dec=createDecipheriv('aes-256-gcm',settingsKey,iv);dec.setAuthTag(Buffer.from(b,'base64url'));return Buffer.concat([dec.update(Buffer.from(c,'base64url')),dec.final()]).toString('utf8')}catch{return ''}};
+  const emergencyConfig=()=>normalizeEmergencyConfig({
+    enabled:settingGet('emergency_enabled')==='true',
+    sources:(()=>{try{return JSON.parse(settingGet('emergency_sources')||'[]')}catch{return []}})(),
+    maxNodes:Number(settingGet('emergency_max_nodes')||8),
+    refreshMinutes:Number(settingGet('emergency_refresh_minutes')||30)
+  });
+  const emergencyPool=suppliedEmergencyPool||createEmergencyPool({
+    getConfig:emergencyConfig,
+    readCache:()=>decrypt(settingGet('emergency_cache')||''),
+    writeCache:value=>settingSet('emergency_cache',encrypt(value))
+  });
+  const emergencyStatsMaxAgeMs=Math.max(30,Number(hysteriaStatsMaxAgeSeconds)||180)*1000;
+  const hasEmergencyEntitlement=async(accountId,suppliedStats=null)=>{
+    const rows=db.prepare(`SELECT s.panel_client_id,s.activated_at,s.hysteria_started_at,s.hysteria_expires_at,s.hysteria_traffic_limit_bytes,s.hysteria_used_bytes,p.traffic_gb
+      FROM orders o JOIN subscriptions s ON s.order_id=o.id JOIN plans p ON p.id=o.plan_id
+      WHERE o.account_id=? AND o.order_kind='purchase' AND o.status='approved' AND s.status='active' AND COALESCE(s.control_status,'active')='active'`).all(accountId);
+    if(!rows.length)return false;
+    let stats=suppliedStats;try{if(!stats)stats=await panelStatsReader()||{};}catch{stats={}}
+    const clock=Date.now();
+    return rows.some(row=>{
+      const panel=stats[row.panel_client_id];
+      const panelKnown=Boolean(panel);
+      const panelTotal=Number(panel?.totalBytes||0);
+      const panelUsed=Number(panel?.upBytes||0)+Number(panel?.downBytes||0);
+      const panelExpiry=Number(panel?.expiryTime||0);
+      const panelSyncedAt=Number(panel?.syncedAt||0),panelFresh=panelKnown&&panelSyncedAt>0&&panelSyncedAt<=clock+60_000&&clock-panelSyncedAt<=emergencyStatsMaxAgeMs;
+      const hysteriaKnown=Boolean(row.hysteria_started_at||row.hysteria_expires_at||Number(row.hysteria_traffic_limit_bytes||0)>0||Number(row.hysteria_used_bytes||0)>0);
+      const hysteriaExpiry=row.hysteria_expires_at?Date.parse(row.hysteria_expires_at):0;
+      const hysteriaLimit=Number(row.hysteria_traffic_limit_bytes||0),hysteriaUsed=Number(row.hysteria_used_bytes||0);
+      // Match hysteria-auth.js exactly: panel traffic and external Hysteria
+      // traffic share the panel-reported allowance. Count each source once;
+      // the Hysteria-only limit remains a separate guard below.
+      const combinedUsed=panelUsed+hysteriaUsed;
+      const panelDenied=panelKnown&&(panel.enabled===false||(panelExpiry>0&&panelExpiry<=clock)||(panelTotal>0&&combinedUsed>=panelTotal));
+      const panelAuthoritativeDenied=panelFresh&&panelDenied;
+      const panelEligible=panelFresh&&!panelDenied;
+      const hysteriaDenied=hysteriaKnown&&((row.hysteria_expires_at&&(!Number.isFinite(hysteriaExpiry)||hysteriaExpiry<=clock))||(hysteriaLimit>0&&hysteriaUsed>=hysteriaLimit));
+      const hysteriaEligible=hysteriaKnown&&!hysteriaDenied;
+      const activatedAt=Date.parse(row.activated_at||'');
+      const newlyProvisioned=Number.isFinite(activatedAt)&&activatedAt<=clock+60_000&&clock-activatedAt<=15*60_000;
+      // Fresh panel telemetry is the authoritative billing state. An older
+      // Hysteria window must never revive a panel-disabled, expired or exhausted
+      // subscription. Stale panel data is not authoritative and follows the
+      // existing Hysteria/provisioning fallback policy below.
+      if(panelAuthoritativeDenied)return false;
+      if(panelEligible||hysteriaEligible)return true;
+      if(panelDenied||hysteriaDenied)return false;
+      return newlyProvisioned;
+    });
+  };
   const telegramConfig=()=>({enabled:settingGet('telegram_enabled')==='true',token:decrypt(settingGet('telegram_token')||'')||process.env.TELEGRAM_BOT_TOKEN,secret:decrypt(settingGet('telegram_secret')||'')||process.env.TELEGRAM_WEBHOOK_SECRET,username:settingGet('telegram_username')||'',channel:settingGet('telegram_channel')||'',latestReleaseUrl:settingGet('telegram_latest_release_url')||'',adminIds:(settingGet('telegram_admin_ids')||'').split(',').map(x=>x.trim()).filter(Boolean)});
   const telegramRecovery=createTelegramRecovery(db,{getConfig:telegramConfig});
   const nodeProvisioners = new Map();
@@ -191,6 +242,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     return nodeProvisioners.get(fingerprint);
   };
   const guard=createRequestGuard();
+  const emergencyFailureIpLimiter=createKeyedRateLimiter({limit:300,windowMs:60_000});
+  const emergencySubscriptionAccountLimiter=createKeyedRateLimiter({limit:20,windowMs:60_000});
+  const emergencySubscriptionDeviceLimiter=createKeyedRateLimiter({limit:10,windowMs:60_000});
+  const emergencyLeaseAccountLimiter=createKeyedRateLimiter({limit:60,windowMs:60_000});
+  const emergencyLeaseDeviceLimiter=createKeyedRateLimiter({limit:30,windowMs:60_000});
   const hysteriaTickets=createHysteriaTicketService(db,{
     secret:hysteriaTicketSecret,
     ttlSeconds:hysteriaTicketTtlSeconds,
@@ -345,8 +401,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/studio-mark.svg'){const svg=await readFile(resolve('public/studio-mark.svg'));res.writeHead(200,{'content-type':'image/svg+xml; charset=utf-8','cache-control':'public, max-age=86400'});return res.end(svg);}
       if(req.method==='GET'&&path==='/brand-mark.png'){const png=await readFile(resolve('public/brand-mark.png'));res.writeHead(200,{'content-type':'image/png','cache-control':'public, max-age=86400','content-length':png.length});return res.end(png);}
       if(req.method==='GET'&&path==='/brand-mark.svg'){const svg=await readFile(resolve('public/brand-mark.svg'));res.writeHead(200,{'content-type':'image/svg+xml; charset=utf-8','cache-control':'public, max-age=86400'});return res.end(svg);}
-      if(req.method==='GET'&&path==='/download/nivora-android.apk'){const apk=await readFile(resolve('public/releases/Nivora-Customer-latest.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Customer-0.20.0.apk"','cache-control':'public, max-age=3600','content-length':apk.length,'x-robots-tag':'noindex, nofollow, noarchive'});return res.end(apk);}
-      if(req.method==='GET'&&path==='/download/nivora-partner.apk'){const apk=await readFile(resolve('public/releases/Nivora-Partner-latest.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Partner-0.20.0.apk"','cache-control':'public, max-age=3600','content-length':apk.length,'x-robots-tag':'noindex, nofollow, noarchive'});return res.end(apk);}
+      if(req.method==='GET'&&path==='/download/nivora-android.apk'){const apk=await readFile(resolve('public/releases/Nivora-Customer-latest.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Customer-0.20.1.apk"','cache-control':'public, max-age=3600','content-length':apk.length,'x-robots-tag':'noindex, nofollow, noarchive'});return res.end(apk);}
+      if(req.method==='GET'&&path==='/download/nivora-partner.apk'){const apk=await readFile(resolve('public/releases/Nivora-Partner-latest.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Partner-0.20.1.apk"','cache-control':'public, max-age=3600','content-length':apk.length,'x-robots-tag':'noindex, nofollow, noarchive'});return res.end(apk);}
       if(req.method==='GET'&&path==='/brand.css'){const css=await readFile(resolve('public/brand.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8','cache-control':'public, max-age=3600'});return res.end(css);}
       if (req.method === 'GET' && path === '/admin.css') {
         const css = await readFile(resolve('public/admin.css'));
@@ -384,6 +440,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/admin-password-resets.js'){const js=await readFile(resolve('public/admin-password-resets.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-growth.js'){const js=await readFile(resolve('public/admin-growth.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-telegram.js'){const js=await readFile(resolve('public/admin-telegram.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
+      if(req.method==='GET'&&path==='/admin-emergency.js'){const js=await readFile(resolve('public/admin-emergency.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if (req.method === 'GET' && path === '/admin.js') {
         const js = await readFile(resolve('public/admin.js'));
         res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control':'no-store' }); return res.end(js);
@@ -502,7 +559,100 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         return json(res,202,{accepted:true,message:'اگر حسابی با این شماره وجود داشته باشد، درخواست برای مدیر ارسال می‌شود.'});
       }
       if(path.startsWith('/api/customer/')){
-        const account=accountFromRequest(db,req);if(!account||account.role!=='customer')return json(res,401,{error:'UNAUTHORIZED'});
+        const emergencySubscription=req.method==='GET'&&path==='/api/customer/emergency/subscription';
+        const emergencyLease=req.method==='GET'&&path==='/api/customer/emergency/lease';
+        const emergencyRequest=emergencySubscription||emergencyLease;
+        const requestIp=emergencyRequest?String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim():'';
+        const setEmergencyLimitHeaders=(limit,scope)=>{
+          res.setHeader('x-ratelimit-scope',scope);
+          res.setHeader('x-ratelimit-limit',limit.limit);
+          res.setHeader('x-ratelimit-remaining',limit.remaining);
+        };
+        const emergencyLimitResponse=(limit,scope,error)=>{
+          setEmergencyLimitHeaders(limit,scope);
+          res.setHeader('retry-after',limit.retryAfterSeconds);
+          return json(res,429,{error,retryAfterSeconds:limit.retryAfterSeconds});
+        };
+        const account=accountFromRequest(db,req);
+        if(!account||account.role!=='customer'){
+          if(emergencyRequest){
+            const preAuthLimit=emergencyFailureIpLimiter(requestIp);
+            setEmergencyLimitHeaders(preAuthLimit,'failure-ip');
+            if(preAuthLimit.blocked){
+              const error=emergencyLease?'EMERGENCY_LEASE_PREAUTH_RATE_LIMITED':'EMERGENCY_SUBSCRIPTION_PREAUTH_RATE_LIMITED';
+              return emergencyLimitResponse(preAuthLimit,'failure-ip',error);
+            }
+          }
+          return json(res,401,{error:'UNAUTHORIZED'});
+        }
+        if(emergencyRequest){
+          const rawDeviceHash=deviceHash(req);
+          // Invalid/missing device input is a failure path and consumes the
+          // shared abuse bucket, but a valid bound device never consults that
+          // bucket (so another subscriber behind the same CGNAT is unaffected).
+          if(!rawDeviceHash){
+            const failureLimit=emergencyFailureIpLimiter(requestIp);
+            if(failureLimit.blocked){
+              const error=emergencyLease?'EMERGENCY_LEASE_DEVICE_RATE_LIMITED':'EMERGENCY_SUBSCRIPTION_DEVICE_RATE_LIMITED';
+              return emergencyLimitResponse(failureLimit,'failure-ip',error);
+            }
+          }
+          // Both in-memory guards run before claimCustomerDevice, which opens a
+          // write transaction and updates last_seen_at. The per-account ceiling
+          // prevents rotating syntactically valid device IDs around the device
+          // bucket.
+          const accountLimiter=emergencyLease?emergencyLeaseAccountLimiter:emergencySubscriptionAccountLimiter;
+          const deviceLimiter=emergencyLease?emergencyLeaseDeviceLimiter:emergencySubscriptionDeviceLimiter;
+          const accountLimit=accountLimiter(account.id);
+          if(accountLimit.blocked){
+            const error=emergencyLease?'EMERGENCY_LEASE_ACCOUNT_RATE_LIMITED':'EMERGENCY_SUBSCRIPTION_ACCOUNT_RATE_LIMITED';
+            return emergencyLimitResponse(accountLimit,'account',error);
+          }
+          if(rawDeviceHash){
+            const deviceLimit=deviceLimiter(`${account.id}:${rawDeviceHash}`);
+            setEmergencyLimitHeaders(deviceLimit,'account-device');
+            if(deviceLimit.blocked){
+              const error=emergencyLease?'EMERGENCY_LEASE_RATE_LIMITED':'EMERGENCY_SUBSCRIPTION_RATE_LIMITED';
+              return emergencyLimitResponse(deviceLimit,'account-device',error);
+            }
+          }
+          let claimedDevice;
+          try{claimedDevice=claimCustomerDevice(account,req,{required:true});}
+          catch(error){
+            // Valid-format but unauthorized device IDs fail inside claim. Count
+            // those failures by IP as well; the account ceiling above bounds how
+            // many claim transactions device-ID rotation can trigger.
+            if(rawDeviceHash){
+              const failureLimit=emergencyFailureIpLimiter(requestIp);
+              if(failureLimit.blocked){
+                const code=emergencyLease?'EMERGENCY_LEASE_DEVICE_RATE_LIMITED':'EMERGENCY_SUBSCRIPTION_DEVICE_RATE_LIMITED';
+                return emergencyLimitResponse(failureLimit,'failure-ip',code);
+              }
+            }
+            return json(res,error.status||403,deviceErrorBody(error));
+          }
+          if(!await hasEmergencyEntitlement(account.id))return json(res,403,{error:'EMERGENCY_SUBSCRIPTION_REQUIRED'});
+          if(emergencyLease){
+            const status=emergencyPool.status();
+            if(!status.enabled||!status.ready)return json(res,403,{error:'EMERGENCY_DISABLED'});
+            return json(res,200,{valid:true,leaseSeconds:180});
+          }
+          try{
+            const emergency=await emergencyPool.getBundle();
+            res.writeHead(200,{
+              'content-type':'text/plain; charset=utf-8',
+              'cache-control':'no-store',
+              'vary':'Authorization, X-Nivora-Device',
+              'x-nivora-emergency':'third-party-public',
+              'x-nivora-routes':String(emergency.nodeCount),
+              'x-nivora-lease-seconds':'180'
+            });
+            return res.end(emergency.bundle);
+          }catch(error){
+            const code=error instanceof EmergencyPoolError?error.code:'EMERGENCY_POOL_UNAVAILABLE';
+            return json(res,error.status||503,{error:code});
+          }
+        }
         const hysteriaTicket=path.match(/^\/api\/customer\/subscriptions\/([^/]+)\/connect-ticket$/);
         if(req.method==='POST'&&hysteriaTicket){
           const hash=deviceHash(req);if(!hash)return json(res,403,{error:'DEVICE_REQUIRED'});
@@ -518,11 +668,13 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           }
         }
         if(req.method==='GET'&&path==='/api/customer/me'){
-          const wallet=getWalletStatement(db,account.id,25),panelStats=await readPanelStats();
+          let panelStats={};try{panelStats=await panelStatsReader()||{};}catch{}
+          const wallet=getWalletStatement(db,account.id,25);
         const rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.status,o.created_at,o.tracking_token,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,s.status subscription_status,s.control_status,s.subscription_url,s.access_token subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.flag_emoji,l.city,(SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=o.location_id AND e.active=1) route_count FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.order_kind='purchase' ORDER BY o.created_at DESC LIMIT 100`).all(account.id);
           const orders=rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats));
           const topups=db.prepare('SELECT id,amount_toman,receipt_reference,receipt_image_url,status,review_note,created_at,reviewed_at FROM wallet_topups WHERE account_id=? ORDER BY created_at DESC LIMIT 50').all(account.id),notifications=db.prepare('SELECT id,title,body,read_at,created_at FROM notifications WHERE account_id=? AND dismissed_at IS NULL ORDER BY created_at DESC LIMIT 30').all(account.id),debts=db.prepare(`SELECT d.id,d.amount_toman,d.note,d.status,d.created_at,d.payment_reported_at,a.name reseller_name FROM reseller_debts d JOIN accounts a ON a.id=d.reseller_id WHERE d.customer_account_id=? AND d.status IN ('open','payment_reported') ORDER BY d.created_at DESC`).all(account.id);
-          return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,orders,topups,notifications,debts,device:deviceSummary(db,account.id)});
+          const emergency=emergencyPool.status(),emergencyEntitled=await hasEmergencyEntitlement(account.id,panelStats);
+          return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,orders,topups,notifications,debts,device:deviceSummary(db,account.id),emergency:{enabled:Boolean(emergency.enabled&&emergencyEntitled),ready:Boolean(emergency.ready&&emergencyEntitled),nodeCount:emergencyEntitled?Number(emergency.nodeCount||0):0,updatedAt:emergencyEntitled?emergency.updatedAt||null:null}});
         }
         const debtPayment=path.match(/^\/api\/customer\/debts\/([^/]+)\/report-payment$/);
         if(debtPayment&&req.method==='POST'){
@@ -804,6 +956,38 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         settingSet('admin_username',activeAdminUsername);settingSet('admin_password_salt',password.salt);settingSet('admin_password_hash',password.hash);settingSet('admin_session_version',adminSessionVersion);
         audit('admin','change_password','admin_account','primary');
         return json(res,200,{changed:true});
+      }
+
+      if(req.method==='GET'&&path==='/api/admin/emergency-settings'){
+        return json(res,200,emergencyPool.status());
+      }
+      if(req.method==='PATCH'&&path==='/api/admin/emergency-settings'){
+        const body=await readJson(req),current=emergencyConfig();
+        let next;
+        try{next=normalizeEmergencyConfig({
+          enabled:typeof body.enabled==='boolean'?body.enabled:current.enabled,
+          sources:body.sources===undefined?current.sources:body.sources,
+          maxNodes:body.maxNodes===undefined?current.maxNodes:body.maxNodes,
+          refreshMinutes:body.refreshMinutes===undefined?current.refreshMinutes:body.refreshMinutes
+        });}catch(error){return json(res,error.status||400,{error:error.code||'INVALID_EMERGENCY_SETTINGS'});}
+        settingSet('emergency_enabled',next.enabled);
+        settingSet('emergency_sources',JSON.stringify(next.sources));
+        settingSet('emergency_max_nodes',next.maxNodes);
+        settingSet('emergency_refresh_minutes',next.refreshMinutes);
+        if(current.enabled&&!next.enabled)settingSet('emergency_cache','');
+        audit('admin','update','emergency_settings','pool',{enabled:next.enabled,sourceCount:next.sources.length,maxNodes:next.maxNodes,refreshMinutes:next.refreshMinutes});
+        return json(res,200,{saved:true,...emergencyPool.status()});
+      }
+      if(req.method==='POST'&&path==='/api/admin/emergency-settings/refresh'){
+        try{
+          const status=await emergencyPool.refresh({allowDisabled:true,force:true});
+          audit('admin','refresh','emergency_pool','pool',{nodeCount:status.nodeCount,accepted:status.accepted,rejected:status.rejected,sourceCount:status.sourceCount});
+          return json(res,200,status);
+        }catch(error){
+          const code=error instanceof EmergencyPoolError?error.code:'EMERGENCY_REFRESH_FAILED';
+          audit('admin','refresh_failed','emergency_pool','pool',{code});
+          return json(res,error.status||503,{error:code});
+        }
       }
 
       if(req.method==='GET'&&path==='/api/admin/telegram-settings'){

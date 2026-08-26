@@ -16,22 +16,31 @@ import ir.nivora.app.R
 import ir.nivora.app.data.ApiClient
 import ir.nivora.app.data.ConvertedRouteIdentity
 import ir.nivora.app.data.CustomerConnectPolicy
+import ir.nivora.app.data.EmergencyConnectPolicy
+import ir.nivora.app.data.EmergencyConvertedRoute
+import ir.nivora.app.data.EmergencyRouteHealth
+import ir.nivora.app.data.EmergencyRouteHealthPolicy
 import ir.nivora.app.data.EphemeralConnectTicket
 import ir.nivora.app.data.NetworkTools
 import ir.nivora.app.data.ServiceEndpoint
 import ir.nivora.app.data.SmartRouteMemory
 import ir.nivora.app.data.SubscriptionBundleStore
 import ir.nivora.app.data.VpnRoutingPolicy
+import ir.nivora.app.data.VpnConnectionMode
 import libXray.DialerController
 import libXray.LibXray
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.URL
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
@@ -49,6 +58,7 @@ class NivoraVpnService : VpnService(), DialerController {
         const val EXTRA_ERROR = "vpn_error"
         const val EXTRA_LABEL = "subscription_label"
         const val EXTRA_SMART_ROUTE = "smart_route"
+        const val EXTRA_CONNECTION_MODE = "connection_mode"
         const val ACTION_STOP = "ir.nivora.app.STOP"
         const val ACTION_STATE = "ir.nivora.app.VPN_STATE"
         private const val CHANNEL_ID = "nivora_vpn"
@@ -70,6 +80,7 @@ class NivoraVpnService : VpnService(), DialerController {
     private var tun: ParcelFileDescriptor? = null
     @Volatile private var terminalError = false
     @Volatile private var activeRunId: String? = null
+    @Volatile private var activeConnectionMode = VpnConnectionMode.PRIMARY
 
     override fun protectFd(fd: Long) = protect(fd.toInt())
 
@@ -78,11 +89,20 @@ class NivoraVpnService : VpnService(), DialerController {
             // A notification action may create a fresh service instance. Enter
             // foreground immediately before tearing it down so Android 15 never
             // reports ForegroundServiceDidNotStartInTimeException.
-            showNotification("در حال قطع اتصال…", "", connected = false)
-            generation.incrementAndGet()
-            terminalError = false
-            shutdown(markDisconnected = true)
-            stopSelf()
+            activeConnectionMode = VpnConnectionMode.fromWire(
+                getSharedPreferences("vpn", MODE_PRIVATE).getString("connection_mode", null)
+            ) ?: activeConnectionMode
+            showNotification(
+                if (activeConnectionMode == VpnConnectionMode.EMERGENCY) "در حال قطع اتصال اضطراری…" else "در حال قطع اتصال…",
+                "",
+                connected = false
+            )
+            synchronized(coreLock) {
+                generation.incrementAndGet()
+                terminalError = false
+                shutdownLocked(markDisconnected = true)
+                stopSelfResult(startId)
+            }
             return START_NOT_STICKY
         }
         val url = intent?.getStringExtra(EXTRA_URL)
@@ -91,27 +111,30 @@ class NivoraVpnService : VpnService(), DialerController {
         val deviceId = intent?.getStringExtra(EXTRA_DEVICE_ID)
         val shareLink = intent?.getStringExtra(EXTRA_SHARE_LINK)
         activeRunId = intent?.getStringExtra(EXTRA_RUN_ID)
+        val connectionMode = VpnConnectionMode.fromWire(intent?.getStringExtra(EXTRA_CONNECTION_MODE))
+            ?: VpnConnectionMode.PRIMARY
+        activeConnectionMode = connectionMode
         if (url.isNullOrBlank() && shareLink.isNullOrBlank()) {
             state("error", "SUBSCRIPTION_MISSING")
             stopSelf()
             return START_NOT_STICKY
         }
         val label = intent.getStringExtra(EXTRA_LABEL).orEmpty()
-        val runId = generation.incrementAndGet()
+        val runId = synchronized(coreLock) { generation.incrementAndGet() }
         terminalError = false
         connectionAttempts.incrementAndGet()
-        state("connecting", null)
-        showNotification("در حال برقراری اتصال امن…", label, connected = false)
+        state("connecting", null, connectionMode = connectionMode)
+        showNotification(
+            if (connectionMode == VpnConnectionMode.EMERGENCY) "در حال یافتن مسیر اضطراری…" else "در حال برقراری اتصال امن…",
+            label,
+            connected = false
+        )
         thread(name = "nivora-xray") {
             try {
-                startTunnel(url, subscriptionId, shareLink, sessionToken, deviceId, label, runId)
+                startTunnel(url, subscriptionId, shareLink, sessionToken, deviceId, label, runId, startId, connectionMode)
             } catch (error: Throwable) {
-                if (generation.get() != runId) return@thread
                 Log.e("NivoraVpnService", "VPN tunnel failed: ${error.javaClass.simpleName}")
-                terminalError = true
-                state("error", safeError(error))
-                shutdown(markDisconnected = false)
-                stopSelf()
+                failRunIfOwned(runId, startId, safeError(error), connectionMode)
             } finally {
                 connectionAttempts.decrementAndGet()
             }
@@ -126,10 +149,16 @@ class NivoraVpnService : VpnService(), DialerController {
         sessionToken: String?,
         deviceId: String?,
         label: String,
-        runId: Int
+        runId: Int,
+        serviceStartId: Int,
+        connectionMode: VpnConnectionMode
     ) {
         prepareCoreForRun(runId)
-        val preferTicketRoute = shareLink.isNullOrBlank() &&
+        if (connectionMode == VpnConnectionMode.EMERGENCY &&
+            (url.isNullOrBlank() || !EmergencyConnectPolicy.isEmergencyEndpoint(BuildConfig.API_BASE_URL, url))
+        ) throw IllegalStateException("EMERGENCY_UNAVAILABLE")
+        val preferTicketRoute = connectionMode == VpnConnectionMode.PRIMARY &&
+            shareLink.isNullOrBlank() &&
             !url.isNullOrBlank() &&
             !subscriptionId.isNullOrBlank() &&
             !sessionToken.isNullOrBlank() &&
@@ -139,16 +168,23 @@ class NivoraVpnService : VpnService(), DialerController {
             requestConnectTicket(subscriptionId!!, sessionToken!!, deviceId!!)
         } else null
         val bundleStore = SubscriptionBundleStore(this)
-        val cached = if (url.isNullOrBlank()) null else bundleStore.read(url)
+        // Emergency routes are deliberately never persisted. Public endpoints
+        // are short lived and must be re-authorized and re-curated each time.
+        val cached = if (connectionMode == VpnConnectionMode.PRIMARY && !url.isNullOrBlank()) bundleStore.read(url) else null
         val baseRaw = try {
             shareLink?.takeIf { it.isNotBlank() }
                 ?: cached
-                ?: fetchBundle(url!!, sessionToken, deviceId).also { bundleStore.save(url, it) }
+                ?: fetchBundle(url!!, sessionToken, deviceId).also {
+                    if (connectionMode == VpnConnectionMode.PRIMARY) bundleStore.save(url, it)
+                }
         } catch (error: Throwable) {
             pendingTicket?.cancel()
+            if (connectionMode == VpnConnectionMode.EMERGENCY) {
+                throw IllegalStateException("EMERGENCY_UNAVAILABLE", error)
+            }
             throw error
         }
-        if (cached != null && !url.isNullOrBlank()) thread(name = "nivora-bundle-refresh") {
+        if (connectionMode == VpnConnectionMode.PRIMARY && cached != null && !url.isNullOrBlank()) thread(name = "nivora-bundle-refresh") {
             runCatching { fetchBundle(url, sessionToken, deviceId) }
                 .onSuccess { bundleStore.save(url, it) }
         }
@@ -157,8 +193,11 @@ class NivoraVpnService : VpnService(), DialerController {
             pendingTicket?.cancel()
             throw IllegalStateException("SUBSCRIPTION_EMPTY")
         }
+        val safeRaw = if (connectionMode == VpnConnectionMode.EMERGENCY) {
+            EmergencyConnectPolicy.sanitizeBundle(baseRaw)
+        } else baseRaw
         val ticket = pendingTicket?.await()
-        val ephemeral = CustomerConnectPolicy.attachTicket(baseRaw, ticket, System.currentTimeMillis())
+        val ephemeral = CustomerConnectPolicy.attachTicket(safeRaw, ticket, System.currentTimeMillis())
         var converted = convertShareLinks(ephemeral.raw)
         var ticketAttached = ephemeral.ticketAttached
         var forceRealityFallback = false
@@ -176,6 +215,17 @@ class NivoraVpnService : VpnService(), DialerController {
         var outbounds = config.getJSONArray("outbounds")
         if (outbounds.length() == 0) throw IllegalStateException("SUBSCRIPTION_EMPTY")
         sanitizeOutbounds(outbounds)
+        // Resolve bootstrap DNS before the emergency health gate. pingBatch
+        // creates a temporary Xray instance and therefore needs the same
+        // protected dialer/controller setup as the final core.
+        val bootstrapDns = resolveUnderlyingDns()
+        if (connectionMode == VpnConnectionMode.EMERGENCY) {
+            outbounds = safeEmergencyOutbounds(outbounds)
+            if (outbounds.length() == 0) throw IllegalStateException("EMERGENCY_NO_SAFE_ROUTE")
+            outbounds = workingEmergencyOutbounds(outbounds, bootstrapDns, runId)
+            if (outbounds.length() == 0) throw IllegalStateException("EMERGENCY_NO_WORKING_ROUTE")
+            config.put("outbounds", outbounds)
+        }
         var preferredHysteriaIndex = if (ticketAttached) {
             CustomerConnectPolicy.matchingTicketRouteIndex(ticket, routeIdentities(outbounds))
         } else null
@@ -198,15 +248,15 @@ class NivoraVpnService : VpnService(), DialerController {
         val smartRoute = configureSmartRouting(
             config,
             outbounds,
-            remember = shareLink.isNullOrBlank() && !ticketAttached,
+            remember = connectionMode == VpnConnectionMode.PRIMARY && shareLink.isNullOrBlank() && !ticketAttached,
             preferredHysteriaIndex = preferredHysteriaIndex,
-            forceReality = forceRealityFallback
+            forceReality = forceRealityFallback,
+            connectionMode = connectionMode
         )
         // Bootstrap DNS is used only by libXray before the tunnel is ready.
         // Application DNS must never be sent to the Iranian access provider:
         // filtered resolvers commonly return private sinkhole addresses for
         // Instagram/YouTube even when the proxy itself is perfectly healthy.
-        val bootstrapDns = resolveUnderlyingDns()
         val tunnelDnsTag = "dns-tunnel"
         val usesTunneledDoh = smartRoute.policy.primaryTransport == VpnRoutingPolicy.PrimaryTransport.HYSTERIA2
         val dnsConfig = if (usesTunneledDoh) {
@@ -344,14 +394,17 @@ class NivoraVpnService : VpnService(), DialerController {
         config.getJSONObject("env").put("xray.tun.fd", establishedTun.fd.toString())
         ensureCurrent(runId)
 
-        LibXray.registerDialerController(this)
-        LibXray.setDNS(this, "$bootstrapDns:53")
         val run = JSONObject()
             .put("apiVersion", 1)
             .put("method", "runXrayFromJson")
             .put("payload", JSONObject().put("configJSON", config.toString()))
         synchronized(coreLock) {
             ensureCurrent(runId)
+            // These mutate process-global libXray state. Keep them in the same
+            // ownership critical section as startup so an old network thread
+            // cannot overwrite the DNS/controller of a newer generation.
+            LibXray.registerDialerController(this)
+            LibXray.setDNS(this, "$bootstrapDns:53")
             val result = JSONObject(LibXray.invoke(run.toString()))
             ensureCurrent(runId)
             if (!result.optBoolean("success")) throw IllegalStateException("XRAY_START_FAILED")
@@ -361,21 +414,103 @@ class NivoraVpnService : VpnService(), DialerController {
         // the core as ready immediately so its shorter connection deadline is
         // not spent waiting for the customer's separate health gate below.
         if (activeRunId != null) {
-            state("connected", null, smartRoute.label)
-            showNotification("مسیر آزمایشی آماده است", label, connected = true)
+            synchronized(coreLock) {
+                ensureCurrent(runId)
+                state("connected", null, smartRoute.label, connectionMode)
+                showNotification("مسیر آزمایشی آماده است", label, connected = true)
+            }
             return
         }
         // Mark the tunnel ready as soon as Xray accepts its configuration.
         // The VPN application's own sockets are excluded from its tunnel by
         // Android, therefore blocking this state on in-process web probes can
         // report a false failure on filtered networks.
-        getSharedPreferences("vpn", MODE_PRIVATE).edit().apply {
-            remove("real_latency_ms")
-            remove("real_mbps")
-        }.apply()
-        state("connected", null, smartRoute.label)
-        // Keep route details internal. Customers only need the human location label.
-        showNotification("متصل و محافظت‌شده", label, connected = true)
+        synchronized(coreLock) {
+            ensureCurrent(runId)
+            getSharedPreferences("vpn", MODE_PRIVATE).edit().apply {
+                remove("real_latency_ms")
+                remove("real_mbps")
+            }.apply()
+            state("connected", null, smartRoute.label, connectionMode)
+            // Keep route details internal. Customers only need the human location label.
+            showNotification(
+                if (connectionMode == VpnConnectionMode.EMERGENCY) "اتصال اضطراری فعال است" else "متصل و محافظت‌شده",
+                label,
+                connected = true
+            )
+        }
+        if (connectionMode == VpnConnectionMode.EMERGENCY) {
+            startEmergencyLeaseMonitor(sessionToken, deviceId, runId, serviceStartId, smartRoute.label)
+        }
+    }
+
+    private fun startEmergencyLeaseMonitor(
+        sessionToken: String?,
+        deviceId: String?,
+        runId: Int,
+        serviceStartId: Int,
+        smartRoute: String?
+    ) {
+        thread(name = "nivora-emergency-lease", isDaemon = true) {
+            var lease = VpnLifecyclePolicy.initialEmergencyLease(SystemClock.elapsedRealtime())
+            var nextDelayMs = VpnLifecyclePolicy.emergencyLeaseInitialDelay(emergencyLeaseJitter(15_000L))
+            while (generation.get() == runId && coreRunning.get()) {
+                try { Thread.sleep(nextDelayMs) } catch (_: InterruptedException) { return@thread }
+                if (generation.get() != runId || !coreRunning.get()) return@thread
+                val check = if (sessionToken.isNullOrBlank() || deviceId.isNullOrBlank()) {
+                    EmergencyLeaseCheck.DENIED
+                } else {
+                    validateEmergencyLease(sessionToken, deviceId)
+                }
+                val decision = VpnLifecyclePolicy.evaluateEmergencyLease(
+                    current = lease,
+                    check = check,
+                    nowMs = SystemClock.elapsedRealtime(),
+                    jitterMs = emergencyLeaseJitter(10_000L)
+                )
+                lease = decision.state
+                if (VpnLifecyclePolicy.shouldTerminateOwnedRun(runId, generation.get(), decision)) {
+                    failRunIfOwned(
+                        runId,
+                        serviceStartId,
+                        "EMERGENCY_LEASE_EXPIRED",
+                        VpnConnectionMode.EMERGENCY,
+                        smartRoute
+                    )
+                    return@thread
+                }
+                nextDelayMs = decision.nextDelayMs
+            }
+        }
+    }
+
+    private fun emergencyLeaseJitter(maxMs: Long): Long =
+        ThreadLocalRandom.current().nextLong(maxMs.coerceAtLeast(0L) + 1L)
+
+    private fun validateEmergencyLease(sessionToken: String, deviceId: String): EmergencyLeaseCheck {
+        val target = EmergencyConnectPolicy.leaseEndpoint(BuildConfig.API_BASE_URL)
+        val connection = (URL(target).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 6_000
+            readTimeout = 8_000
+            useCaches = false
+            instanceFollowRedirects = false
+            setRequestProperty("Accept", "application/json")
+            setRequestProperty("Authorization", "Bearer $sessionToken")
+            setRequestProperty("X-Nivora-Device", deviceId)
+        }
+        return try {
+            when (connection.responseCode) {
+                in 200..299 -> EmergencyLeaseCheck.VALID
+                401, 403 -> EmergencyLeaseCheck.DENIED
+                408, 425, 429 -> EmergencyLeaseCheck.TRANSIENT_FAILURE
+                in 500..599 -> EmergencyLeaseCheck.TRANSIENT_FAILURE
+                else -> EmergencyLeaseCheck.DENIED
+            }
+        } catch (_: Throwable) {
+            EmergencyLeaseCheck.TRANSIENT_FAILURE
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private class PendingConnectTicket(
@@ -426,18 +561,46 @@ class NivoraVpnService : VpnService(), DialerController {
     }
 
     private fun fetchBundle(url: String, sessionToken: String?, deviceId: String?): String {
+        val firstParty = EmergencyConnectPolicy.isFirstParty(BuildConfig.API_BASE_URL, url)
+        val emergencyEndpoint = EmergencyConnectPolicy.isEmergencyEndpoint(BuildConfig.API_BASE_URL, url)
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 6_000
             readTimeout = 8_000
             useCaches = false
+            instanceFollowRedirects = false
             setRequestProperty("Accept", "text/plain")
-            if (!sessionToken.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $sessionToken")
-            if (!deviceId.isNullOrBlank()) setRequestProperty("X-Nivora-Device", deviceId)
+            setRequestProperty("Accept-Encoding", "identity")
+            // Never disclose a Nivora session or device identifier to an
+            // upstream panel, GitHub feed, redirect target, or other origin.
+            if (firstParty && !sessionToken.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $sessionToken")
+            if (firstParty && !deviceId.isNullOrBlank()) setRequestProperty("X-Nivora-Device", deviceId)
         }
         return try {
             if (connection.responseCode !in 200..299) throw IllegalStateException("SUBSCRIPTION_UNAVAILABLE")
-            connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val maxBytes = if (emergencyEndpoint) EmergencyConnectPolicy.MAX_BUNDLE_BYTES else 2_000_000
+            if (connection.contentLengthLong > maxBytes) {
+                throw IllegalStateException(if (emergencyEndpoint) "EMERGENCY_BUNDLE_INVALID" else "SUBSCRIPTION_INVALID")
+            }
+            readUtf8Limited(connection.inputStream, maxBytes, emergencyEndpoint)
         } finally { connection.disconnect() }
+    }
+
+    private fun readUtf8Limited(input: InputStream, maxBytes: Int, emergency: Boolean): String {
+        val output = ByteArrayOutputStream(minOf(maxBytes, 32 * 1024))
+        val buffer = ByteArray(8 * 1024)
+        var total = 0
+        input.use { source ->
+            while (true) {
+                val count = source.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > maxBytes) {
+                    throw IllegalStateException(if (emergency) "EMERGENCY_BUNDLE_INVALID" else "SUBSCRIPTION_INVALID")
+                }
+                output.write(buffer, 0, count)
+            }
+        }
+        return output.toString(Charsets.UTF_8.name())
     }
 
     /**
@@ -487,6 +650,125 @@ class NivoraVpnService : VpnService(), DialerController {
         }
     }
 
+    private fun safeEmergencyOutbounds(outbounds: JSONArray): JSONArray {
+        val safe = JSONArray()
+        for (index in 0 until outbounds.length()) {
+            if (safe.length() >= EmergencyConnectPolicy.MAX_ROUTES) break
+            val outbound = outbounds.optJSONObject(index) ?: continue
+            val stream = outbound.optJSONObject("streamSettings")
+            val tls = stream?.optJSONObject("tlsSettings")
+            val hysteria = stream?.optJSONObject("hysteriaSettings")
+                ?: outbound.optJSONObject("hysteriaSettings")
+            val endpoint = endpointFromOutbound(outbound)
+            val allowInsecure = jsonTrue(tls, "allowInsecure") ||
+                jsonTrue(tls, "insecure") || jsonTrue(hysteria, "allowInsecure") ||
+                jsonTrue(hysteria, "insecure")
+            val descriptor = EmergencyConvertedRoute(
+                protocol = outbound.optString("protocol"),
+                network = stream?.optString("network"),
+                security = stream?.optString("security"),
+                host = endpoint?.host,
+                port = endpoint?.port,
+                allowInsecure = allowInsecure
+            )
+            if (EmergencyConnectPolicy.isAllowedConvertedRoute(descriptor)) safe.put(outbound)
+        }
+        return safe
+    }
+
+    private fun workingEmergencyOutbounds(
+        outbounds: JSONArray,
+        bootstrapDns: String,
+        runId: Int
+    ): JSONArray {
+        val firstBatch = EmergencyRouteHealthPolicy.firstBatchIndexes(outbounds.length())
+        val firstWorking = EmergencyRouteHealthPolicy.successfulIndexes(
+            firstBatch,
+            pingEmergencyBatch(outbounds, firstBatch, bootstrapDns, runId, timeoutSeconds = 4)
+        )
+        val selected = if (firstWorking.isNotEmpty()) {
+            firstWorking
+        } else {
+            val fallbackBatch = EmergencyRouteHealthPolicy.fallbackBatchIndexes(outbounds.length(), firstWorking)
+            EmergencyRouteHealthPolicy.successfulIndexes(
+                fallbackBatch,
+                pingEmergencyBatch(outbounds, fallbackBatch, bootstrapDns, runId, timeoutSeconds = 3)
+            )
+        }
+        return JSONArray().apply {
+            selected.forEach { index -> put(outbounds.getJSONObject(index)) }
+        }
+    }
+
+    private fun pingEmergencyBatch(
+        outbounds: JSONArray,
+        indexes: List<Int>,
+        bootstrapDns: String,
+        runId: Int,
+        timeoutSeconds: Int
+    ): List<EmergencyRouteHealth> {
+        if (indexes.isEmpty()) return emptyList()
+        val tempFiles = mutableListOf<File>()
+        val failed = List(indexes.size) { EmergencyRouteHealth(success = false, delayMs = Long.MAX_VALUE) }
+        return try {
+            val configs = JSONArray()
+            indexes.forEach { index ->
+                val outbound = JSONObject(outbounds.getJSONObject(index).toString()).put("tag", "proxy")
+                val tempConfig = JSONObject().put("outbounds", JSONArray().put(outbound))
+                val file = File.createTempFile("nivora-emergency-health-", ".json", cacheDir)
+                tempFiles += file
+                file.outputStream().bufferedWriter(Charsets.UTF_8).use { it.write(tempConfig.toString()) }
+                configs.put(JSONObject().put("configPath", file.absolutePath).put("outboundTag", "proxy"))
+            }
+            val request = JSONObject()
+                .put("apiVersion", 1)
+                .put("method", "pingBatch")
+                .put(
+                    "payload",
+                    JSONObject()
+                        .put("configs", configs)
+                        .put("timeout", timeoutSeconds.coerceIn(1, 4))
+                        .put("url", "https://cp.cloudflare.com/")
+                )
+            val rawResponse = synchronized(coreLock) {
+                ensureCurrent(runId)
+                // pingBatch owns temporary process-global Xray state. Holding
+                // the same lock as final startup prevents overlap with a new
+                // generation; final run re-registers controller and DNS.
+                LibXray.registerDialerController(this)
+                LibXray.setDNS(this, "$bootstrapDns:53")
+                val response = LibXray.invoke(request.toString())
+                ensureCurrent(runId)
+                response
+            }
+            parseEmergencyPingBatch(rawResponse, indexes.size)
+        } catch (error: Throwable) {
+            if (error is InterruptedException) throw error
+            failed
+        } finally {
+            tempFiles.forEach { file -> runCatching { file.delete() } }
+        }
+    }
+
+    private fun parseEmergencyPingBatch(raw: String, expected: Int): List<EmergencyRouteHealth> = runCatching {
+        val envelope = JSONObject(raw)
+        if (!envelope.optBoolean("success")) return@runCatching emptyList()
+        val results = envelope.optJSONObject("data")?.optJSONArray("results") ?: return@runCatching emptyList()
+        (0 until expected).map { index ->
+            val item = results.optJSONObject(index)
+            EmergencyRouteHealth(
+                success = item?.optBoolean("success") == true,
+                delayMs = item?.optLong("delay", Long.MAX_VALUE) ?: Long.MAX_VALUE
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    private fun jsonTrue(value: JSONObject?, key: String): Boolean {
+        if (value == null || !value.has(key)) return false
+        return value.optBoolean(key) || value.optString(key).equals("1") ||
+            value.optString(key).equals("true", ignoreCase = true)
+    }
+
     private data class SmartRoute(
         val rule: JSONObject,
         val balancers: JSONArray? = null,
@@ -499,7 +781,8 @@ class NivoraVpnService : VpnService(), DialerController {
         outbounds: JSONArray,
         remember: Boolean,
         preferredHysteriaIndex: Int? = null,
-        forceReality: Boolean = false
+        forceReality: Boolean = false,
+        connectionMode: VpnConnectionMode = VpnConnectionMode.PRIMARY
     ): SmartRoute {
         val identities = routeIdentities(outbounds)
         val eligibleIndexes = CustomerConnectPolicy.eligibleRouteIndexes(identities, forceReality)
@@ -541,7 +824,11 @@ class NivoraVpnService : VpnService(), DialerController {
         val selectedLabel = candidates.firstOrNull { it.first == selectedIndex }
             ?.let { SmartRouteMemory.label(outbounds.getJSONObject(it.first)) }
         val selectedIsHysteria = outboundIsHysteria(outbounds.getJSONObject(selectedIndex))
-        val policy = VpnRoutingPolicy.forSession(selectedIsHysteria)
+        val policy = if (connectionMode == VpnConnectionMode.EMERGENCY) {
+            VpnRoutingPolicy.forEmergency(selectedIsHysteria)
+        } else {
+            VpnRoutingPolicy.forSession(selectedIsHysteria)
+        }
         if (remember) {
             val selectedSignature = signatures[selectedIndex]
             if (selectedSignature != null) {
@@ -722,17 +1009,27 @@ class NivoraVpnService : VpnService(), DialerController {
         if (!VpnLifecyclePolicy.isCurrentRun(runId, generation.get())) throw InterruptedException("VPN_STOPPED")
     }
 
-    private fun state(value: String, error: String?, smartRoute: String? = null) {
+    private fun state(
+        value: String,
+        error: String?,
+        smartRoute: String? = null,
+        connectionMode: VpnConnectionMode = activeConnectionMode
+    ) {
         getSharedPreferences("vpn", MODE_PRIVATE).edit()
             .putString("state", value)
             .apply { if (error == null) remove("error") else putString("error", error) }
             .apply { if (smartRoute == null) { if (value != "connected") remove("smart_route") } else putString("smart_route", smartRoute) }
+            .apply {
+                if (value == "disconnected") remove("connection_mode")
+                else putString("connection_mode", connectionMode.wireValue)
+            }
             .apply()
         sendBroadcast(Intent(ACTION_STATE).setPackage(packageName)
             .putExtra(EXTRA_RUN_ID, activeRunId)
             .putExtra(EXTRA_STATE, value)
             .putExtra(EXTRA_ERROR, error)
-            .putExtra(EXTRA_SMART_ROUTE, smartRoute))
+            .putExtra(EXTRA_SMART_ROUTE, smartRoute)
+            .putExtra(EXTRA_CONNECTION_MODE, connectionMode.wireValue))
     }
 
     // The partner flavor removes this service from its merged manifest. Lint
@@ -767,12 +1064,6 @@ class NivoraVpnService : VpnService(), DialerController {
         startForeground(NOTIFICATION_ID, notification)
     }
 
-    private fun stopCore() {
-        synchronized(coreLock) {
-            stopCoreLocked()
-        }
-    }
-
     /**
      * A delayed thread from an older start command must never stop the core
      * owned by a newer generation. The generation decision and native stop are
@@ -794,7 +1085,23 @@ class NivoraVpnService : VpnService(), DialerController {
         coreRunning.set(false)
     }
 
-    private fun shutdown(markDisconnected: Boolean) {
+    private fun failRunIfOwned(
+        runId: Int,
+        serviceStartId: Int,
+        error: String,
+        connectionMode: VpnConnectionMode,
+        smartRoute: String? = null
+    ): Boolean = synchronized(coreLock) {
+        if (generation.get() != runId) return@synchronized false
+        generation.incrementAndGet()
+        terminalError = true
+        state("error", error, smartRoute, connectionMode)
+        shutdownLocked(markDisconnected = false)
+        stopSelfResult(serviceStartId)
+        true
+    }
+
+    private fun shutdownLocked(markDisconnected: Boolean) {
         // Closing the TUN first makes a user-requested disconnect immediate,
         // even if the native core takes time to finish its own shutdown.
         val activeTun = synchronized(tunnelLock) {
@@ -803,12 +1110,13 @@ class NivoraVpnService : VpnService(), DialerController {
         runCatching { activeTun?.close() }
         if (markDisconnected) state("disconnected", null)
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopCore()
+        stopCoreLocked()
     }
 
     private fun safeError(error: Throwable): String = when {
         error is java.net.SocketTimeoutException -> "SUBSCRIPTION_TIMEOUT"
         error is java.net.UnknownHostException -> "SUBSCRIPTION_NETWORK_ERROR"
+        error.message?.startsWith("EMERGENCY_") == true -> error.message!!
         error.message?.startsWith("SUBSCRIPTION_") == true -> error.message!!
         error.message == "TUN_CREATE_FAILED" -> "TUN_CREATE_FAILED"
         error.message == "TUNNEL_UNHEALTHY" -> "TUNNEL_UNHEALTHY"
@@ -816,16 +1124,20 @@ class NivoraVpnService : VpnService(), DialerController {
     }
 
     override fun onRevoke() {
-        generation.incrementAndGet()
-        terminalError = false
-        shutdown(markDisconnected = true)
-        stopSelf()
+        synchronized(coreLock) {
+            generation.incrementAndGet()
+            terminalError = false
+            shutdownLocked(markDisconnected = true)
+            stopSelf()
+        }
         super.onRevoke()
     }
 
     override fun onDestroy() {
-        generation.incrementAndGet()
-        shutdown(markDisconnected = !terminalError)
+        synchronized(coreLock) {
+            generation.incrementAndGet()
+            shutdownLocked(markDisconnected = !terminalError)
+        }
         super.onDestroy()
     }
 }

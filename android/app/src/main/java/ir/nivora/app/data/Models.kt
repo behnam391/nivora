@@ -59,6 +59,16 @@ data class CustomerNotification(
     val createdAt: String
 )
 
+data class EmergencyAvailability(
+    val enabled: Boolean = false,
+    val ready: Boolean = false,
+    val nodeCount: Int = 0,
+    val updatedAt: String? = null
+) {
+    val available: Boolean
+        get() = enabled && ready && nodeCount > 0
+}
+
 data class SupportTicket(
     val id: String,
     val subject: String,
@@ -88,7 +98,8 @@ data class Account(
     val subscriptions: List<Subscription>,
     val transactions: List<WalletTransaction>,
     val topups: List<WalletTopup>,
-    val notifications: List<CustomerNotification>
+    val notifications: List<CustomerNotification>,
+    val emergency: EmergencyAvailability = EmergencyAvailability()
 )
 
 data class ResellerCustomer(

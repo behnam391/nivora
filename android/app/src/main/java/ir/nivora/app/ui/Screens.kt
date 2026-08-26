@@ -494,6 +494,7 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
         )
     }
     if (state.showVpnDisclosure) VpnDisclosureDialog(actions::dismissVpnDisclosure, actions::acceptVpnDisclosure)
+    if (state.showEmergencyDisclosure) EmergencyDisclosureDialog(actions::dismissEmergencyDisclosure, actions::acceptEmergencyDisclosure)
 }
 
 @Composable
@@ -720,7 +721,26 @@ private fun HomeScreen(
         }
         item {
             Column(Modifier.padding(horizontal = 20.dp)) {
-                ConnectionHero(state.vpnState, state.vpnError, state.selectedSubscription, state.pingMs, state.pingBusy, actions::toggleVpn, actions::measurePing)
+                val emergencyOwnsSession = state.vpnMode == VpnConnectionMode.EMERGENCY
+                val primaryState = if (emergencyOwnsSession) "disconnected" else state.vpnState
+                val emergencyState = if (emergencyOwnsSession) state.vpnState else "disconnected"
+                ConnectionHero(
+                    primaryState,
+                    state.vpnError.takeUnless { emergencyOwnsSession },
+                    state.selectedSubscription,
+                    state.pingMs.takeUnless { emergencyOwnsSession },
+                    state.pingBusy && !emergencyOwnsSession,
+                    actions::toggleVpn,
+                    actions::measurePing
+                )
+                Spacer(Modifier.height(10.dp))
+                EmergencyConnectionButton(
+                    state = emergencyState,
+                    error = state.vpnError.takeIf { emergencyOwnsSession },
+                    available = account.emergency.available && state.activeSubscriptions.isNotEmpty(),
+                    primaryActive = !emergencyOwnsSession && state.vpnState in setOf("connected", "connecting"),
+                    onToggle = actions::toggleEmergencyVpn
+                )
             }
         }
         item {
@@ -1357,6 +1377,36 @@ private fun VpnDisclosureDialog(onDismiss: () -> Unit, onAccept: () -> Unit) {
         Text("با ادامه، اجازه ساخت اتصال VPN در مرحله بعد از طرف اندروید درخواست می‌شود.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
         Button(onClick = onAccept, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.CheckCircle, null); Spacer(Modifier.width(7.dp)); Text("متوجه شدم و ادامه") }
         TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("فعلاً نه") }
+    }
+}
+
+@Composable
+private fun EmergencyDisclosureDialog(onDismiss: () -> Unit, onAccept: () -> Unit) {
+    AppDialog(onDismiss) {
+        DialogTitle(
+            Icons.Rounded.Public,
+            "اتصال اضطراری",
+            "این حالت فقط برای زمانی است که مسیرهای اختصاصی Nivora در دسترس نیستند."
+        )
+        Column(
+            Modifier.fillMaxWidth().background(Color(0xFFFFC857).copy(.11f), RoundedCornerShape(18.dp)).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            DisclosureLine(Icons.Rounded.Bolt, "برنامه از میان تعداد محدودی مسیر عمومیِ بررسی‌شده، یک مسیر موقت انتخاب می‌کند.")
+            DisclosureLine(Icons.Rounded.Visibility, "مدیر مسیر عمومی می‌تواند IP، زمان اتصال و مقصدهای اتصال را ببیند؛ از ارسال اطلاعات بسیار حساس خودداری کنید.")
+            DisclosureLine(Icons.Rounded.RestartAlt, "با آماده‌شدن سرویس اصلی، اتصال اضطراری را قطع و اتصال اصلی را دوباره فعال کنید.")
+        }
+        Text(
+            "کانفیگ خام، نام منبع و روش فنی در برنامه نمایش داده نمی‌شود و این حالت به‌طور خودکار ذخیره دائمی نمی‌شود.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Button(onClick = onAccept, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Rounded.CheckCircle, null)
+            Spacer(Modifier.width(7.dp))
+            Text("متوجه شدم؛ اتصال اضطراری")
+        }
+        TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("انصراف") }
     }
 }
 

@@ -1,5 +1,28 @@
 import { randomUUID } from 'node:crypto';
 
+export function createKeyedRateLimiter({ limit = 30, windowMs = 60_000, now = () => Date.now(), maxBuckets = 10_000 } = {}) {
+  const buckets = new Map();
+  return rawKey => {
+    const key = String(rawKey || '').slice(0, 256);
+    const time = now();
+    let bucket = buckets.get(key);
+    if (!bucket || time - bucket.start >= windowMs) bucket = { start: time, count: 0 };
+    bucket.count += 1;
+    buckets.set(key, bucket);
+    if (buckets.size > maxBuckets) {
+      for (const [candidate, value] of buckets) {
+        if (time - value.start >= windowMs) buckets.delete(candidate);
+      }
+    }
+    return {
+      blocked: bucket.count > limit,
+      limit,
+      remaining: Math.max(limit - bucket.count, 0),
+      retryAfterSeconds: Math.max(1, Math.ceil((windowMs - (time - bucket.start)) / 1000))
+    };
+  };
+}
+
 export function createRequestGuard({ now = () => Date.now() } = {}) {
   const buckets=new Map();
   const rules=[
@@ -9,7 +32,11 @@ export function createRequestGuard({ now = () => Date.now() } = {}) {
     {test:p=>p==='/api/device-recovery/request',bucket:()=>'/api/device-recovery/request',limit:20,windowMs:10*60_000},
     {test:p=>p==='/api/receipts',limit:30,windowMs:60*60_000},
     {test:p=>p.startsWith('/api/admin/'),limit:300,windowMs:60_000},
-    {test:p=>p.startsWith('/api/'),limit:180,windowMs:60_000}
+    // Emergency leases must not share the generic public-IP bucket: Iranian
+    // mobile CGNAT can place many customers behind one address. app.js applies
+    // a generous IP bucket only to failed pre-auth requests, then a strict
+    // account+device bucket after successful authentication.
+    {test:p=>p.startsWith('/api/')&&!['/api/customer/emergency/lease','/api/customer/emergency/subscription'].includes(p),limit:180,windowMs:60_000}
   ];
   const ip=req=>String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();
   return (req,res,path)=>{

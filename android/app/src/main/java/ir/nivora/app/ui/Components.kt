@@ -305,6 +305,91 @@ fun ConnectionHero(
     }
 }
 
+@Composable
+fun EmergencyConnectionButton(
+    state: String,
+    error: String?,
+    available: Boolean,
+    primaryActive: Boolean,
+    onToggle: () -> Unit
+) {
+    val active = state == "connected"
+    val busy = state == "connecting" || state == "disconnecting"
+    val failed = state == "error"
+    val accent by animateColorAsState(
+        when {
+            active -> Color(0xFFFFC857)
+            busy -> Color(0xFFC79BFF)
+            failed -> Color(0xFFFF7B9C)
+            else -> Color(0xFF9CAEFF)
+        },
+        animationSpec = tween(320),
+        label = "emergency-accent"
+    )
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    listOf(Color(0xB51A2041), Color(0xA8111732), accent.copy(alpha = .10f))
+                )
+            )
+            .border(1.dp, accent.copy(alpha = if (active || busy) .48f else .24f), shape)
+            .clickable(enabled = available || active || busy || failed, onClick = onToggle)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp)
+    ) {
+        Box(
+            Modifier.size(42.dp).background(accent.copy(.14f), CircleShape).border(1.dp, accent.copy(.42f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            if (busy) CircularProgressIndicator(Modifier.size(23.dp), color = accent, strokeWidth = 2.dp)
+            else Icon(
+                when {
+                    active -> Icons.Rounded.StopCircle
+                    failed -> Icons.Rounded.Refresh
+                    else -> Icons.Rounded.Public
+                },
+                null,
+                tint = accent,
+                modifier = Modifier.size(23.dp)
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                when {
+                    active -> "قطع اتصال اضطراری"
+                    state == "connecting" -> "در حال یافتن مسیر اضطراری…"
+                    state == "disconnecting" -> "در حال قطع اتصال اضطراری…"
+                    failed -> "تلاش دوباره با اتصال اضطراری"
+                    primaryActive -> "جایگزینی با اتصال اضطراری"
+                    available -> "اتصال اضطراری"
+                    else -> "اتصال اضطراری فعلاً آماده نیست"
+                },
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                when {
+                    active -> "مسیر عمومی موقت فعال است"
+                    failed -> error ?: "مسیر سالمی پیدا نشد"
+                    available -> "فقط زمانی که اتصال اصلی پاسخ نمی‌دهد"
+                    else -> "پس از آماده‌شدن مسیرهای بررسی‌شده فعال می‌شود"
+                },
+                color = if (failed) Color(0xFFFFB4C6) else Color(0xFFAEBCE2),
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Icon(Icons.Rounded.ChevronLeft, null, tint = accent.copy(.88f), modifier = Modifier.size(22.dp))
+    }
+}
+
 private enum class ConnectionVisualState { Disconnected, Connecting, Disconnecting, Connected, Error }
 
 /** The only infinite animation in the hero, and it leaves composition when ready. */

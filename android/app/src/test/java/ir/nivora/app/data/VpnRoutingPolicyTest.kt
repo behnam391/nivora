@@ -25,4 +25,22 @@ class VpnRoutingPolicyTest {
         assertTrue(policy.allowsSmartBalancer)
         assertTrue(policy.rejectUdp443)
     }
+
+    @Test
+    fun emergencyTlsUsesItsOwnPolicyInsteadOfPretendingToBeReality() {
+        val policy = VpnRoutingPolicy.forEmergency(hysteriaSelected = false)
+
+        assertEquals(VpnRoutingPolicy.PrimaryTransport.EMERGENCY_TLS, policy.primaryTransport)
+        assertEquals(VpnRoutingPolicy.RouteMode.SMART_BALANCER, policy.routeMode)
+        assertTrue(policy.rejectUdp443)
+    }
+
+    @Test
+    fun emergencyHysteriaKeepsUdpAndOwnsTheSession() {
+        val policy = VpnRoutingPolicy.forEmergency(hysteriaSelected = true)
+
+        assertEquals(VpnRoutingPolicy.PrimaryTransport.HYSTERIA2, policy.primaryTransport)
+        assertTrue(policy.usesExclusiveProxy)
+        assertFalse(policy.rejectUdp443)
+    }
 }

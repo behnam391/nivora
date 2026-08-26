@@ -327,13 +327,15 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
     }
 
     fun subscription(url: String, token: String? = null): String {
+        val firstParty = EmergencyConnectPolicy.isFirstParty(baseUrl, url)
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 6_000
             readTimeout = 8_000
             useCaches = false
+            instanceFollowRedirects = false
             setRequestProperty("Accept", "text/plain")
-            if (!token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")
-            if (deviceId.isNotBlank()) setRequestProperty("X-Nivora-Device", deviceId)
+            if (firstParty && !token.isNullOrBlank()) setRequestProperty("Authorization", "Bearer $token")
+            if (firstParty && deviceId.isNotBlank()) setRequestProperty("X-Nivora-Device", deviceId)
         }
         return try {
             if (connection.responseCode !in 200..299) throw ApiException("SUBSCRIPTION_UNAVAILABLE", connection.responseCode)
@@ -433,9 +435,16 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
                 it.optString("read_at").takeIf(String::isNotBlank), it.getString("created_at")
             )
         }
+        val emergencyJson = json.optJSONObject("emergency")
+        val emergency = EmergencyAvailability(
+            enabled = emergencyJson?.optBoolean("enabled") == true,
+            ready = emergencyJson?.optBoolean("ready") == true,
+            nodeCount = emergencyJson?.optInt("nodeCount")?.coerceIn(0, EmergencyConnectPolicy.MAX_ROUTES) ?: 0,
+            updatedAt = emergencyJson?.cleanText("updatedAt")
+        )
         return Account(
             json.getString("name"), json.getString("phone"), json.getInt("balanceToman"),
-            subscriptions, transactions, topups, notifications
+            subscriptions, transactions, topups, notifications, emergency
         )
     }
 

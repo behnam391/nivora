@@ -14,6 +14,7 @@ import ir.nivora.app.data.ResellerWalletTransfer
 import ir.nivora.app.data.Subscription
 import ir.nivora.app.data.SupportTicket
 import ir.nivora.app.data.TicketConversation
+import ir.nivora.app.data.VpnConnectionMode
 
 enum class AppDestination { HOME, PLANS, WALLET, SUPPORT }
 enum class LoginRole { CUSTOMER, RESELLER }
@@ -52,11 +53,13 @@ data class NivoraUiState(
     val loadError: String? = null,
     val vpnState: String = "disconnected",
     val vpnError: String? = null,
+    val vpnMode: VpnConnectionMode? = null,
     val smartRoute: String? = null,
     val selectedSubscriptionId: String? = null,
     val pingMs: Long? = null,
     val pingBusy: Boolean = false,
     val showVpnDisclosure: Boolean = false,
+    val showEmergencyDisclosure: Boolean = false,
     val discount: DiscountResult? = null,
     val deviceRecovery: DeviceRecoveryUiState? = null,
     val biometricEnabled: Boolean = false,
@@ -86,8 +89,11 @@ interface NivoraActions {
     fun refresh()
     fun selectSubscription(subscription: Subscription)
     fun toggleVpn()
+    fun toggleEmergencyVpn()
     fun acceptVpnDisclosure()
     fun dismissVpnDisclosure()
+    fun acceptEmergencyDisclosure()
+    fun dismissEmergencyDisclosure()
     fun measurePing()
     fun purchase(plan: Plan, discountCode: String)
     fun validateDiscount(code: String)

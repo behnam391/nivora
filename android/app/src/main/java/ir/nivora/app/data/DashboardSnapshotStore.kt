@@ -73,7 +73,15 @@ class DashboardSnapshotStore(context: Context) {
                 subscriptions = account.getJSONArray("subscriptions").objects(::subscription),
                 transactions = account.optJSONArray("transactions").objects(::transaction),
                 topups = account.optJSONArray("topups").objects(::topup),
-                notifications = account.optJSONArray("notifications").objects(::notification)
+                notifications = account.optJSONArray("notifications").objects(::notification),
+                emergency = account.optJSONObject("emergency")?.let {
+                    EmergencyAvailability(
+                        enabled = it.optBoolean("enabled"),
+                        ready = it.optBoolean("ready"),
+                        nodeCount = it.optInt("nodeCount").coerceIn(0, EmergencyConnectPolicy.MAX_ROUTES),
+                        updatedAt = it.textOrNull("updatedAt")
+                    )
+                } ?: EmergencyAvailability()
             ),
             plans = root.optJSONArray("plans").objects(::plan),
             tickets = root.optJSONArray("tickets").objects(::ticket)
@@ -88,6 +96,11 @@ class DashboardSnapshotStore(context: Context) {
         .put("transactions", JSONArray().apply { account.transactions.forEach { put(transactionJson(it)) } })
         .put("topups", JSONArray().apply { account.topups.forEach { put(topupJson(it)) } })
         .put("notifications", JSONArray().apply { account.notifications.forEach { put(notificationJson(it)) } })
+        .put("emergency", JSONObject()
+            .put("enabled", account.emergency.enabled)
+            .put("ready", account.emergency.ready)
+            .put("nodeCount", account.emergency.nodeCount)
+            .putNullable("updatedAt", account.emergency.updatedAt))
 
     private fun subscriptionJson(value: Subscription) = JSONObject()
         .put("id", value.id).put("planName", value.planName).put("status", value.status)

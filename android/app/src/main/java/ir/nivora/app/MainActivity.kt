@@ -77,6 +77,8 @@ class MainActivity : FragmentActivity(), NivoraActions {
     @Volatile private var activeSessionToken: String? = null
     @Volatile private var liveSessionValidated = false
     @Volatile private var dashboardValidationInFlight = false
+    private var requestedVpnMode = VpnConnectionMode.PRIMARY
+    private var restartAfterDisconnect: VpnConnectionMode? = null
     private var deviceRecoveryCredentials: DeviceRecoveryCredentials? = null
     private lateinit var biometricPrompt: BiometricPrompt
     private var biometricPromptActive = false
@@ -101,7 +103,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
                     )) {
                     networkRestartAt = now
                     showNotice("شبکه تغییر کرد؛ مسیر هوشمند دوباره انتخاب می‌شود")
-                    startSelectedVpn()
+                    startVpn(VpnLifecyclePolicy.restartMode(state.vpnMode))
                 }
             }
         }
@@ -109,7 +111,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
     private val notificationPoll=object:Runnable{override fun run(){if(activeSessionToken!=null&&!state.biometricLocked)loadDashboard(false);handler.postDelayed(this,60_000)}}
 
     private val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) startSelectedVpn()
+        if (result.resultCode == Activity.RESULT_OK) switchOrStartVpn(requestedVpnMode)
         else showNotice("برای اتصال باید اجازه VPN را تأیید کنید", true)
     }
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -120,8 +122,23 @@ class MainActivity : FragmentActivity(), NivoraActions {
             val error = vpnPreferences.getString("error", null)
             val smartRoute = intent?.getStringExtra(NivoraVpnService.EXTRA_SMART_ROUTE)
                 ?: vpnPreferences.getString("smart_route", null)
+            val mode = VpnConnectionMode.fromWire(
+                intent?.getStringExtra(NivoraVpnService.EXTRA_CONNECTION_MODE)
+                    ?: vpnPreferences.getString("connection_mode", null)
+            )
             if (vpnState == "disconnected" || vpnState == "error") manualDisconnectRequested = false
-            state = state.copy(vpnState = vpnState, vpnError = friendlyVpnError(error), smartRoute = smartRoute)
+            state = state.copy(
+                vpnState = vpnState,
+                vpnError = friendlyVpnError(error),
+                vpnMode = mode.takeUnless { vpnState == "disconnected" },
+                smartRoute = smartRoute
+            )
+            if (vpnState == "disconnected") {
+                restartAfterDisconnect?.let { pending ->
+                    restartAfterDisconnect = null
+                    handler.postDelayed({ startVpn(pending) }, 250L)
+                }
+            }
             if (vpnState == "connected") handler.postDelayed({ refresh() }, 3_500)
         }
     }
@@ -147,7 +164,11 @@ class MainActivity : FragmentActivity(), NivoraActions {
                 NivoraVpnService.isConnectionAttemptActive()
             )
         } else "disconnected"
-        if (correctedState != storedState) vpnPreferences.edit().putString("state", correctedState).remove("error").apply()
+        if (correctedState != storedState) vpnPreferences.edit().putString("state", correctedState).remove("error").remove("connection_mode").apply()
+        val storedVpnMode = VpnLifecyclePolicy.restoredMode(
+            vpnPreferences.getString("connection_mode", null),
+            correctedState
+        )
         val expectedRole = if (BuildConfig.APP_AUDIENCE == "partner") "reseller" else "customer"
         val storedToken = session.token()
         val storedRole = session.role()
@@ -167,6 +188,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
             role = storedRole,
             vpnState = correctedState,
             vpnError = friendlyVpnError(vpnPreferences.getString("error", null)),
+            vpnMode = storedVpnMode,
             smartRoute = vpnPreferences.getString("smart_route", null),
             biometricEnabled = biometricEnabled,
             biometricLocked = biometricEnabled
@@ -392,8 +414,37 @@ class MainActivity : FragmentActivity(), NivoraActions {
     }
 
     override fun toggleVpn() {
+        requestVpn(VpnConnectionMode.PRIMARY)
+    }
+
+    override fun toggleEmergencyVpn() {
+        requestVpn(VpnConnectionMode.EMERGENCY)
+    }
+
+    override fun acceptVpnDisclosure() {
+        selection.edit().putBoolean("vpn_disclosure_accepted", true).apply()
+        state = state.copy(showVpnDisclosure = false)
+        continueVpnRequest(requestedVpnMode)
+    }
+
+    override fun dismissVpnDisclosure() {
+        state = state.copy(showVpnDisclosure = false)
+    }
+
+    override fun acceptEmergencyDisclosure() {
+        selection.edit().putBoolean("emergency_disclosure_accepted_v1", true).apply()
+        state = state.copy(showEmergencyDisclosure = false)
+        continueVpnRequest(VpnConnectionMode.EMERGENCY)
+    }
+
+    override fun dismissEmergencyDisclosure() {
+        state = state.copy(showEmergencyDisclosure = false)
+    }
+
+    private fun requestVpn(mode: VpnConnectionMode) {
         if (BuildConfig.APP_AUDIENCE != "customer") return
-        if (state.vpnState == "connected" || state.vpnState == "connecting") {
+        if ((state.vpnState == "connected" || state.vpnState == "connecting") && state.vpnMode == mode) {
+            restartAfterDisconnect = null
             requestVpnStop()
             return
         }
@@ -407,26 +458,42 @@ class MainActivity : FragmentActivity(), NivoraActions {
         }
         val subscription = state.selectedSubscription
         if (subscription?.url.isNullOrBlank()) {
-            showNotice("ابتدا یک اشتراک فعال انتخاب کنید", true)
+            showNotice("برای استفاده از اتصال، ابتدا یک اشتراک فعال لازم است", true)
             return
         }
+        if (mode == VpnConnectionMode.EMERGENCY && state.account?.emergency?.available != true) {
+            showNotice("در حال حاضر مسیر اضطراری سالمی آماده نیست", true)
+            if (!state.refreshing && !dashboardValidationInFlight) loadDashboard(initial = false)
+            return
+        }
+        selectSubscription(subscription!!)
+        requestedVpnMode = mode
         if (!selection.getBoolean("vpn_disclosure_accepted", false)) {
             state = state.copy(showVpnDisclosure = true)
             return
         }
-        selectSubscription(subscription!!)
+        continueVpnRequest(mode)
+    }
+
+    private fun continueVpnRequest(mode: VpnConnectionMode) {
+        requestedVpnMode = mode
+        if (mode == VpnConnectionMode.EMERGENCY &&
+            !selection.getBoolean("emergency_disclosure_accepted_v1", false)
+        ) {
+            state = state.copy(showEmergencyDisclosure = true)
+            return
+        }
         val permissionIntent = VpnService.prepare(this)
-        if (permissionIntent != null) vpnPermission.launch(permissionIntent) else startSelectedVpn()
+        if (permissionIntent != null) vpnPermission.launch(permissionIntent) else switchOrStartVpn(mode)
     }
 
-    override fun acceptVpnDisclosure() {
-        selection.edit().putBoolean("vpn_disclosure_accepted", true).apply()
-        state = state.copy(showVpnDisclosure = false)
-        toggleVpn()
-    }
-
-    override fun dismissVpnDisclosure() {
-        state = state.copy(showVpnDisclosure = false)
+    private fun switchOrStartVpn(mode: VpnConnectionMode) {
+        if ((state.vpnState == "connected" || state.vpnState == "connecting") && state.vpnMode != mode) {
+            restartAfterDisconnect = mode
+            requestVpnStop()
+        } else {
+            startVpn(mode)
+        }
     }
 
     override fun measurePing() {
@@ -735,6 +802,8 @@ class MainActivity : FragmentActivity(), NivoraActions {
         activeSessionToken = null
         liveSessionValidated = false
         dashboardValidationInFlight = false
+        restartAfterDisconnect = null
+        requestedVpnMode = VpnConnectionMode.PRIMARY
         suppressBiometricCallback = true
         biometricPromptActive = false
         if (::biometricPrompt.isInitialized) runCatching { biometricPrompt.cancelAuthentication() }
@@ -752,27 +821,44 @@ class MainActivity : FragmentActivity(), NivoraActions {
         state = state.copy(notice = null)
     }
 
-    private fun startSelectedVpn() {
+    private fun startVpn(mode: VpnConnectionMode) {
         if (!SessionValidationPolicy.canStartVpn(state.signedIn, liveSessionValidated)) {
             showNotice("اتصال پس از تأیید حساب و دستگاه فعال می‌شود", true)
             return
         }
         val token = activeSessionToken ?: return
         val subscription = state.selectedSubscription ?: return
-        val url = subscription.url
-        if (url.isNullOrBlank()) return
+        val url = if (mode == VpnConnectionMode.EMERGENCY) {
+            EmergencyConnectPolicy.endpoint(BuildConfig.API_BASE_URL)
+        } else {
+            subscription.url ?: return
+        }
+        if (mode == VpnConnectionMode.EMERGENCY &&
+            !EmergencyConnectPolicy.isEmergencyEndpoint(BuildConfig.API_BASE_URL, url)
+        ) {
+            showNotice("مسیر اضطراری معتبر نیست", true)
+            return
+        }
         manualDisconnectRequested = false
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        state = state.copy(vpnState = "connecting", vpnError = null)
+        state = state.copy(vpnState = "connecting", vpnError = null, vpnMode = mode)
         startForegroundService(
             Intent(this, NivoraVpnService::class.java)
                 .putExtra(NivoraVpnService.EXTRA_URL, url)
-                .putExtra(NivoraVpnService.EXTRA_SUBSCRIPTION_ID, subscription.id)
+                .putExtra(
+                    NivoraVpnService.EXTRA_SUBSCRIPTION_ID,
+                    subscription.id.takeIf { mode == VpnConnectionMode.PRIMARY }
+                )
                 .putExtra(NivoraVpnService.EXTRA_SESSION_TOKEN, token)
                 .putExtra(NivoraVpnService.EXTRA_DEVICE_ID, deviceId)
-                .putExtra(NivoraVpnService.EXTRA_LABEL, subscription.locationName ?: subscription.planName)
+                .putExtra(
+                    NivoraVpnService.EXTRA_LABEL,
+                    if (mode == VpnConnectionMode.EMERGENCY) "اتصال اضطراری"
+                    else subscription.locationName ?: subscription.planName
+                )
+                .putExtra(NivoraVpnService.EXTRA_CONNECTION_MODE, mode.wireValue)
         )
     }
 
@@ -943,6 +1029,11 @@ class MainActivity : FragmentActivity(), NivoraActions {
             loadError = null
         )
         saveDashboardSnapshot(token, account, plans, tickets)
+        if (EmergencyConnectPolicy.shouldStopAfterDashboard(state.vpnMode, state.vpnState, account.emergency)) {
+            restartAfterDisconnect = null
+            showNotice("اتصال اضطراری توسط مدیریت متوقف شد", true)
+            requestVpnStop()
+        }
         active.firstOrNull { it.id == selectedId }?.url?.let { subscriptionUrl ->
             thread(name = "nivora-bundle-prefetch") {
                 runCatching { api.subscription(subscriptionUrl, token) }
@@ -975,9 +1066,13 @@ class MainActivity : FragmentActivity(), NivoraActions {
         sendVpnStopCommand()
         handler.postDelayed({
             if (state.vpnState == "disconnecting" && !NivoraVpnService.isCoreRunning()) {
-                vpnPreferences.edit().putString("state", "disconnected").remove("error").remove("smart_route").apply()
+                vpnPreferences.edit().putString("state", "disconnected").remove("error").remove("smart_route").remove("connection_mode").apply()
                 manualDisconnectRequested = false
-                state = state.copy(vpnState = "disconnected", vpnError = null, smartRoute = null)
+                state = state.copy(vpnState = "disconnected", vpnError = null, vpnMode = null, smartRoute = null)
+                restartAfterDisconnect?.let { pending ->
+                    restartAfterDisconnect = null
+                    handler.postDelayed({ startVpn(pending) }, 250L)
+                }
             }
         }, 1_500L)
     }
@@ -1211,6 +1306,10 @@ class MainActivity : FragmentActivity(), NivoraActions {
     private fun friendlyVpnError(error: String?): String? {
         if (error.isNullOrBlank()) return null
         return when {
+            error.contains("EMERGENCY_LEASE_EXPIRED", true) -> "اتصال اضطراری توسط مدیریت یا پایان اعتبار متوقف شد"
+            error.contains("EMERGENCY_NO_WORKING_ROUTE", true) -> "مسیر اضطراری فعالی پیدا نشد؛ کمی بعد دوباره امتحان کنید"
+            error.contains("EMERGENCY_NO_SAFE_ROUTE", true) -> "مسیر اضطراری سالمی پیدا نشد"
+            error.contains("EMERGENCY", true) -> "اتصال اضطراری فعلاً در دسترس نیست"
             error.contains("subscription", true) -> "دریافت اشتراک ممکن نشد"
             error.contains("timeout", true) -> "سرور در زمان مناسب پاسخ نداد"
             error.contains("empty", true) || error.contains("خالی") -> "اشتراک کانفیگ فعالی ندارد"

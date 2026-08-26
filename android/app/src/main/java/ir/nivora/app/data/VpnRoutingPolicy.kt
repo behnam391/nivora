@@ -20,7 +20,8 @@ internal class VpnRoutingPolicy private constructor(
 
     internal enum class PrimaryTransport {
         HYSTERIA2,
-        REALITY
+        REALITY,
+        EMERGENCY_TLS
     }
 
     internal enum class RouteMode {
@@ -43,6 +44,22 @@ internal class VpnRoutingPolicy private constructor(
             } else {
                 VpnRoutingPolicy(
                     primaryTransport = PrimaryTransport.REALITY,
+                    routeMode = RouteMode.SMART_BALANCER,
+                    rejectUdp443 = true
+                )
+            }
+
+        /** Public emergency routes never share primary-route assumptions. */
+        fun forEmergency(hysteriaSelected: Boolean): VpnRoutingPolicy =
+            if (hysteriaSelected) {
+                VpnRoutingPolicy(
+                    primaryTransport = PrimaryTransport.HYSTERIA2,
+                    routeMode = RouteMode.EXCLUSIVE_PROXY,
+                    rejectUdp443 = false
+                )
+            } else {
+                VpnRoutingPolicy(
+                    primaryTransport = PrimaryTransport.EMERGENCY_TLS,
                     routeMode = RouteMode.SMART_BALANCER,
                     rejectUdp443 = true
                 )
