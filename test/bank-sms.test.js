@@ -25,11 +25,21 @@ test('debit / withdrawal messages are marked as debit', () => {
   assert.equal(parsed.amountRial, 500000);
 });
 
+test('a message containing both credit and debit signals stays ambiguous', () => {
+  const parsed = parseBankMessage('واریز 500,000 ریال انجام شد سپس همان مبلغ از حساب برداشت شد');
+  assert.equal(parsed.direction, 'unknown');
+});
+
 test('masked card number yields the last four digits', () => {
   const fields = extractFinancialFields('کارت ****1234 مبلغ 300,000 ریال واریز شد پیگیری 111222');
   assert.equal(fields.cardLast4, '1234');
   assert.equal(fields.amountRial, 300000);
   assert.equal(fields.trackingCode, '111222');
+});
+
+test('destination card is extracted only from an explicit destination label', () => {
+  assert.equal(extractFinancialFields('واریز به کارت ****4697 مبلغ 300,000 ریال').destinationCardLast4,'4697');
+  assert.equal(extractFinancialFields('کارت ****1234 مبلغ 300,000 ریال واریز شد').destinationCardLast4,null);
 });
 
 test('digit normalisation converts Persian and Arabic numerals', () => {

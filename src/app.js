@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { extname, resolve } from 'node:path';
 import { getWalletStatement, postWalletTransaction, transferWalletBalance } from './wallet.js';
 import { accountFromRequest, createSession, hashPassword, verifyPassword } from './auth.js';
@@ -8,7 +8,8 @@ import { selectLocationForPlan } from './capacity.js';
 import { createKeyedRateLimiter, createRequestGuard } from './security.js';
 import { enrichSubscription, readPanelStats } from './subscription-stats.js';
 import { buildMultiEndpointSubscription, fetchCleanIpSource, fetchSubscriptionText, keepStableRealityRoutes, measureCloudflareEndpoint, measureTcpEndpoint, parseCleanIpList } from './multi-endpoint.js';
-import { evaluateOrder, sweepPendingOrders, ingestBankMessage, loadAutoReviewConfig } from './auto-review.js';
+import { approveWalletTopup, evaluateOrder, sweepPendingPayments, ingestBankMessage, loadAutoReviewConfig } from './auto-review.js';
+import { HTTPSMS_EVENT_TYPE, HttpSmsWebhookError, normalizeHttpSmsOwner, parseHttpSmsEvent, verifyHttpSmsJwt } from './httpsms-webhook.js';
 import { extractReceiptFields } from './receipt-ocr.js';
 import net from 'node:net';
 import { createHash, randomInt, randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto';
@@ -35,13 +36,158 @@ const robotsTxt = `User-agent: *
 Allow: /
 `;
 
-const readJson = async req => {
-  let raw = '';
+const readJson = async (req, maxBytes = 6_000_000) => {
+  let raw = '', receivedBytes = 0;
   for await (const chunk of req) {
+    receivedBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk));
+    if (receivedBytes > maxBytes) throw new Error('BODY_TOO_LARGE');
     raw += chunk;
-    if (raw.length > 6_000_000) throw new Error('BODY_TOO_LARGE');
   }
   return raw ? JSON.parse(raw) : {};
+};
+
+const validJpeg = bytes => {
+  if(bytes.length<20||bytes[0]!==0xff||bytes[1]!==0xd8||bytes.at(-2)!==0xff||bytes.at(-1)!==0xd9)return false;
+  const sof=new Set([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf]);
+  for(let offset=2;offset+3<bytes.length;){
+    if(bytes[offset]!==0xff){offset++;continue}
+    while(bytes[offset]===0xff)offset++;
+    const marker=bytes[offset++];
+    if(marker===0xd9||marker===0xda)return false;
+    if(marker===0x01||(marker>=0xd0&&marker<=0xd7))continue;
+    if(offset+1>=bytes.length)return false;
+    const length=bytes.readUInt16BE(offset);
+    if(length<2||offset+length>bytes.length)return false;
+    if(sof.has(marker))return length>=7&&bytes.readUInt16BE(offset+3)>0&&bytes.readUInt16BE(offset+5)>0;
+    offset+=length;
+  }
+  return false;
+};
+
+const receiptType = bytes => {
+  if(validJpeg(bytes))return { mimeType:'image/jpeg', extension:'jpg' };
+  const pngEnd=Buffer.from([0x00,0x00,0x00,0x00,0x49,0x45,0x4e,0x44,0xae,0x42,0x60,0x82]);
+  if(bytes.length>=45&&bytes.subarray(0,8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]))&&bytes.readUInt32BE(8)===13&&bytes.subarray(12,16).toString('ascii')==='IHDR'&&bytes.subarray(-12).equals(pngEnd))return { mimeType:'image/png', extension:'png' };
+  const webpChunk=bytes.length>=30?bytes.subarray(12,16).toString('ascii'):'';
+  const webpShape=webpChunk==='VP8X'||webpChunk==='VP8L'&&bytes[20]===0x2f||webpChunk==='VP8 '&&bytes[23]===0x9d&&bytes[24]===0x01&&bytes[25]===0x2a;
+  if(bytes.length>=30&&bytes.subarray(0,4).toString('ascii')==='RIFF'&&bytes.readUInt32LE(4)===bytes.length-8&&bytes.subarray(8,12).toString('ascii')==='WEBP'&&webpShape)return { mimeType:'image/webp', extension:'webp' };
+  return null;
+};
+
+const decodeReceiptBase64 = value => {
+  if (typeof value !== 'string' || !value.length || value.length > 5_700_000 || value.length % 4 !== 0) return null;
+  const padding=value.endsWith('==')?2:value.endsWith('=')?1:0,content=padding?value.slice(0,-padding):value;
+  if(content.includes('=')||/[^A-Za-z0-9+/]/.test(content))return null;
+  const bytes=Buffer.from(value,'base64');
+  return bytes.toString('base64') === value ? bytes : null;
+};
+
+const MAX_PAYMENT_BODY_BYTES = 24 * 1024;
+const MAX_PAYMENT_TOMAN = 1_000_000_000;
+const MAX_PENDING_PAYMENTS = 5;
+const PAYMENT_PENDING_WINDOW_MS = 24 * 60 * 60 * 1000;
+const RECEIPT_ORPHAN_RETENTION_MS = Math.max(1, Math.min(Number(process.env.RECEIPT_ORPHAN_RETENTION_MINUTES) || 30, 30)) * 60 * 1000;
+const MAX_UNLINKED_RECEIPTS = 100;
+const MAX_UNLINKED_RECEIPT_BYTES = 256 * 1024 * 1024;
+const MAX_TOTAL_RECEIPTS = 5_000;
+const MAX_TOTAL_RECEIPT_BYTES = 1024 * 1024 * 1024;
+const LINKED_RECEIPT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const RECEIPT_FILENAME = /^[a-f0-9-]{20,80}\.(?:jpg|jpeg|png|webp)$/i;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
+class PaymentRequestError extends Error {
+  constructor(code, status = 400) {
+    super(code);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+const paymentString = (value, { field, min = 1, max }) => {
+  if (typeof value !== 'string') throw new PaymentRequestError(`INVALID_${field}`);
+  const normalized = value.trim();
+  if (normalized.length < min || normalized.length > max || CONTROL_CHARACTERS.test(normalized))
+    throw new PaymentRequestError(`INVALID_${field}`);
+  return normalized;
+};
+
+const optionalReceiptReference = value => {
+  if (value === undefined || value === null || value === '') return null;
+  return paymentString(value, { field:'RECEIPT_REFERENCE', min:1, max:100 });
+};
+
+const optionalPaymentAmount = (value, { minimum = 1 } = {}) => {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > MAX_PAYMENT_TOMAN)
+    throw new PaymentRequestError('INVALID_PAYMENT_AMOUNT');
+  return value;
+};
+
+const receiptCapabilityFromUrl = (value, req) => {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || value.length > 600 || CONTROL_CHARACTERS.test(value))
+    throw new PaymentRequestError('INVALID_RECEIPT_URL');
+  let capability, expectedOrigin;
+  try {
+    expectedOrigin = new URL(publicOrigin(req));
+    capability = new URL(value.trim(), expectedOrigin);
+  } catch {
+    throw new PaymentRequestError('INVALID_RECEIPT_URL');
+  }
+  if (capability.origin !== expectedOrigin.origin || capability.hash || [...capability.searchParams.keys()].some(key => key !== 'access'))
+    throw new PaymentRequestError('INVALID_RECEIPT_URL');
+  const match = capability.pathname.match(/^\/receipts\/([^/]+)$/i), tokens = capability.searchParams.getAll('access');
+  if (!match || !RECEIPT_FILENAME.test(match[1]) || tokens.length !== 1 || !/^[A-Za-z0-9_-]{32,128}$/.test(tokens[0]))
+    throw new PaymentRequestError('INVALID_RECEIPT_URL');
+  return { filename:match[1], accessToken:tokens[0], url:`/receipts/${match[1]}?access=${encodeURIComponent(tokens[0])}` };
+};
+
+const receiptTokenMatches = (upload, token) => {
+  const actual = createHash('sha256').update(token).digest(), expected = Buffer.from(String(upload?.access_token_hash || ''), 'hex');
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+};
+
+const claimReceipt = (db, capability, { entityType, entityId, accountId = null, guest = false }) => {
+  if (!capability) return null;
+  const upload = db.prepare('SELECT * FROM receipt_uploads WHERE filename=?').get(capability.filename);
+  if (!upload || !receiptTokenMatches(upload, capability.accessToken)) throw new PaymentRequestError('RECEIPT_NOT_AVAILABLE', 403);
+  if (guest ? upload.account_id !== null : upload.account_id !== accountId) throw new PaymentRequestError('RECEIPT_NOT_AVAILABLE', 403);
+  if (upload.linked_entity_type || upload.linked_entity_id) throw new PaymentRequestError('RECEIPT_ALREADY_USED', 409);
+  const result = db.prepare(`UPDATE receipt_uploads SET linked_entity_type=?,linked_entity_id=?,linked_at=?
+    WHERE filename=? AND linked_entity_type IS NULL AND linked_entity_id IS NULL`).run(entityType, entityId, new Date().toISOString(), capability.filename);
+  if (result.changes !== 1) throw new PaymentRequestError('RECEIPT_ALREADY_USED', 409);
+  return capability.url;
+};
+
+const paymentRequestError = (res, error, fallback = 'INVALID_PAYMENT_REQUEST') => {
+  if (error instanceof PaymentRequestError) return json(res, error.status, { error:error.code });
+  if (error?.message === 'BODY_TOO_LARGE') return json(res, 413, { error:'PAYMENT_BODY_TOO_LARGE' });
+  if (error instanceof SyntaxError) return json(res, 400, { error:'INVALID_JSON' });
+  return json(res, 400, { error:fallback });
+};
+
+const cleanupOrphanReceiptUploads = async db => {
+  const removeFile=async filename=>{try{await unlink(resolve('receipts',filename));return true}catch(error){return error?.code==='ENOENT'}};
+  const cutoff = new Date(Date.now() - RECEIPT_ORPHAN_RETENTION_MS).toISOString();
+  const stale = db.prepare(`SELECT filename FROM receipt_uploads
+    WHERE linked_entity_type IS NULL AND linked_entity_id IS NULL AND created_at<?
+    ORDER BY created_at LIMIT 500`).all(cutoff);
+  const remove = db.prepare(`DELETE FROM receipt_uploads
+    WHERE filename=? AND linked_entity_type IS NULL AND linked_entity_id IS NULL AND created_at<?`);
+  for (const row of stale) {
+    if(await removeFile(row.filename))remove.run(row.filename,cutoff);
+  }
+  const linkedCutoff=new Date(Date.now()-LINKED_RECEIPT_RETENTION_MS).toISOString();
+  const finalized=db.prepare(`SELECT r.filename FROM receipt_uploads r
+    LEFT JOIN orders o ON r.linked_entity_type='order' AND o.id=r.linked_entity_id
+    LEFT JOIN wallet_topups t ON r.linked_entity_type='wallet_topup' AND t.id=r.linked_entity_id
+    WHERE (r.linked_entity_type='order' AND o.status IN ('approved','rejected') AND COALESCE(o.reviewed_at,o.created_at)<?)
+       OR (r.linked_entity_type='wallet_topup' AND t.status IN ('approved','rejected') AND COALESCE(t.reviewed_at,t.created_at)<?)
+    ORDER BY r.linked_at LIMIT 500`).all(linkedCutoff,linkedCutoff);
+  const removeFinalized=db.prepare('DELETE FROM receipt_uploads WHERE filename=? AND linked_entity_type IS NOT NULL AND linked_entity_id IS NOT NULL');
+  for(const row of finalized){
+    if(await removeFile(row.filename))removeFinalized.run(row.filename);
+  }
 };
 
 const planFromRow = row => row && ({
@@ -222,6 +368,29 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   };
   const telegramConfig=()=>({enabled:settingGet('telegram_enabled')==='true',token:decrypt(settingGet('telegram_token')||'')||process.env.TELEGRAM_BOT_TOKEN,secret:decrypt(settingGet('telegram_secret')||'')||process.env.TELEGRAM_WEBHOOK_SECRET,username:settingGet('telegram_username')||'',channel:settingGet('telegram_channel')||'',latestReleaseUrl:settingGet('telegram_latest_release_url')||'',adminIds:(settingGet('telegram_admin_ids')||'').split(',').map(x=>x.trim()).filter(Boolean)});
   const telegramRecovery=createTelegramRecovery(db,{getConfig:telegramConfig});
+  const settingOrEnv=(settingKey,envKey,fallback='')=>settingGet(settingKey)??process.env[envKey]??fallback;
+  const autoReviewConfig=()=>loadAutoReviewConfig({
+    ...process.env,
+    AUTO_REVIEW_ENABLED:settingOrEnv('auto_review_enabled','AUTO_REVIEW_ENABLED','false'),
+    AUTO_REVIEW_ALLOW_AMOUNT_ONLY:settingOrEnv('auto_review_allow_amount_only','AUTO_REVIEW_ALLOW_AMOUNT_ONLY','false'),
+    AUTO_REVIEW_AMOUNT_TOLERANCE_RIAL:settingOrEnv('auto_review_amount_tolerance_rial','AUTO_REVIEW_AMOUNT_TOLERANCE_RIAL','0'),
+    AUTO_REVIEW_LOOKBACK_HOURS:settingOrEnv('auto_review_lookback_hours','AUTO_REVIEW_LOOKBACK_HOURS','2'),
+    BANK_SMS_DEFAULT_UNIT:settingOrEnv('bank_sms_default_unit','BANK_SMS_DEFAULT_UNIT','rial')
+  });
+  const httpsmsConfig=req=>{
+    let allowedSenders=[],rawSenders=settingGet('httpsms_allowed_senders')??process.env.HTTPSMS_ALLOWED_SENDERS??'[]';
+    try{allowedSenders=JSON.parse(rawSenders);}catch{allowedSenders=String(rawSenders).split(',');}
+    return {
+      enabled:settingOrEnv('httpsms_enabled','HTTPSMS_ENABLED','false')==='true',
+      signingKey:decrypt(settingGet('httpsms_signing_key')||'')||process.env.HTTPSMS_SIGNING_KEY||'',
+      issuer:settingOrEnv('httpsms_issuer','HTTPSMS_ISSUER','api.httpsms.com'),
+      expectedSubject:settingOrEnv('httpsms_expected_subject','HTTPSMS_EXPECTED_SUBJECT',''),
+      expectedOwner:settingOrEnv('httpsms_expected_owner','HTTPSMS_EXPECTED_OWNER',''),
+      expectedSim:settingOrEnv('httpsms_expected_sim','HTTPSMS_EXPECTED_SIM','').toUpperCase(),
+      allowedSenders:Array.isArray(allowedSenders)?allowedSenders.map(x=>String(x).trim().toLowerCase()).filter(Boolean):[],
+      webhookUrl:`${publicOrigin(req)}/api/webhooks/httpsms`
+    };
+  };
   const nodeProvisioners = new Map();
   const provisionerForLocation = location => {
     if (!location?.panel_node_id) return provisioner;
@@ -242,6 +411,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     return nodeProvisioners.get(fingerprint);
   };
   const guard=createRequestGuard();
+  const guestReceiptLimiter=createKeyedRateLimiter({limit:8,windowMs:60*60_000});
+  const accountReceiptLimiter=createKeyedRateLimiter({limit:12,windowMs:60*60_000});
+  const requestIp=req=>String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();
   const emergencyFailureIpLimiter=createKeyedRateLimiter({limit:300,windowMs:60_000});
   const emergencySubscriptionAccountLimiter=createKeyedRateLimiter({limit:20,windowMs:60_000});
   const emergencySubscriptionDeviceLimiter=createKeyedRateLimiter({limit:10,windowMs:60_000});
@@ -254,7 +426,6 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     statsMaxAgeSeconds:hysteriaStatsMaxAgeSeconds,
     statsReader:panelStatsReader
   });
-  const autoReviewConfig = loadAutoReviewConfig();
   const subscriptionRow = id => db.prepare('SELECT * FROM subscriptions WHERE id=?').get(id);
 
   // Shared approval → provisioning path used by both the admin review routes and the
@@ -304,9 +475,24 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     if (!order) return { ok: false, code: 'ORDER_NOT_FOUND' };
     return finalizeApprovedOrder(order, { actor });
   }
-  const ocrExtract = autoReviewConfig.ocrEnabled ? (imageUrl => extractReceiptFields(imageUrl)) : null;
-  const agentDeps = () => ({ config: autoReviewConfig, provisionApproved: id => provisionApprovedById(id, 'agent'), ocrExtract, actor: 'agent' });
-  const triggerReview = orderId => autoReviewConfig.enabled ? evaluateOrder(db, orderId, agentDeps()).catch(() => {}) : Promise.resolve();
+  const agentDeps = () => {
+    const config=autoReviewConfig();
+    return {
+      config,
+      provisionApproved:id=>provisionApprovedById(id,'agent'),
+      ocrExtract:config.ocrEnabled?(imageUrl=>extractReceiptFields(imageUrl)):null,
+      actor:'httpsms-agent',
+      onApproved:topup=>{
+        notify(topup.account_id,'شارژ کیف پول تأیید شد',`${Number(topup.amount_toman).toLocaleString('fa-IR')} تومان به کیف پول شما افزوده شد.`);
+        audit('httpsms-agent','approve','wallet_topup',topup.id,{amountToman:topup.amount_toman});
+      }
+    };
+  };
+  const schedulePaymentSweep=()=>setImmediate(()=>Promise.resolve(handler.sweep()).catch(error=>console.error(JSON.stringify({time:new Date().toISOString(),event:'payment_sweep_error',message:String(error?.message||error)}))));
+  const triggerReview = orderId => {
+    const config=autoReviewConfig();
+    return config.enabled?evaluateOrder(db,orderId,{...agentDeps(),config}).catch(()=>{}):Promise.resolve();
+  };
 
   const handler = async (req, res) => {
     try {
@@ -379,7 +565,12 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       const receiptFile = path.match(/^\/receipts\/([a-f0-9-]+\.(?:jpg|jpeg|png|webp))$/i);
       if (req.method === 'GET' && receiptFile) {
-        const file = await readFile(resolve('receipts', receiptFile[1]));
+        const upload=db.prepare('SELECT * FROM receipt_uploads WHERE filename=?').get(receiptFile[1]);
+        if(!upload)return json(res,404,{error:'RECEIPT_NOT_FOUND'});
+        const supplied=String(url.searchParams.get('access')||''),account=accountFromRequest(db,req),owner=account?.id===upload.account_id;
+        const hasAccess=Boolean(supplied)&&receiptTokenMatches(upload,supplied);
+        if(!isAdmin(req)&&!owner&&!hasAccess)return json(res,403,{error:'RECEIPT_ACCESS_DENIED'});
+        let file;try{file=await readFile(resolve('receipts', receiptFile[1]));}catch(error){if(error?.code==='ENOENT')return json(res,404,{error:'RECEIPT_NOT_FOUND'});throw error;}
         const type = {'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp'}[extname(receiptFile[1]).toLowerCase()];
         res.writeHead(200, { 'content-type':type, 'cache-control':'private, max-age=3600', 'x-content-type-options':'nosniff', 'x-robots-tag':'noindex, nofollow, noarchive' }); return res.end(file);
       }
@@ -401,8 +592,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/studio-mark.svg'){const svg=await readFile(resolve('public/studio-mark.svg'));res.writeHead(200,{'content-type':'image/svg+xml; charset=utf-8','cache-control':'public, max-age=86400'});return res.end(svg);}
       if(req.method==='GET'&&path==='/brand-mark.png'){const png=await readFile(resolve('public/brand-mark.png'));res.writeHead(200,{'content-type':'image/png','cache-control':'public, max-age=86400','content-length':png.length});return res.end(png);}
       if(req.method==='GET'&&path==='/brand-mark.svg'){const svg=await readFile(resolve('public/brand-mark.svg'));res.writeHead(200,{'content-type':'image/svg+xml; charset=utf-8','cache-control':'public, max-age=86400'});return res.end(svg);}
-      if(req.method==='GET'&&path==='/download/nivora-android.apk'){const apk=await readFile(resolve('public/releases/Nivora-Customer-latest.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Customer-0.20.1.apk"','cache-control':'public, max-age=3600','content-length':apk.length,'x-robots-tag':'noindex, nofollow, noarchive'});return res.end(apk);}
-      if(req.method==='GET'&&path==='/download/nivora-partner.apk'){const apk=await readFile(resolve('public/releases/Nivora-Partner-latest.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Partner-0.20.1.apk"','cache-control':'public, max-age=3600','content-length':apk.length,'x-robots-tag':'noindex, nofollow, noarchive'});return res.end(apk);}
+      if(req.method==='GET'&&path==='/download/nivora-android.apk'){const apk=await readFile(resolve('public/releases/Nivora-Customer-latest.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Customer-0.21.0.apk"','cache-control':'public, max-age=3600','content-length':apk.length,'x-robots-tag':'noindex, nofollow, noarchive'});return res.end(apk);}
+      if(req.method==='GET'&&path==='/download/nivora-partner.apk'){const apk=await readFile(resolve('public/releases/Nivora-Partner-latest.apk'));res.writeHead(200,{'content-type':'application/vnd.android.package-archive','content-disposition':'attachment; filename="Nivora-Partner-0.21.0.apk"','cache-control':'public, max-age=3600','content-length':apk.length,'x-robots-tag':'noindex, nofollow, noarchive'});return res.end(apk);}
       if(req.method==='GET'&&path==='/brand.css'){const css=await readFile(resolve('public/brand.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8','cache-control':'public, max-age=3600'});return res.end(css);}
       if (req.method === 'GET' && path === '/admin.css') {
         const css = await readFile(resolve('public/admin.css'));
@@ -440,6 +631,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/admin-password-resets.js'){const js=await readFile(resolve('public/admin-password-resets.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-growth.js'){const js=await readFile(resolve('public/admin-growth.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-telegram.js'){const js=await readFile(resolve('public/admin-telegram.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
+      if(req.method==='GET'&&path==='/admin-httpsms.js'){const js=await readFile(resolve('public/admin-httpsms.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-emergency.js'){const js=await readFile(resolve('public/admin-emergency.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if (req.method === 'GET' && path === '/admin.js') {
         const js = await readFile(resolve('public/admin.js'));
@@ -702,7 +894,28 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if(req.method==='POST'&&path==='/api/customer/notifications/read'){db.prepare('UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE account_id=?').run(new Date().toISOString(),account.id);return json(res,200,{success:true});}
         if(req.method==='DELETE'&&path==='/api/customer/notifications'){const now=new Date().toISOString(),result=db.prepare('UPDATE notifications SET dismissed_at=?,read_at=COALESCE(read_at,?) WHERE account_id=? AND dismissed_at IS NULL').run(now,now,account.id);return json(res,200,{cleared:Number(result.changes)});}
         if(req.method==='DELETE'&&path==='/api/customer/tickets'){const now=new Date().toISOString(),result=db.prepare('UPDATE support_tickets SET owner_archived_at=? WHERE account_id=? AND owner_archived_at IS NULL').run(now,account.id);return json(res,200,{cleared:Number(result.changes)});}
-        if(req.method==='POST'&&path==='/api/customer/wallet/topups'){const b=await readJson(req),amount=Number(b.amountToman);if(!Number.isInteger(amount)||amount<1000||(!b.receiptReference&&!b.receiptImageUrl))return json(res,400,{error:'INVALID_TOPUP'});const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO wallet_topups(id,account_id,amount_toman,receipt_reference,receipt_image_url,status,created_at) VALUES(?,?,?,?,?,'under_review',?)`).run(id,account.id,amount,b.receiptReference||null,b.receiptImageUrl||null,now);audit(account.id,'create','wallet_topup',id,{amountToman:amount});return json(res,201,{id,status:'under_review',amountToman:amount});}
+        if(req.method==='POST'&&path==='/api/customer/wallet/topups'){
+          let b,amount,receiptReference,receiptCapability;
+          try{
+            b=await readJson(req,MAX_PAYMENT_BODY_BYTES);
+            if(!b||Array.isArray(b)||typeof b!=='object')throw new PaymentRequestError('INVALID_TOPUP');
+            amount=optionalPaymentAmount(b.amountToman,{minimum:1000});
+            if(amount===null)throw new PaymentRequestError('INVALID_PAYMENT_AMOUNT');
+            receiptReference=optionalReceiptReference(b.receiptReference);
+            receiptCapability=receiptCapabilityFromUrl(b.receiptImageUrl,req);
+            if(!receiptReference||!receiptCapability)throw new PaymentRequestError('RECEIPT_REQUIRED');
+          }catch(error){return paymentRequestError(res,error,'INVALID_TOPUP');}
+          const id=randomUUID(),now=new Date().toISOString();
+          try{
+            db.exec('BEGIN IMMEDIATE');
+            const pending=db.prepare("SELECT COUNT(*) count FROM wallet_topups WHERE account_id=? AND status='under_review'").get(account.id).count;
+            if(pending>=MAX_PENDING_PAYMENTS)throw new PaymentRequestError('TOO_MANY_PENDING_TOPUPS',429);
+            const receiptImageUrl=claimReceipt(db,receiptCapability,{entityType:'wallet_topup',entityId:id,accountId:account.id});
+            db.prepare(`INSERT INTO wallet_topups(id,account_id,amount_toman,receipt_reference,receipt_image_url,status,created_at) VALUES(?,?,?,?,?,'under_review',?)`).run(id,account.id,amount,receiptReference,receiptImageUrl,now);
+            db.exec('COMMIT');
+          }catch(error){try{db.exec('ROLLBACK')}catch{}if(error instanceof PaymentRequestError){if(error.status===429)res.setHeader('retry-after','3600');return paymentRequestError(res,error);}throw error;}
+          audit(account.id,'create','wallet_topup',id,{amountToman:amount});schedulePaymentSweep();return json(res,201,{id,status:'under_review',amountToman:amount});
+        }
         if(req.method==='POST'&&path==='/api/customer/wallet/purchase'){
           const b=await readJson(req),plan=db.prepare('SELECT * FROM plans WHERE id=? AND active=1').get(b.planId);if(!plan)return json(res,404,{error:'PLAN_NOT_FOUND'});const location=selectLocationForPlan(db,plan.id);if(!location)return json(res,409,{error:'NO_CAPACITY'});
           const basePrice=Math.round(plan.price_irr/10),code=String(b.discountCode||'').trim().toUpperCase();let discount=null;if(code){discount=db.prepare(`SELECT d.*,(SELECT COUNT(*) FROM discount_redemptions WHERE discount_id=d.id) used,(SELECT COUNT(*) FROM discount_redemptions WHERE discount_id=d.id AND account_id=?) customer_used FROM discount_codes d WHERE d.code=? AND d.active=1`).get(account.id,code);if(!discount||(discount.expires_at&&discount.expires_at<=new Date().toISOString())||(discount.max_uses&&discount.used>=discount.max_uses)||discount.customer_used>=discount.per_customer_limit)return json(res,400,{error:'DISCOUNT_NOT_AVAILABLE'});}const discountToman=discount?Math.floor(basePrice*discount.percent/100):0,price=basePrice-discountToman,id=randomUUID(),token=randomUUID().replace(/-/g,''),now=new Date().toISOString();try{postWalletTransaction(db,{accountId:account.id,amountToman:-price,type:'purchase',reference:`customer-order:${id}`,actor:account.id,note:`خرید ${plan.name}`});}catch(e){return json(res,400,{error:e.message});}
@@ -906,16 +1119,76 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
 
       if (req.method === 'POST' && path === '/api/receipts') {
-        const b = await readJson(req);
-        const allowed = {'image/jpeg':'jpg','image/png':'png','image/webp':'webp'};
-        const ext = allowed[b.mimeType];
-        if (!ext || typeof b.data !== 'string') return json(res, 400, { error:'INVALID_RECEIPT' });
-        const bytes = Buffer.from(b.data, 'base64');
-        if (!bytes.length || bytes.length > 4 * 1024 * 1024) return json(res, 400, { error:'INVALID_RECEIPT_SIZE' });
+        const uploader=accountFromRequest(db,req);
+        if(req.headers.authorization&&!uploader)return json(res,401,{error:'UNAUTHORIZED'});
+        if(uploader&&!['customer','reseller','staff'].includes(uploader.role))return json(res,403,{error:'RECEIPT_UPLOAD_FORBIDDEN'});
+        const uploadLimit=uploader?accountReceiptLimiter(uploader.id):guestReceiptLimiter(requestIp(req));
+        res.setHeader('x-ratelimit-limit',uploadLimit.limit);res.setHeader('x-ratelimit-remaining',uploadLimit.remaining);
+        if(uploadLimit.blocked){res.setHeader('retry-after',uploadLimit.retryAfterSeconds);return json(res,429,{error:'RECEIPT_RATE_LIMITED'});}
+        await cleanupOrphanReceiptUploads(db);
+        let b;
+        try{b=await readJson(req,5_700_000);}catch(error){return json(res,error.message==='BODY_TOO_LARGE'?413:400,{error:error.message==='BODY_TOO_LARGE'?'RECEIPT_TOO_LARGE':'INVALID_RECEIPT'});}
+        if(!b||Array.isArray(b)||typeof b!=='object')return json(res,400,{error:'INVALID_RECEIPT'});
+        const bytes=decodeReceiptBase64(b.data);
+        if(!bytes)return json(res,400,{error:'INVALID_RECEIPT'});
+        if(bytes.length>4*1024*1024)return json(res,413,{error:'RECEIPT_TOO_LARGE'});
+        const detected=receiptType(bytes);
+        if(!detected||b.mimeType!==detected.mimeType)return json(res,400,{error:'INVALID_RECEIPT_TYPE'});
         await mkdir(resolve('receipts'), { recursive:true });
-        const name = `${randomUUID()}.${ext}`;
-        await writeFile(resolve('receipts', name), bytes, { flag:'wx' });
-        return json(res, 201, { url:`/receipts/${name}` });
+        const name = `${randomUUID()}.${detected.extension}`,accessToken=randomBytes(32).toString('base64url');
+        try{
+          db.exec('BEGIN IMMEDIATE');
+          const usage=db.prepare(`SELECT COUNT(*) total_count,COALESCE(SUM(byte_size),0) total_bytes,
+            SUM(CASE WHEN linked_entity_type IS NULL AND linked_entity_id IS NULL THEN 1 ELSE 0 END) unlinked_count,
+            COALESCE(SUM(CASE WHEN linked_entity_type IS NULL AND linked_entity_id IS NULL THEN byte_size ELSE 0 END),0) unlinked_bytes
+            FROM receipt_uploads`).get();
+          if(Number(usage.total_count)>=MAX_TOTAL_RECEIPTS||Number(usage.total_bytes)+bytes.length>MAX_TOTAL_RECEIPT_BYTES||
+             Number(usage.unlinked_count)>=MAX_UNLINKED_RECEIPTS||Number(usage.unlinked_bytes)+bytes.length>MAX_UNLINKED_RECEIPT_BYTES)
+            throw new PaymentRequestError('RECEIPT_STORAGE_BUSY',503);
+          db.prepare('INSERT INTO receipt_uploads(filename,account_id,access_token_hash,mime_type,byte_size,created_at) VALUES(?,?,?,?,?,?)').run(name,uploader?.id||null,createHash('sha256').update(accessToken).digest('hex'),detected.mimeType,bytes.length,new Date().toISOString());
+          db.exec('COMMIT');
+        }catch(error){try{db.exec('ROLLBACK')}catch{}if(error instanceof PaymentRequestError)return json(res,error.status,{error:error.code});return json(res,500,{error:'RECEIPT_STORAGE_FAILED'});}
+        try{await writeFile(resolve('receipts', name), bytes, { flag:'wx' });}
+        catch(error){let removable=false;try{await unlink(resolve('receipts',name));removable=true}catch(unlinkError){removable=unlinkError?.code==='ENOENT'}if(removable)db.prepare('DELETE FROM receipt_uploads WHERE filename=? AND linked_entity_type IS NULL').run(name);return json(res,500,{error:'RECEIPT_STORAGE_FAILED'});}
+        return json(res, 201, { url:`/receipts/${name}?access=${encodeURIComponent(accessToken)}` });
+      }
+
+      // Official httpSMS webhook. httpSMS signs a short-lived HS256 JWT whose
+      // audience is the exact callback URL. Processing is queued after the 200
+      // response so provider retries never wait on provisioning work.
+      if (req.method === 'POST' && path === '/api/webhooks/httpsms') {
+        const config=httpsmsConfig(req);
+        if(!config.enabled||!config.signingKey||!config.expectedOwner||!config.allowedSenders.length)return json(res,503,{error:'HTTPSMS_DISABLED'});
+        const bearer=String(req.headers.authorization||'').match(/^Bearer ([A-Za-z0-9_.-]+)$/)?.[1]||'';
+        let claims;
+        try{claims=verifyHttpSmsJwt(bearer,{signingKey:config.signingKey,audience:config.webhookUrl,issuer:config.issuer,expectedSubject:config.expectedSubject});}
+        catch(error){if(error instanceof HttpSmsWebhookError)return json(res,error.status,{error:error.code});throw error;}
+        const eventType=String(req.headers['x-event-type']||'');
+        if(eventType!==HTTPSMS_EVENT_TYPE)return json(res,200,{accepted:true,ignored:true,reason:'EVENT_TYPE'});
+        let event;
+        try{event=parseHttpSmsEvent(await readJson(req,256_000),{eventTypeHeader:eventType,expectedOwner:config.expectedOwner});}
+        catch(error){if(error instanceof HttpSmsWebhookError)return json(res,error.status,{accepted:error.status===200,ignored:error.status===200,error:error.code});throw error;}
+        if(claims.sub!==event.userId)return json(res,401,{error:'HTTPSMS_EVENT_SUBJECT_MISMATCH'});
+        if(config.expectedSim&&event.sim!==config.expectedSim)return json(res,200,{accepted:true,ignored:true,reason:'SIM'});
+        const sender=event.sender.toLowerCase();
+        if(config.allowedSenders.length&&!config.allowedSenders.includes(sender))return json(res,200,{accepted:true,ignored:true,reason:'SENDER'});
+        const result=ingestBankMessage(db,{
+          message:event.message,
+          receivedAt:event.receivedAt,
+          sender:event.sender,
+          source:'httpsms',
+          defaultUnit:autoReviewConfig().defaultSmsUnit,
+          providerEventId:event.eventId,
+          providerMessageId:event.messageId,
+          destination:event.owner,
+          forceIgnored:event.encrypted,
+          requireExplicitUnit:true
+        });
+        settingSet('httpsms_last_event_at',new Date().toISOString());
+        settingSet('httpsms_last_event_id',event.eventId);
+        if(!result.duplicate)audit('httpsms','ingest','bank_transaction',result.id,{eventId:event.eventId,owner:event.owner,sim:event.sim,encrypted:event.encrypted,usable:result.usable,direction:result.parsed.direction,amountRial:result.parsed.amountRial||0});
+        if(result.usable)schedulePaymentSweep();
+        return json(res,200,{accepted:true,duplicate:result.duplicate,usable:result.usable});
       }
 
       // Bank-SMS ingest webhook (called by an SMS-forwarder app on the phone holding the
@@ -923,12 +1196,13 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if (req.method === 'POST' && path === '/api/sms/ingest') {
         const secret = process.env.SMS_WEBHOOK_SECRET;
         if (!secret) return json(res, 503, { error: 'SMS_INGEST_DISABLED' });
-        const provided = req.headers['x-webhook-secret'] || url.searchParams.get('secret');
-        if (provided !== secret) return json(res, 401, { error: 'UNAUTHORIZED' });
+        const provided = String(req.headers['x-webhook-secret'] || '');
+        const expected=Buffer.from(secret),actual=Buffer.from(provided);
+        if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return json(res,401,{error:'UNAUTHORIZED'});
         const b = await readJson(req);
         const message = String(b.message || b.text || '').trim();
         if (!message) return json(res, 400, { error: 'EMPTY_MESSAGE' });
-        const result = ingestBankMessage(db, { message, receivedAt: b.receivedAt || b.timestamp, sender: b.sender || b.from || '', source: 'sms', defaultUnit: autoReviewConfig.defaultSmsUnit });
+        const result = ingestBankMessage(db, { message, receivedAt: b.receivedAt || b.timestamp, sender: b.sender || b.from || '', source: 'sms', defaultUnit: autoReviewConfig().defaultSmsUnit });
         if (result.duplicate) return json(res, 200, { accepted: true, duplicate: true });
         let matched = null;
         if (result.usable) { const sweep = await handler.sweep(); matched = sweep; }
@@ -956,6 +1230,47 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         settingSet('admin_username',activeAdminUsername);settingSet('admin_password_salt',password.salt);settingSet('admin_password_hash',password.hash);settingSet('admin_session_version',adminSessionVersion);
         audit('admin','change_password','admin_account','primary');
         return json(res,200,{changed:true});
+      }
+
+      if(req.method==='GET'&&path==='/api/admin/httpsms-settings'){
+        const c=httpsmsConfig(req),review=autoReviewConfig();
+        const latest=db.prepare("SELECT provider_event_id,source,status,direction,amount_rial,received_at,created_at FROM bank_transactions WHERE source='httpsms' ORDER BY created_at DESC LIMIT 1").get()||null;
+        const counters=db.prepare("SELECT COUNT(*) total,SUM(CASE WHEN status='matched' THEN 1 ELSE 0 END) matched,SUM(CASE WHEN status='unmatched' THEN 1 ELSE 0 END) unmatched,SUM(CASE WHEN status='ignored' THEN 1 ELSE 0 END) ignored FROM bank_transactions WHERE source='httpsms'").get();
+        return json(res,200,{enabled:c.enabled,webhookUrl:c.webhookUrl,eventType:HTTPSMS_EVENT_TYPE,issuer:c.issuer,expectedSubject:c.expectedSubject,expectedOwner:c.expectedOwner,expectedSim:c.expectedSim,allowedSenders:c.allowedSenders,signingKeyConfigured:Boolean(c.signingKey),signingKeyHint:c.signingKey?`…${c.signingKey.slice(-4)}`:'',autoReviewEnabled:review.enabled,allowAmountOnly:review.allowAmountOnly,amountToleranceRial:review.amountToleranceRial,lookbackHours:review.lookbackHours,defaultSmsUnit:review.defaultSmsUnit,lastEventAt:settingGet('httpsms_last_event_at')||null,latest,counters:{total:Number(counters.total||0),matched:Number(counters.matched||0),unmatched:Number(counters.unmatched||0),ignored:Number(counters.ignored||0)}});
+      }
+      if(req.method==='PATCH'&&path==='/api/admin/httpsms-settings'){
+        const body=await readJson(req),current=httpsmsConfig(req),currentReview=autoReviewConfig();
+        const enabled=typeof body.enabled==='boolean'?body.enabled:current.enabled;
+        const issuer=String(body.issuer??current.issuer).trim(),subject=String(body.expectedSubject??current.expectedSubject).trim(),owner=normalizeHttpSmsOwner(body.expectedOwner??current.expectedOwner),sim=String(body.expectedSim??current.expectedSim).trim().toUpperCase();
+        if(!/^[A-Za-z0-9._:/-]{3,200}$/.test(issuer)||subject.length>200||(owner&&!/^\+\d{8,15}$/.test(owner))||!['','SIM1','SIM2'].includes(sim))return json(res,400,{error:'INVALID_HTTPSMS_SETTINGS'});
+        let senders=body.allowedSenders===undefined?current.allowedSenders:(Array.isArray(body.allowedSenders)?body.allowedSenders:String(body.allowedSenders).split(/[\n,]/));
+        senders=[...new Set(senders.map(x=>String(x).trim().toLowerCase()).filter(Boolean))];
+        if(senders.length>50||senders.some(x=>x.length>100))return json(res,400,{error:'INVALID_HTTPSMS_SENDERS'});
+        let signingKey=current.signingKey,generatedSigningKey='';
+        if(body.rotateSigningKey===true){generatedSigningKey=randomBytes(48).toString('base64url');signingKey=generatedSigningKey;}
+        else if(String(body.signingKey||'').trim())signingKey=String(body.signingKey).trim();
+        if(signingKey&&(Buffer.byteLength(signingKey)<32||Buffer.byteLength(signingKey)>256))return json(res,400,{error:'INVALID_HTTPSMS_SIGNING_KEY'});
+        if(enabled&&!signingKey)return json(res,400,{error:'HTTPSMS_SIGNING_KEY_REQUIRED'});
+        if(enabled&&(!owner||!senders.length))return json(res,400,{error:'HTTPSMS_SOURCE_RESTRICTIONS_REQUIRED'});
+        const currentPanelAutoEnabled=settingGet('auto_review_enabled')==='true';
+        const requestedAutoEnabled=typeof body.autoReviewEnabled==='boolean'?body.autoReviewEnabled:currentPanelAutoEnabled;
+        // Panel-managed auto-review is inseparable from the authenticated,
+        // source-restricted httpSMS receiver. Disabling httpSMS always fails
+        // closed; operators that intentionally use the legacy ingest route can
+        // still opt in exclusively through environment configuration.
+        const autoEnabled=Boolean(enabled&&signingKey&&owner&&senders.length&&requestedAutoEnabled);
+        // The management flow deliberately keeps amount-only matching off. A
+        // transaction without an exact receipt reference always stays manual.
+        const allowAmountOnly=false;
+        const requestedTolerance=body.amountToleranceRial===undefined?0:Number(body.amountToleranceRial),tolerance=0;
+        const lookback=body.lookbackHours===undefined?currentReview.lookbackHours:Number(body.lookbackHours);
+        const unit=String(body.defaultSmsUnit??currentReview.defaultSmsUnit);
+        if(requestedTolerance!==0||!Number.isInteger(lookback)||lookback<1||lookback>24||!['rial','toman'].includes(unit))return json(res,400,{error:'INVALID_AUTO_REVIEW_SETTINGS'});
+        settingSet('httpsms_enabled',enabled);settingSet('httpsms_issuer',issuer);settingSet('httpsms_expected_subject',subject);settingSet('httpsms_expected_owner',owner);settingSet('httpsms_expected_sim',sim);settingSet('httpsms_allowed_senders',JSON.stringify(senders));
+        if(signingKey)settingSet('httpsms_signing_key',encrypt(signingKey));
+        settingSet('auto_review_enabled',autoEnabled);settingSet('auto_review_allow_amount_only',allowAmountOnly);settingSet('auto_review_amount_tolerance_rial',tolerance);settingSet('auto_review_lookback_hours',lookback);settingSet('bank_sms_default_unit',unit);
+        audit('admin','update','httpsms_settings','httpsms',{enabled,issuer,expectedOwner:owner,expectedSim:sim,allowedSenderCount:senders.length,autoReviewEnabled:autoEnabled,allowAmountOnly,amountToleranceRial:tolerance,lookbackHours:lookback,signingKeyChanged:Boolean(generatedSigningKey||String(body.signingKey||'').trim())});
+        return json(res,200,{saved:true,webhookUrl:`${publicOrigin(req)}/api/webhooks/httpsms`,eventType:HTTPSMS_EVENT_TYPE,...(generatedSigningKey?{generatedSigningKey}: {})});
       }
 
       if(req.method==='GET'&&path==='/api/admin/emergency-settings'){
@@ -1011,7 +1326,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
       if (req.method === 'GET' && path === '/api/admin/bank-transactions') {
         const status = url.searchParams.get('status');
-        const select = 'SELECT id,amount_rial,tracking_code,card_last4,bank,direction,status,matched_order_id,source,received_at,created_at,raw_message FROM bank_transactions';
+        const select = 'SELECT id,amount_rial,CASE WHEN tracking_code IS NULL THEN NULL ELSE substr(tracking_code,-4) END tracking_suffix,card_last4,destination_card_last4,bank,direction,status,matched_order_id,matched_topup_id,source,received_at,created_at FROM bank_transactions';
         const rows = status ? db.prepare(`${select} WHERE status=? ORDER BY received_at DESC LIMIT 300`).all(status) : db.prepare(`${select} ORDER BY received_at DESC LIMIT 300`).all();
         return json(res, 200, rows);
       }
@@ -1026,8 +1341,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
 
       if(req.method==='GET'&&path==='/api/admin/wallet-topups'){const status=url.searchParams.get('status');const select=`SELECT t.*,a.name customer_name,a.phone,COALESCE(w.balance_toman,0) balance_toman FROM wallet_topups t JOIN accounts a ON a.id=t.account_id LEFT JOIN wallet_accounts w ON w.account_id=a.id`;const rows=status?db.prepare(`${select} WHERE t.status=? ORDER BY t.created_at DESC`).all(status):db.prepare(`${select} ORDER BY t.created_at DESC`).all();return json(res,200,rows);}
+      const topupReviewsMatch=path.match(/^\/api\/admin\/wallet-topups\/([^/]+)\/reviews$/);if(req.method==='GET'&&topupReviewsMatch)return json(res,200,db.prepare('SELECT * FROM wallet_topup_reviews WHERE topup_id=? ORDER BY created_at DESC LIMIT 50').all(topupReviewsMatch[1]));
       if(req.method==='GET'&&path==='/api/admin/financial-summary'){const sales=db.prepare(`SELECT COUNT(*) orders_count,COALESCE(SUM(amount_transferred_irr/10),0) sales_toman FROM orders WHERE status='approved'`).get(),wallets=db.prepare(`SELECT COALESCE(SUM(balance_toman),0) wallet_liability_toman FROM wallet_accounts`).get(),customers=db.prepare(`SELECT COUNT(*) customers_count FROM accounts WHERE role='customer'`).get(),pending=db.prepare(`SELECT COUNT(*) pending_topups,COALESCE(SUM(amount_toman),0) pending_topups_toman FROM wallet_topups WHERE status='under_review'`).get();return json(res,200,{...sales,...wallets,...customers,...pending});}
-      const topupReview=path.match(/^\/api\/admin\/wallet-topups\/([^/]+)\/(approve|reject)$/);if(req.method==='POST'&&topupReview){const b=await readJson(req),topup=db.prepare(`SELECT t.*,a.name customer_name,a.phone FROM wallet_topups t JOIN accounts a ON a.id=t.account_id WHERE t.id=?`).get(topupReview[1]);if(!topup)return json(res,404,{error:'TOPUP_NOT_FOUND'});if(topup.status!=='under_review')return json(res,409,{error:'TOPUP_NOT_REVIEWABLE'});const now=new Date().toISOString(),action=topupReview[2];if(action==='reject'){db.prepare("UPDATE wallet_topups SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='under_review'").run(b.note||null,b.reviewedBy||'admin',now,topup.id);audit('admin','reject','wallet_topup',topup.id,{note:b.note});return json(res,200,{id:topup.id,status:'rejected'});}db.prepare("UPDATE wallet_topups SET status='approved',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='under_review'").run(b.note||null,b.reviewedBy||'admin',now,topup.id);try{const tx=postWalletTransaction(db,{accountId:topup.account_id,amountToman:topup.amount_toman,type:'transfer_in',reference:`wallet-topup:${topup.id}`,actor:'admin',note:`شارژ کیف پول با رسید ${topup.receipt_reference||''}`});audit('admin','approve','wallet_topup',topup.id,{amountToman:topup.amount_toman});return json(res,200,{id:topup.id,status:'approved',balanceToman:tx.balanceToman});}catch(e){db.prepare("UPDATE wallet_topups SET status='under_review',review_note=NULL,reviewed_by=NULL,reviewed_at=NULL WHERE id=?").run(topup.id);return json(res,400,{error:e.message});}}
+      const topupReview=path.match(/^\/api\/admin\/wallet-topups\/([^/]+)\/(approve|reject)$/);if(req.method==='POST'&&topupReview){const b=await readJson(req),topup=db.prepare(`SELECT t.*,a.name customer_name,a.phone FROM wallet_topups t JOIN accounts a ON a.id=t.account_id WHERE t.id=?`).get(topupReview[1]);if(!topup)return json(res,404,{error:'TOPUP_NOT_FOUND'});if(topup.status!=='under_review')return json(res,409,{error:'TOPUP_NOT_REVIEWABLE'});const now=new Date().toISOString(),action=topupReview[2];if(action==='reject'){const rejected=db.prepare("UPDATE wallet_topups SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='under_review'").run(b.note||null,b.reviewedBy||'admin',now,topup.id);if(!rejected.changes)return json(res,409,{error:'TOPUP_NOT_REVIEWABLE'});audit('admin','reject','wallet_topup',topup.id,{note:b.note});return json(res,200,{id:topup.id,status:'rejected'});}try{const result=approveWalletTopup(db,topup.id,{actor:b.reviewedBy||'admin',note:b.note||'تأیید دستی مدیر',reason:b.note||'تأیید دستی مدیر'});notify(topup.account_id,'شارژ کیف پول تأیید شد',`${Number(topup.amount_toman).toLocaleString('fa-IR')} تومان به کیف پول شما افزوده شد.`);audit('admin','approve','wallet_topup',topup.id,{amountToman:topup.amount_toman});return json(res,200,{id:topup.id,status:'approved',balanceToman:result.balanceToman});}catch(error){return json(res,['TOPUP_NOT_REVIEWABLE','TOPUP_ALREADY_CREDITED'].includes(error.message)?409:400,{error:error.message});}}
       if(req.method==='GET'&&path==='/api/admin/discounts'){return json(res,200,db.prepare(`SELECT d.*,(SELECT COUNT(*) FROM discount_redemptions r WHERE r.discount_id=d.id) used_count,COALESCE((SELECT SUM(discount_toman) FROM discount_redemptions r WHERE r.discount_id=d.id),0) total_discount_toman FROM discount_codes d ORDER BY d.created_at DESC`).all());}
       if(req.method==='POST'&&path==='/api/admin/discounts'){const b=await readJson(req),code=String(b.code||'').trim().toUpperCase(),percent=Number(b.percent),maxUses=Math.max(Number(b.maxUses)||0,0),limit=Math.max(Number(b.perCustomerLimit)||1,1);if(!/^[A-Z0-9_-]{3,30}$/.test(code)||!Number.isInteger(percent)||percent<1||percent>100)return json(res,400,{error:'INVALID_DISCOUNT'});const id=randomUUID(),now=new Date().toISOString();try{db.prepare(`INSERT INTO discount_codes(id,code,percent,max_uses,per_customer_limit,expires_at,active,created_at,updated_at) VALUES(?,?,?,?,?,?,1,?,?)`).run(id,code,percent,maxUses,limit,b.expiresAt||null,now,now);}catch{return json(res,409,{error:'DISCOUNT_EXISTS'});}return json(res,201,{id,code});}
       const discountMatch=path.match(/^\/api\/admin\/discounts\/([^/]+)$/);if(req.method==='PATCH'&&discountMatch){const old=db.prepare('SELECT * FROM discount_codes WHERE id=?').get(discountMatch[1]);if(!old)return json(res,404,{error:'DISCOUNT_NOT_FOUND'});const b=await readJson(req),percent=Number(b.percent??old.percent),maxUses=Number(b.maxUses??old.max_uses),limit=Number(b.perCustomerLimit??old.per_customer_limit);if(!Number.isInteger(percent)||percent<1||percent>100||maxUses<0||limit<1)return json(res,400,{error:'INVALID_DISCOUNT'});db.prepare('UPDATE discount_codes SET percent=?,max_uses=?,per_customer_limit=?,expires_at=?,active=?,updated_at=? WHERE id=?').run(percent,maxUses,limit,b.expiresAt??old.expires_at,(b.active??Boolean(old.active))?1:0,new Date().toISOString(),old.id);return json(res,200,{id:old.id});}
@@ -1249,16 +1565,33 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
 
       if (req.method === 'POST' && path === '/api/orders') {
-        const b = await readJson(req);
-        const plan = db.prepare('SELECT * FROM plans WHERE id=? AND active=1').get(b.planId);
-        if (!plan || !b.customerName?.trim() || !/^09\d{9}$/.test(b.phone || ''))
-          return json(res, 400, { error: 'INVALID_ORDER' });
-        const hasReceipt = Boolean(b.receiptReference || b.receiptImageUrl);
-        const id = randomUUID(), trackingToken = randomUUID().replace(/-/g, '');
-        db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,receipt_reference,receipt_image_url,created_at,tracking_token)
-          VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id, b.customerName.trim(), b.phone, plan.id, hasReceipt ? 'under_review' : 'awaiting_receipt',
-          b.amountTransferredIrr ? b.amountTransferredIrr * 10 : null, b.receiptReference || null, b.receiptImageUrl || null, new Date().toISOString(), trackingToken);
-        audit(b.phone, 'create', 'order', id);
+        let b,customerName,phone,planId,amountToman,receiptReference,receiptCapability;
+        try{
+          b=await readJson(req,MAX_PAYMENT_BODY_BYTES);
+          if(!b||Array.isArray(b)||typeof b!=='object')throw new PaymentRequestError('INVALID_ORDER');
+          customerName=paymentString(b.customerName,{field:'CUSTOMER_NAME',min:2,max:100});
+          phone=paymentString(b.phone,{field:'PHONE',min:11,max:11});
+          if(!/^09\d{9}$/.test(phone))throw new PaymentRequestError('INVALID_PHONE');
+          planId=paymentString(b.planId,{field:'PLAN',min:1,max:100});
+          amountToman=optionalPaymentAmount(b.amountTransferredIrr);
+          receiptReference=optionalReceiptReference(b.receiptReference);
+          receiptCapability=receiptCapabilityFromUrl(b.receiptImageUrl,req);
+        }catch(error){return paymentRequestError(res,error,'INVALID_ORDER');}
+        const plan = db.prepare('SELECT * FROM plans WHERE id=? AND active=1').get(planId);
+        if (!plan) return json(res, 400, { error: 'INVALID_ORDER' });
+        if(Boolean(receiptReference)!==Boolean(receiptCapability))return json(res,400,{error:'INCOMPLETE_RECEIPT'});
+        const hasReceipt = Boolean(receiptReference && receiptCapability);
+        const id = randomUUID(), trackingToken = randomUUID().replace(/-/g, ''),now=new Date(),createdAt=now.toISOString(),cutoff=new Date(now.getTime()-PAYMENT_PENDING_WINDOW_MS).toISOString();
+        try{
+          db.exec('BEGIN IMMEDIATE');
+          const pending=db.prepare("SELECT COUNT(*) count FROM orders WHERE phone=? AND status IN ('awaiting_receipt','under_review') AND created_at>=?").get(phone,cutoff).count;
+          if(pending>=MAX_PENDING_PAYMENTS)throw new PaymentRequestError('TOO_MANY_PENDING_ORDERS',429);
+          const receiptImageUrl=claimReceipt(db,receiptCapability,{entityType:'order',entityId:id,guest:true});
+          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,receipt_reference,receipt_image_url,created_at,tracking_token)
+            VALUES(?,?,?,?,?,?,?,?,?,?)`).run(id,customerName,phone,plan.id,hasReceipt?'under_review':'awaiting_receipt',amountToman===null?null:amountToman*10,receiptReference,receiptImageUrl,createdAt,trackingToken);
+          db.exec('COMMIT');
+        }catch(error){try{db.exec('ROLLBACK')}catch{}if(error instanceof PaymentRequestError){if(error.status===429)res.setHeader('retry-after','3600');return paymentRequestError(res,error);}throw error;}
+        audit(phone, 'create', 'order', id);
         if (hasReceipt) await triggerReview(id);
         return json(res, 201, { id, trackingToken, status: hasReceipt ? 'under_review' : 'awaiting_receipt', expectedAmountIrr: Math.round(plan.price_irr / 10) });
       }
@@ -1274,8 +1607,25 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       const customerRenewMatch=path.match(/^\/api\/orders\/([^/]+)\/renew$/);
       if(req.method==='POST'&&customerRenewMatch){
         const token=url.searchParams.get('token'),original=db.prepare(`SELECT o.*,p.price_irr,s.status subscription_status,s.panel_client_id,s.subscription_url FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id WHERE o.id=? AND o.tracking_token=? AND o.order_kind='purchase' AND s.status='active'`).get(customerRenewMatch[1],token);
-        if(!original)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});const b=await readJson(req);if(!b.receiptReference&&!b.receiptImageUrl)return json(res,400,{error:'RECEIPT_REQUIRED'});
-        const id=randomUUID(),trackingToken=randomUUID().replace(/-/g,''),now=new Date().toISOString();db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,receipt_reference,receipt_image_url,created_at,tracking_token,location_id,order_kind,parent_order_id) VALUES(?,?,?,?,'under_review',?,?,?,?,?,?,'renewal',?)`).run(id,original.customer_name,original.phone,original.plan_id,b.amountTransferredIrr?Number(b.amountTransferredIrr)*10:original.price_irr,b.receiptReference||null,b.receiptImageUrl||null,now,trackingToken,original.location_id,original.id);
+        if(!original)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
+        let b,amountToman,receiptReference,receiptCapability;
+        try{
+          b=await readJson(req,MAX_PAYMENT_BODY_BYTES);
+          if(!b||Array.isArray(b)||typeof b!=='object')throw new PaymentRequestError('INVALID_RENEWAL');
+          amountToman=optionalPaymentAmount(b.amountTransferredIrr);
+          receiptReference=optionalReceiptReference(b.receiptReference);
+          receiptCapability=receiptCapabilityFromUrl(b.receiptImageUrl,req);
+          if(!receiptReference||!receiptCapability)throw new PaymentRequestError('RECEIPT_REQUIRED');
+        }catch(error){return paymentRequestError(res,error,'INVALID_RENEWAL');}
+        const id=randomUUID(),trackingToken=randomUUID().replace(/-/g,''),nowDate=new Date(),now=nowDate.toISOString(),cutoff=new Date(nowDate.getTime()-PAYMENT_PENDING_WINDOW_MS).toISOString();
+        try{
+          db.exec('BEGIN IMMEDIATE');
+          const pending=db.prepare("SELECT COUNT(*) count FROM orders WHERE phone=? AND status IN ('awaiting_receipt','under_review') AND created_at>=?").get(original.phone,cutoff).count;
+          if(pending>=MAX_PENDING_PAYMENTS)throw new PaymentRequestError('TOO_MANY_PENDING_ORDERS',429);
+          const receiptImageUrl=claimReceipt(db,receiptCapability,{entityType:'order',entityId:id,guest:true});
+          db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,receipt_reference,receipt_image_url,created_at,tracking_token,location_id,order_kind,parent_order_id) VALUES(?,?,?,?,'under_review',?,?,?,?,?,?,'renewal',?)`).run(id,original.customer_name,original.phone,original.plan_id,amountToman===null?original.price_irr:amountToman*10,receiptReference,receiptImageUrl,now,trackingToken,original.location_id,original.id);
+          db.exec('COMMIT');
+        }catch(error){try{db.exec('ROLLBACK')}catch{}if(error instanceof PaymentRequestError){if(error.status===429)res.setHeader('retry-after','3600');return paymentRequestError(res,error);}throw error;}
         audit(original.phone,'create','renewal_order',id,{parentOrderId:original.id});await triggerReview(id);return json(res,201,{id,trackingToken,status:'under_review',expectedAmountToman:Math.round(original.price_irr/10)});
       }
 
@@ -1320,6 +1670,6 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       return json(res, e.message === 'BODY_TOO_LARGE' ? 413 : 400, { error: 'BAD_REQUEST', message: e.message });
     }
   };
-  handler.sweep = () => sweepPendingOrders(db, agentDeps());
+  handler.sweep = () => sweepPendingPayments(db, agentDeps());
   return handler;
 }

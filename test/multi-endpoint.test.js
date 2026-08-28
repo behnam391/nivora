@@ -2,12 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { unlink } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { openDatabase } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import { createSession } from '../src/auth.js';
 import { buildMultiEndpointSubscription, decodeSubscription, parseCleanIpList } from '../src/multi-endpoint.js';
 
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const receiptPng=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+XlRFAAAAAElFTkSuQmCC','base64');
 
 test('Cloudflare clean IP routes clone only compatible CDN links and preserve direct Reality', () => {
   const reality='vless://12345678-1234-1234-1234-123456789abc@65.109.184.177:443?type=tcp&security=reality&sni=www.cloudflare.com&pbk=public-key#Direct';
@@ -54,7 +57,8 @@ test('public Nivora subscription gateway includes direct and active Cloudflare r
   response=await fetch(`${base}/api/admin/locations`,{method:'POST',headers:admin,body:JSON.stringify({name:'Finland',countryCode:'FI',panelInboundId:1,panelCdnInboundId:2})});const location=await response.json();
   await fetch(`${base}/api/admin/locations/${location.id}/plans`,{method:'POST',headers:admin,body:JSON.stringify({planIds:[plan.id]})});
   response=await fetch(`${base}/api/admin/locations/${location.id}/endpoints`,{method:'POST',headers:admin,body:JSON.stringify({label:'Cloudflare 01',host:'104.16.0.1',serverName:'edge.nivorali.com',port:443,mode:'cloudflare',priority:10})});assert.equal(response.status,201);
-  response=await fetch(`${base}/api/orders`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customerName:'Customer',phone:'09121234567',planId:plan.id,receiptReference:'receipt'})});const order=await response.json();
+  response=await fetch(`${base}/api/receipts`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mimeType:'image/png',data:receiptPng.toString('base64')})});const receipt=await response.json(),receiptName=new URL(receipt.url,base).pathname.split('/').at(-1);t.after(()=>unlink(resolve('receipts',receiptName)).catch(()=>{}));
+  response=await fetch(`${base}/api/orders`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customerName:'Customer',phone:'09121234567',planId:plan.id,receiptReference:'receipt',receiptImageUrl:receipt.url})});const order=await response.json();
   response=await fetch(`${base}/api/admin/orders/${order.id}/approve`,{method:'POST',headers:admin,body:'{}'});assert.equal(response.status,200);const subscription=await response.json();
   response=await fetch(subscription.subscription_url);assert.equal(response.status,200);assert.equal(response.headers.get('x-nivora-routes'),'1');
   const rendered=await response.text();assert.match(rendered,/@65\.109\.184\.177/);assert.match(rendered,/@104\.16\.0\.1/);assert.match(rendered,/sni=edge\.nivorali\.com/);

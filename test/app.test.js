@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { unlink } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { openDatabase } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import { buildClientPayload, buildCompatibleClientPayload, createThreeXuiProvisioner } from '../src/providers/three-x-ui.js';
@@ -16,13 +18,22 @@ const start = async (options = {}) => {
   return { db, server, base };
 };
 
+const receiptPng=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+XlRFAAAAAElFTkSuQmCC','base64');
+const uploadReceipt=async(base,token='')=>{
+  const headers={'content-type':'application/json'};if(token)headers.authorization=`Bearer ${token}`;
+  const response=await fetch(`${base}/api/receipts`,{method:'POST',headers,body:JSON.stringify({mimeType:'image/png',data:receiptPng.toString('base64')})});
+  assert.equal(response.status,201);const receipt=await response.json(),filename=new URL(receipt.url,base).pathname.split('/').at(-1);
+  return {...receipt,cleanup:()=>unlink(resolve('receipts',filename)).catch(()=>{})};
+};
+
 test('plan creation, order and manual approval flow', async t => {
   const { server, base } = await start();
   t.after(() => server.close());
   const headers = { authorization: 'Bearer test-token', 'content-type': 'application/json' };
   let r = await fetch(`${base}/api/admin/plans`, { method: 'POST', headers, body: JSON.stringify({ name:'استاندارد', priceIrr:5000000, trafficGb:60, durationDays:30, deviceLimit:2 }) });
   assert.equal(r.status, 201); const plan = await r.json();
-  r = await fetch(`${base}/api/orders`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ customerName:'کاربر تست', phone:'09121234567', planId:plan.id, receiptReference:'1234', amountTransferredIrr:5000000 }) });
+  const receipt=await uploadReceipt(base);t.after(receipt.cleanup);
+  r = await fetch(`${base}/api/orders`, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ customerName:'کاربر تست', phone:'09121234567', planId:plan.id, receiptReference:'1234',receiptImageUrl:receipt.url, amountTransferredIrr:5000000 }) });
   assert.equal(r.status, 201); const order = await r.json(); assert.equal(order.status, 'under_review');
   r = await fetch(`${base}/api/admin/orders/${order.id}/approve`, { method:'POST', headers, body:'{}' });
   assert.equal(r.status, 200); const sub = await r.json(); assert.equal(sub.status, 'pending_provision');
@@ -88,7 +99,7 @@ test('customer order can only be tracked with its private tracking token', async
   const admin = { authorization:'Bearer test-token', 'content-type':'application/json' };
   let r = await fetch(`${base}/api/admin/plans`, {method:'POST',headers:admin,body:JSON.stringify({name:'پایه',priceIrr:1000,trafficGb:10,durationDays:15,deviceLimit:1})});
   const plan = await r.json();
-  r = await fetch(`${base}/api/orders`, {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customerName:'کاربر',phone:'09121234567',planId:plan.id,receiptReference:'22'})});
+  r = await fetch(`${base}/api/orders`, {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customerName:'کاربر',phone:'09121234567',planId:plan.id})});
   const order = await r.json();
   assert.ok(order.trackingToken);
   r = await fetch(`${base}/api/orders/${order.id}?token=wrong`); assert.equal(r.status,404);
@@ -359,12 +370,14 @@ test('customer renews an active subscription with tracking token and manual rece
   const admin={authorization:'Bearer test-token','content-type':'application/json'};
   let r=await fetch(`${base}/api/admin/plans`,{method:'POST',headers:admin,body:JSON.stringify({name:'تمدید مشتری',priceIrr:120000,trafficGb:40,durationDays:30,deviceLimit:2})});
   const plan=await r.json();
-  r=await fetch(`${base}/api/orders`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customerName:'مشتری تمدید',phone:'09120000002',planId:plan.id,receiptReference:'first',amountTransferredIrr:120000})});
+  const purchaseReceipt=await uploadReceipt(base);t.after(purchaseReceipt.cleanup);
+  r=await fetch(`${base}/api/orders`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customerName:'مشتری تمدید',phone:'09120000002',planId:plan.id,receiptReference:'first',receiptImageUrl:purchaseReceipt.url,amountTransferredIrr:120000})});
   const purchase=await r.json();
   r=await fetch(`${base}/api/admin/orders/${purchase.id}/approve`,{method:'POST',headers:admin,body:'{}'});assert.equal(r.status,200);
   const originalSub=await r.json();assert.equal(originalSub.status,'active');
   r=await fetch(`${base}/api/orders/${purchase.id}/renew?token=wrong`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({receiptReference:'renew'})});assert.equal(r.status,404);
-  r=await fetch(`${base}/api/orders/${purchase.id}/renew?token=${purchase.trackingToken}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({receiptReference:'renew',receiptImageUrl:'/receipts/test.jpg',amountTransferredIrr:120000})});assert.equal(r.status,201);
+  const renewalReceipt=await uploadReceipt(base);t.after(renewalReceipt.cleanup);
+  r=await fetch(`${base}/api/orders/${purchase.id}/renew?token=${purchase.trackingToken}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({receiptReference:'renew',receiptImageUrl:renewalReceipt.url,amountTransferredIrr:120000})});assert.equal(r.status,201);
   const renewal=await r.json();
   r=await fetch(`${base}/api/admin/orders/${renewal.id}/approve`,{method:'POST',headers:admin,body:'{}'});assert.equal(r.status,200);
   const renewedSub=await r.json();assert.equal(renewedSub.status,'active');assert.equal(renewedSub.panel_client_id,originalSub.panel_client_id);assert.equal(renewedSub.subscription_url,originalSub.subscription_url);
@@ -387,7 +400,8 @@ test('customer account uses wallet for instant purchase and renewal', async t =>
 test('wallet top-up receipt is reviewed once and credits the customer ledger', async t => {
   const {server,base}=await start();t.after(()=>server.close());const admin={authorization:'Bearer test-token','content-type':'application/json'};
   let r=await fetch(`${base}/api/customer/register`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'مشتری شارژ',phone:'09123334444',password:'topup-pass-1'})});const registration=await r.json(),auth={authorization:`Bearer ${registration.token}`,'content-type':'application/json'};
-  r=await fetch(`${base}/api/customer/wallet/topups`,{method:'POST',headers:auth,body:JSON.stringify({amountToman:250000,receiptReference:'bank-7788',receiptImageUrl:'/receipts/sample.jpg'})});assert.equal(r.status,201);const topup=await r.json();
+  const receipt=await uploadReceipt(base,registration.token);t.after(receipt.cleanup);
+  r=await fetch(`${base}/api/customer/wallet/topups`,{method:'POST',headers:auth,body:JSON.stringify({amountToman:250000,receiptReference:'bank-7788',receiptImageUrl:receipt.url})});assert.equal(r.status,201);const topup=await r.json();
   r=await fetch(`${base}/api/admin/wallet-topups?status=under_review`,{headers:admin});assert.equal(r.status,200);assert.equal((await r.json()).length,1);
   r=await fetch(`${base}/api/admin/wallet-topups/${topup.id}/approve`,{method:'POST',headers:admin,body:JSON.stringify({note:'تأیید بانکی'})});assert.equal(r.status,200);assert.equal((await r.json()).balanceToman,250000);
   r=await fetch(`${base}/api/admin/wallet-topups/${topup.id}/approve`,{method:'POST',headers:admin,body:'{}'});assert.equal(r.status,409);

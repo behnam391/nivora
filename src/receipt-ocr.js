@@ -8,7 +8,9 @@ import { extractFinancialFields } from './bank-sms.js';
 
 // Map a stored receipt URL ("/receipts/<name>.jpg") to a path inside the receipts dir.
 export function receiptPathFromUrl(url) {
-  const match = String(url || '').match(/([a-f0-9-]+\.(?:jpe?g|png|webp))$/i);
+  let pathname = String(url || '');
+  try { pathname = new URL(pathname, 'http://receipt.local').pathname; } catch {}
+  const match = pathname.match(/([a-f0-9-]+\.(?:jpe?g|png|webp))$/i);
   return match ? resolve('receipts', match[1]) : null;
 }
 

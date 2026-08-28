@@ -12,20 +12,28 @@ export function ensureWallet(db, accountId) {
   return wallet;
 }
 
-export function postWalletTransaction(db, { accountId, amountToman, type, reference, actor, note = null }) {
+// Write one ledger entry inside an already-open database transaction.  Keeping
+// this primitive separate lets payment confirmation consume a bank transaction,
+// approve a top-up, and credit the wallet as one all-or-nothing operation.
+export function postWalletTransactionInTransaction(db, { accountId, amountToman, type, reference, actor, note = null }) {
   if (!Number.isInteger(amountToman) || amountToman === 0) throw new Error('INVALID_AMOUNT');
   if (!reference?.trim()) throw new Error('REFERENCE_REQUIRED');
+  const wallet = ensureWallet(db, accountId);
+  const balance = wallet.balance_toman + amountToman;
+  if (balance < 0) throw new Error('INSUFFICIENT_BALANCE');
+  const id = randomUUID(), now = new Date().toISOString();
+  db.prepare('UPDATE wallet_accounts SET balance_toman=?,updated_at=? WHERE id=?').run(balance,now,wallet.id);
+  db.prepare(`INSERT INTO wallet_transactions(id,wallet_id,amount_toman,balance_after_toman,type,reference,actor,note,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(id,wallet.id,amountToman,balance,type,reference.trim(),actor,note,now);
+  return { id, accountId, amountToman, balanceToman:balance, type, reference, createdAt:now };
+}
+
+export function postWalletTransaction(db, params) {
   db.exec('BEGIN IMMEDIATE');
   try {
-    const wallet = ensureWallet(db, accountId);
-    const balance = wallet.balance_toman + amountToman;
-    if (balance < 0) throw new Error('INSUFFICIENT_BALANCE');
-    const id = randomUUID(), now = new Date().toISOString();
-    db.prepare('UPDATE wallet_accounts SET balance_toman=?,updated_at=? WHERE id=?').run(balance,now,wallet.id);
-    db.prepare(`INSERT INTO wallet_transactions(id,wallet_id,amount_toman,balance_after_toman,type,reference,actor,note,created_at) VALUES(?,?,?,?,?,?,?,?,?)`)
-      .run(id,wallet.id,amountToman,balance,type,reference.trim(),actor,note,now);
+    const result = postWalletTransactionInTransaction(db, params);
     db.exec('COMMIT');
-    return { id, accountId, amountToman, balanceToman:balance, type, reference, createdAt:now };
+    return result;
   } catch (error) {
     db.exec('ROLLBACK');
     if (String(error.message).includes('UNIQUE constraint failed')) throw new Error('DUPLICATE_REFERENCE');

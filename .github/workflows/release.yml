@@ -30,18 +30,30 @@ jobs:
           bash android/fetch-libxray.sh
           cd android
           chmod +x gradlew
-          ./gradlew app:testDebugUnitTest app:lintDebug app:assembleRelease
-          cp app/build/outputs/apk/release/app-arm64-v8a-release.apk ../Nivora-${GITHUB_REF_NAME}-arm64.apk
-          cp app/build/outputs/apk/release/app-armeabi-v7a-release.apk ../Nivora-${GITHUB_REF_NAME}-armv7.apk
-          cp app/build/outputs/apk/release/app-universal-release.apk ../Nivora-${GITHUB_REF_NAME}-universal.apk
+          ./gradlew \
+            app:testCustomerDebugUnitTest \
+            app:testPartnerDebugUnitTest \
+            app:lintCustomerRelease \
+            app:lintPartnerRelease \
+            app:assembleCustomerRelease \
+            app:assemblePartnerRelease
+          cp app/build/outputs/apk/customer/release/app-customer-arm64-v8a-release.apk ../Nivora-Customer-${GITHUB_REF_NAME}-arm64.apk
+          cp app/build/outputs/apk/customer/release/app-customer-armeabi-v7a-release.apk ../Nivora-Customer-${GITHUB_REF_NAME}-armv7.apk
+          cp app/build/outputs/apk/customer/release/app-customer-universal-release.apk ../Nivora-Customer-${GITHUB_REF_NAME}-universal.apk
+          cp app/build/outputs/apk/partner/release/app-partner-arm64-v8a-release.apk ../Nivora-Partner-${GITHUB_REF_NAME}-arm64.apk
+          cp app/build/outputs/apk/partner/release/app-partner-armeabi-v7a-release.apk ../Nivora-Partner-${GITHUB_REF_NAME}-armv7.apk
+          cp app/build/outputs/apk/partner/release/app-partner-universal-release.apk ../Nivora-Partner-${GITHUB_REF_NAME}-universal.apk
           cd ..
-          sha256sum Nivora-${GITHUB_REF_NAME}-*.apk > Nivora-${GITHUB_REF_NAME}-SHA256SUMS.txt
+          sha256sum Nivora-Customer-${GITHUB_REF_NAME}-*.apk Nivora-Partner-${GITHUB_REF_NAME}-*.apk > Nivora-${GITHUB_REF_NAME}-SHA256SUMS.txt
       - run: tar --exclude=.git --exclude=data --exclude=receipts --exclude=backups --exclude=.env -czf nivora-${GITHUB_REF_NAME}.tar.gz .
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             nivora-${{ github.ref_name }}.tar.gz
-            Nivora-${{ github.ref_name }}-arm64.apk
-            Nivora-${{ github.ref_name }}-armv7.apk
-            Nivora-${{ github.ref_name }}-universal.apk
+            Nivora-Customer-${{ github.ref_name }}-arm64.apk
+            Nivora-Customer-${{ github.ref_name }}-armv7.apk
+            Nivora-Customer-${{ github.ref_name }}-universal.apk
+            Nivora-Partner-${{ github.ref_name }}-arm64.apk
+            Nivora-Partner-${{ github.ref_name }}-armv7.apk
+            Nivora-Partner-${{ github.ref_name }}-universal.apk
             Nivora-${{ github.ref_name }}-SHA256SUMS.txt

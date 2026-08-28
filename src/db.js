@@ -7,7 +7,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   const filename = path === ':memory:' ? path : resolve(path);
   if (filename !== ':memory:') mkdirSync(dirname(filename), { recursive: true });
   const db = new DatabaseSync(filename);
-  db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA secure_delete = ON;');
   db.exec(`
     CREATE TABLE IF NOT EXISTS plans (
       id TEXT PRIMARY KEY,
@@ -250,6 +250,19 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       created_at TEXT NOT NULL,
       reviewed_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS receipt_uploads (
+      filename TEXT PRIMARY KEY,
+      account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+      access_token_hash TEXT NOT NULL,
+      mime_type TEXT NOT NULL CHECK(mime_type IN ('image/jpeg','image/png','image/webp')),
+      byte_size INTEGER NOT NULL CHECK(byte_size BETWEEN 1 AND 4194304),
+      created_at TEXT NOT NULL,
+      linked_entity_type TEXT CHECK(linked_entity_type IN ('order','wallet_topup')),
+      linked_entity_id TEXT,
+      linked_at TEXT,
+      CHECK((linked_entity_type IS NULL AND linked_entity_id IS NULL AND linked_at IS NULL) OR
+            (linked_entity_type IS NOT NULL AND linked_entity_id IS NOT NULL AND linked_at IS NOT NULL))
+    );
     CREATE TABLE IF NOT EXISTS discount_codes (
       id TEXT PRIMARY KEY,
       code TEXT NOT NULL UNIQUE,
@@ -366,8 +379,72 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!ticketColumns.includes('owner_archived_at')) db.exec('ALTER TABLE support_tickets ADD COLUMN owner_archived_at TEXT');
   const notificationColumns = db.prepare('PRAGMA table_info(notifications)').all().map(c => c.name);
   if (!notificationColumns.includes('dismissed_at')) db.exec('ALTER TABLE notifications ADD COLUMN dismissed_at TEXT');
+  // Early development builds created receipt_uploads.account_id as NOT NULL.
+  // Rebuild that small metadata table once so the rate-limited public store can
+  // keep guest checkout while authenticated uploads still retain ownership.
+  const receiptTableColumns=db.prepare('PRAGMA table_info(receipt_uploads)').all(),receiptAccountColumn=receiptTableColumns.find(column=>column.name==='account_id');
+  const receiptForeignKey=db.prepare('PRAGMA foreign_key_list(receipt_uploads)').all().find(key=>key.from==='account_id');
+  const rebuildReceiptUploads=Boolean(receiptAccountColumn?.notnull||String(receiptForeignKey?.on_delete||'').toUpperCase()!=='SET NULL');
+  if(rebuildReceiptUploads){
+    const hadReceiptLinks=receiptTableColumns.some(column=>column.name==='linked_entity_type');
+    const legacyLinkSelect=hadReceiptLinks
+      ? "CASE WHEN linked_entity_type IN ('order','wallet_topup') AND linked_entity_id IS NOT NULL AND linked_at IS NOT NULL THEN linked_entity_type END,CASE WHEN linked_entity_type IN ('order','wallet_topup') AND linked_entity_id IS NOT NULL AND linked_at IS NOT NULL THEN linked_entity_id END,CASE WHEN linked_entity_type IN ('order','wallet_topup') AND linked_entity_id IS NOT NULL AND linked_at IS NOT NULL THEN linked_at END"
+      : 'NULL,NULL,NULL';
+    db.exec('PRAGMA foreign_keys = OFF');
+    try{
+      db.exec(`BEGIN IMMEDIATE;
+        ALTER TABLE receipt_uploads RENAME TO receipt_uploads_legacy;
+        CREATE TABLE receipt_uploads (
+          filename TEXT PRIMARY KEY,
+          account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+          access_token_hash TEXT NOT NULL,
+          mime_type TEXT NOT NULL CHECK(mime_type IN ('image/jpeg','image/png','image/webp')),
+          byte_size INTEGER NOT NULL CHECK(byte_size BETWEEN 1 AND 4194304),
+          created_at TEXT NOT NULL,
+          linked_entity_type TEXT CHECK(linked_entity_type IN ('order','wallet_topup')),
+          linked_entity_id TEXT,
+          linked_at TEXT,
+          CHECK((linked_entity_type IS NULL AND linked_entity_id IS NULL AND linked_at IS NULL) OR
+                (linked_entity_type IS NOT NULL AND linked_entity_id IS NOT NULL AND linked_at IS NOT NULL))
+        );
+        INSERT INTO receipt_uploads(filename,account_id,access_token_hash,mime_type,byte_size,created_at,linked_entity_type,linked_entity_id,linked_at)
+          SELECT filename,account_id,access_token_hash,mime_type,byte_size,created_at,${legacyLinkSelect} FROM receipt_uploads_legacy;
+        DROP TABLE receipt_uploads_legacy;
+        COMMIT;`);
+    }catch(error){try{db.exec('ROLLBACK')}catch{}throw error}
+    finally{db.exec('PRAGMA foreign_keys = ON')}
+  }
+  const receiptColumns=db.prepare('PRAGMA table_info(receipt_uploads)').all().map(column=>column.name);
+  if(!receiptColumns.includes('linked_entity_type'))db.exec("ALTER TABLE receipt_uploads ADD COLUMN linked_entity_type TEXT CHECK(linked_entity_type IN ('order','wallet_topup'))");
+  if(!receiptColumns.includes('linked_entity_id'))db.exec('ALTER TABLE receipt_uploads ADD COLUMN linked_entity_id TEXT');
+  if(!receiptColumns.includes('linked_at'))db.exec('ALTER TABLE receipt_uploads ADD COLUMN linked_at TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_tracking_token ON orders(tracking_token)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_wallet_topups_account ON wallet_topups(account_id,created_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_receipt_uploads_account ON receipt_uploads(account_id,created_at DESC)');
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_receipt_uploads_linked_entity
+    ON receipt_uploads(linked_entity_type,linked_entity_id)
+    WHERE linked_entity_type IS NOT NULL AND linked_entity_id IS NOT NULL`);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_receipt_uploads_orphans ON receipt_uploads(linked_entity_type,created_at)');
+  // Upload metadata predates one-time receipt linking.  Preserve legitimate
+  // historical capabilities by attaching each known upload to at most one
+  // existing payment.  Files without metadata intentionally remain denied.
+  const receiptFilename=value=>{
+    if(typeof value!=='string'||value.length>600)return null;
+    try{return new URL(value,'http://localhost').pathname.match(/^\/receipts\/([a-f0-9-]+\.(?:jpg|jpeg|png|webp))$/i)?.[1]||null}catch{return null}
+  };
+  const legacyReceiptLinks=[
+    ...db.prepare(`SELECT id,account_id,receipt_image_url,created_at,'wallet_topup' entity_type FROM wallet_topups WHERE receipt_image_url IS NOT NULL`).all(),
+    ...db.prepare(`SELECT id,NULL account_id,receipt_image_url,created_at,'order' entity_type FROM orders WHERE receipt_image_url IS NOT NULL`).all()
+  ].sort((left,right)=>String(left.created_at).localeCompare(String(right.created_at)));
+  const findReceiptUpload=db.prepare('SELECT account_id,linked_entity_type,linked_entity_id FROM receipt_uploads WHERE filename=?');
+  const linkLegacyReceipt=db.prepare(`UPDATE receipt_uploads SET linked_entity_type=?,linked_entity_id=?,linked_at=?
+    WHERE filename=? AND linked_entity_type IS NULL AND linked_entity_id IS NULL`);
+  for(const entity of legacyReceiptLinks){
+    const filename=receiptFilename(entity.receipt_image_url);if(!filename)continue;
+    const upload=findReceiptUpload.get(filename);if(!upload||upload.linked_entity_type||upload.linked_entity_id)continue;
+    if(entity.entity_type==='wallet_topup'?upload.account_id!==entity.account_id:upload.account_id!==null)continue;
+    linkLegacyReceipt.run(entity.entity_type,entity.id,entity.created_at||new Date().toISOString(),filename);
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_tickets_account ON support_tickets(account_id,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_account ON notifications(account_id,created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_account_devices_account ON account_devices(account_id,status,last_seen_at DESC)');
@@ -439,12 +516,17 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       amount_rial INTEGER NOT NULL DEFAULT 0,
       tracking_code TEXT,
       card_last4 TEXT,
+      destination_card_last4 TEXT,
       bank TEXT NOT NULL DEFAULT '',
       direction TEXT NOT NULL DEFAULT 'credit' CHECK(direction IN ('credit','debit','unknown')),
       raw_message TEXT NOT NULL,
       source TEXT NOT NULL DEFAULT 'sms',
       status TEXT NOT NULL DEFAULT 'unmatched' CHECK(status IN ('unmatched','matched','ignored')),
       matched_order_id TEXT REFERENCES orders(id),
+      matched_topup_id TEXT REFERENCES wallet_topups(id),
+      provider_event_id TEXT,
+      provider_message_id TEXT,
+      destination TEXT,
       received_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       dedupe_key TEXT NOT NULL
@@ -464,5 +546,38 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
     );
     CREATE INDEX IF NOT EXISTS idx_order_reviews_order ON order_reviews(order_id,created_at DESC);
   `);
+  const bankTransactionColumns = db.prepare('PRAGMA table_info(bank_transactions)').all().map(c => c.name);
+  if (!bankTransactionColumns.includes('destination_card_last4')) db.exec('ALTER TABLE bank_transactions ADD COLUMN destination_card_last4 TEXT');
+  if (!bankTransactionColumns.includes('matched_topup_id')) db.exec('ALTER TABLE bank_transactions ADD COLUMN matched_topup_id TEXT REFERENCES wallet_topups(id)');
+  if (!bankTransactionColumns.includes('provider_event_id')) db.exec('ALTER TABLE bank_transactions ADD COLUMN provider_event_id TEXT');
+  if (!bankTransactionColumns.includes('provider_message_id')) db.exec('ALTER TABLE bank_transactions ADD COLUMN provider_message_id TEXT');
+  if (!bankTransactionColumns.includes('destination')) db.exec('ALTER TABLE bank_transactions ADD COLUMN destination TEXT');
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_tx_provider_event
+      ON bank_transactions(source,provider_event_id) WHERE provider_event_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_tx_provider_message
+      ON bank_transactions(source,provider_message_id) WHERE provider_message_id IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS wallet_topup_reviews (
+      id TEXT PRIMARY KEY,
+      topup_id TEXT NOT NULL REFERENCES wallet_topups(id),
+      decision TEXT NOT NULL CHECK(decision IN ('approved','rejected','manual')),
+      confidence INTEGER NOT NULL DEFAULT 0,
+      reason TEXT NOT NULL DEFAULT '',
+      matched_bank_tx_id TEXT REFERENCES bank_transactions(id),
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_wallet_topup_reviews_topup
+      ON wallet_topup_reviews(topup_id,created_at DESC);
+  `);
+  const redactLegacyBankMessage=db.prepare('UPDATE bank_transactions SET raw_message=? WHERE id=?');
+  let redactedLegacyMessages=0;
+  for(const row of db.prepare('SELECT id,raw_message,direction,bank,amount_rial,tracking_code,card_last4 FROM bank_transactions').all()){
+    let alreadyRedacted=false;
+    try{alreadyRedacted=JSON.parse(row.raw_message)?.redacted===true}catch{}
+    if(!alreadyRedacted){redactLegacyBankMessage.run(JSON.stringify({redacted:true,legacy:true,direction:row.direction,bank:row.bank,amountRial:row.amount_rial||0,trackingSuffix:row.tracking_code?String(row.tracking_code).slice(-4):null,cardLast4:row.card_last4||null}),row.id);redactedLegacyMessages++}
+  }
+  // secure_delete scrubs database pages; truncate the WAL after one-time
+  // plaintext redaction so old messages are not retained in that sidecar.
+  if(redactedLegacyMessages&&filename!==':memory:')try{db.exec('PRAGMA wal_checkpoint(TRUNCATE)')}catch{}
   return db;
 }

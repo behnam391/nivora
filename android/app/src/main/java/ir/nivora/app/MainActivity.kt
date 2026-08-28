@@ -573,9 +573,32 @@ class MainActivity : FragmentActivity(), NivoraActions {
 
     override fun submitTopup(amountToman: Int, reference: String, receiptUri:String) = withToken { token ->
         runAction(
-            work = { val uri=android.net.Uri.parse(receiptUri);val bytes=contentResolver.openInputStream(uri)?.use{it.readBytes()}?:throw ApiException("INVALID_RECEIPT",400);if(bytes.size>4*1024*1024)throw ApiException("INVALID_RECEIPT",400);val uploaded=api.uploadReceipt(token,bytes,contentResolver.getType(uri)?:"image/jpeg");api.topup(token,amountToman,reference,uploaded) },
+            work = {
+                val uri = android.net.Uri.parse(receiptUri)
+                try {
+                    val mimeType = ReceiptUploadPolicy.acceptedMimeType(contentResolver.getType(uri))
+                        ?: throw ApiException("INVALID_RECEIPT", 400)
+                    val bytes = try {
+                        contentResolver.openInputStream(uri)?.use { ReceiptUploadPolicy.readBounded(it) }
+                            ?: throw ApiException("INVALID_RECEIPT", 400)
+                    } catch (_: ReceiptTooLargeException) {
+                        throw ApiException("INVALID_RECEIPT", 400)
+                    }
+                    if (bytes.isEmpty()) throw ApiException("INVALID_RECEIPT", 400)
+                    val uploaded = api.uploadReceipt(token, bytes, mimeType)
+                    api.topup(token, amountToman, reference, uploaded)
+                } finally {
+                    cleanupOwnedReceipt(uri)
+                }
+            },
             success = { showNotice("درخواست شارژ برای بررسی ارسال شد"); loadDashboard(initial = false) }
         )
+    }
+
+    private fun cleanupOwnedReceipt(uri: android.net.Uri) {
+        if (uri.scheme == "content" && uri.authority == "${packageName}.receipt-files") {
+            runCatching { contentResolver.delete(uri, null, null) }
+        }
     }
 
     override fun createTicket(subject: String, body: String) = withToken { token ->
@@ -1266,7 +1289,14 @@ class MainActivity : FragmentActivity(), NivoraActions {
             "PROVISION_FAILED" -> "ساخت اشتراک ناموفق بود؛ مبلغ خودکار به کیف پول برگشت"
             "RENEW_FAILED" -> "تمدید انجام نشد؛ مبلغ خودکار به کیف پول برگشت"
             "RATE_LIMITED" -> "درخواست‌ها زیاد بود؛ کمی بعد دوباره تلاش کنید"
-            "INVALID_TOPUP" -> "مبلغ یا شماره پیگیری واریز معتبر نیست"
+            "INVALID_TOPUP", "INVALID_PAYMENT_AMOUNT" -> "مبلغ یا شماره پیگیری واریز معتبر نیست"
+            "RECEIPT_REQUIRED" -> "شماره پیگیری و تصویر رسید را کامل وارد کنید"
+            "INVALID_RECEIPT", "INVALID_RECEIPT_TYPE" -> "تصویر رسید باید JPG، PNG یا WebP معتبر باشد"
+            "RECEIPT_TOO_LARGE", "PAYMENT_BODY_TOO_LARGE" -> "حجم تصویر رسید باید کمتر از ۴ مگابایت باشد"
+            "RECEIPT_NOT_AVAILABLE", "RECEIPT_ALREADY_USED" -> "این تصویر رسید معتبر نیست یا قبلاً استفاده شده؛ دوباره انتخاب کنید"
+            "TOO_MANY_PENDING_TOPUPS" -> "پنج درخواست شارژ شما در حال بررسی است؛ ابتدا منتظر نتیجه بمانید"
+            "RECEIPT_RATE_LIMITED" -> "تعداد آپلودها زیاد بود؛ کمی بعد دوباره تلاش کنید"
+            "RECEIPT_STORAGE_BUSY" -> "فضای دریافت رسید موقتاً در دسترس نیست؛ کمی بعد دوباره تلاش کنید"
             "INVALID_TICKET" -> "موضوع و متن پیام را کامل وارد کنید"
             "INVALID_CUSTOMER" -> "نام یا شماره موبایل مشتری معتبر نیست"
             "CUSTOMER_ALREADY_EXISTS" -> "این شماره قبلاً در دفترچه ثبت شده است"

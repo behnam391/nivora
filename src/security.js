@@ -30,13 +30,15 @@ export function createRequestGuard({ now = () => Date.now() } = {}) {
     {test:p=>p==='/api/customer/login'||p==='/api/customer/register'||p==='/api/customer/password-reset/request'||p==='/api/customer/password-reset/confirm'||p==='/api/reseller/login',bucket:p=>p,limit:60,windowMs:10*60_000},
     {test:p=>p==='/api/customer/change-password',bucket:()=>'/api/customer/change-password',limit:10,windowMs:10*60_000},
     {test:p=>p==='/api/device-recovery/request',bucket:()=>'/api/device-recovery/request',limit:20,windowMs:10*60_000},
-    {test:p=>p==='/api/receipts',limit:30,windowMs:60*60_000},
+    {test:p=>p==='/api/orders'||/^\/api\/orders\/[^/]+\/renew$/.test(p),limit:300,windowMs:10*60_000},
     {test:p=>p.startsWith('/api/admin/'),limit:300,windowMs:60_000},
     // Emergency leases must not share the generic public-IP bucket: Iranian
     // mobile CGNAT can place many customers behind one address. app.js applies
     // a generous IP bucket only to failed pre-auth requests, then a strict
     // account+device bucket after successful authentication.
-    {test:p=>p.startsWith('/api/')&&!['/api/customer/emergency/lease','/api/customer/emergency/subscription'].includes(p),limit:180,windowMs:60_000}
+    // Receipt uploads are limited in app.js after authentication: 8/hour for
+    // a guest IP or 12/hour for an account, without punishing shared CGNAT.
+    {test:p=>p.startsWith('/api/')&&!['/api/customer/emergency/lease','/api/customer/emergency/subscription','/api/receipts'].includes(p),limit:180,windowMs:60_000}
   ];
   const ip=req=>String(req.headers['x-forwarded-for']||req.socket?.remoteAddress||'unknown').split(',')[0].trim();
   return (req,res,path)=>{

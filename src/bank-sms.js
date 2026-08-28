@@ -71,6 +71,15 @@ function extractCardLast4(text) {
   return labelled ? labelled[1] : null;
 }
 
+// Only treat a card as the destination when the surrounding label says so.
+// A generic "کارت ****1234" can be the sender card and is therefore not safe
+// enough to use as an automatic-approval constraint.
+function extractDestinationCardLast4(text) {
+  const norm = normalizeDigits(text);
+  const match = norm.match(/(?:کارت\s*مقصد|به\s*کارت|واریز\s*به\s*کارت|کارت\s*شما)[^\d]{0,16}(?:\d[\d -]{0,20})?(\d{4})(?!\d)/);
+  return match ? match[1] : null;
+}
+
 function extractBank(text) {
   for (const [needle, code] of BANKS) if (text.includes(needle)) return code;
   return '';
@@ -83,7 +92,8 @@ export function extractFinancialFields(text, { defaultUnit = 'rial' } = {}) {
     amountRial,
     unit,
     trackingCode: extractTracking(text),
-    cardLast4: extractCardLast4(text)
+    cardLast4: extractCardLast4(text),
+    destinationCardLast4: extractDestinationCardLast4(text)
   };
 }
 
@@ -92,7 +102,9 @@ export function parseBankMessage(message, { defaultUnit = 'rial' } = {}) {
   const norm = normalizeDigits(raw);
   const isCredit = /واریز|بستانکار|deposit|credit|به حساب شما/i.test(norm);
   const isDebit = /برداشت|بدهکار|خرید|پرداخت از|withdraw|debit/i.test(norm);
-  const direction = isCredit ? 'credit' : isDebit ? 'debit' : 'unknown';
+  // A forwarded thread, notification summary, or malicious body may contain
+  // both vocabularies. Ambiguous direction is never eligible for auto-credit.
+  const direction = isCredit === isDebit ? 'unknown' : isCredit ? 'credit' : 'debit';
   const fields = extractFinancialFields(norm, { defaultUnit });
   return { direction, bank: extractBank(raw), raw, ...fields };
 }

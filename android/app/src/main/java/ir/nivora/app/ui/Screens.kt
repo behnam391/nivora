@@ -1,5 +1,7 @@
 package ir.nivora.app.ui
 
+import android.content.ActivityNotFoundException
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -32,6 +34,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -45,9 +48,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
 import ir.nivora.app.BuildConfig
 import ir.nivora.app.data.*
+import java.io.File
 
 @Composable
 fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
@@ -1152,9 +1158,70 @@ private fun TopupDialog(
     var reference by rememberSaveable { mutableStateOf("") }
     var error by rememberSaveable { mutableStateOf<String?>(null) }
     var receiptUri by rememberSaveable { mutableStateOf("") }
-    val receiptPicker=rememberLauncherForActivityResult(ActivityResultContracts.GetContent()){it?.let{receiptUri=it.toString()}}
+    var receiptSource by rememberSaveable { mutableStateOf("") }
+    var pendingCameraUri by rememberSaveable { mutableStateOf("") }
+    val context = LocalContext.current
+    val smsConsent = rememberPaymentSmsConsent { detectedReference ->
+        reference = detectedReference.take(40)
+        error = null
+    }
+    fun deletePendingCameraReceipt() {
+        val uri = pendingCameraUri.takeIf(String::isNotBlank)?.let(Uri::parse) ?: return
+        if (uri.authority == "${context.packageName}.receipt-files") {
+            runCatching { context.contentResolver.delete(uri, null, null) }
+        }
+        if (receiptUri == pendingCameraUri) {
+            receiptUri = ""
+            receiptSource = ""
+        }
+        pendingCameraUri = ""
+    }
+    val receiptPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri?.let {
+            deletePendingCameraReceipt()
+            receiptUri = it.toString()
+            receiptSource = "گالری"
+            error = null
+        }
+    }
+    val receiptCamera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { saved ->
+        if (saved && pendingCameraUri.isNotBlank()) {
+            receiptUri = pendingCameraUri
+            receiptSource = "دوربین"
+            error = null
+        } else {
+            deletePendingCameraReceipt()
+        }
+    }
+
+    fun openCamera() {
+        try {
+            val directory = File(context.cacheDir, "receipt-images").apply { mkdirs() }
+            val staleBefore = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+            directory.listFiles()?.forEach { file ->
+                if (file.length() == 0L || file.lastModified() < staleBefore) runCatching { file.delete() }
+            }
+            deletePendingCameraReceipt()
+            val file = File.createTempFile("receipt-", ".jpg", directory)
+            val uri: Uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.receipt-files",
+                file
+            )
+            pendingCameraUri = uri.toString()
+            receiptCamera.launch(uri)
+        } catch (_: ActivityNotFoundException) {
+            error = "برنامه دوربین روی این گوشی در دسترس نیست"
+        } catch (_: Exception) {
+            error = "بازکردن دوربین انجام نشد؛ از گالری انتخاب کنید"
+        }
+    }
+    fun dismissTopup() {
+        deletePendingCameraReceipt()
+        onDismiss()
+    }
     LaunchedEffect(Unit) { onLoadCards() }
-    AppDialog(onDismiss) {
+    AppDialog(::dismissTopup) {
         DialogTitle(Icons.Rounded.AccountBalanceWallet, "شارژ کیف پول", "مبلغ را کارت‌به‌کارت کنید و شماره پیگیری را ثبت کنید.")
         if (cards.isEmpty()) {
             Box(Modifier.fillMaxWidth().height(130.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -1171,7 +1238,42 @@ private fun TopupDialog(
             shape = RoundedCornerShape(16.dp)
         )
         NivoraField(reference, { reference = it.take(40) }, "شماره پیگیری واریز", Icons.AutoMirrored.Rounded.ReceiptLong)
-        OutlinedButton(onClick={receiptPicker.launch("image/*")},modifier=Modifier.fillMaxWidth()){Icon(Icons.Rounded.AddPhotoAlternate,null);Spacer(Modifier.width(7.dp));Text(if(receiptUri.isBlank())"انتخاب تصویر رسید" else "تصویر رسید انتخاب شد")}
+        Row(
+            Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp)).padding(11.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Rounded.Sms, null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(9.dp))
+            Text(smsConsent.status, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (smsConsent.listening) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            } else {
+                TextButton(onClick = smsConsent.retry) { Text("تلاش دوباره") }
+            }
+        }
+        Text("تصویر رسید", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(onClick = ::openCamera, modifier = Modifier.weight(1f).height(50.dp)) {
+                Icon(Icons.Rounded.PhotoCamera, null)
+                Spacer(Modifier.width(7.dp))
+                Text("دوربین")
+            }
+            OutlinedButton(
+                onClick = { receiptPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                modifier = Modifier.weight(1f).height(50.dp)
+            ) {
+                Icon(Icons.Rounded.PhotoLibrary, null)
+                Spacer(Modifier.width(7.dp))
+                Text("آپلود تصویر")
+            }
+        }
+        if (receiptUri.isNotBlank()) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.CheckCircle, null, tint = NivoraGreenDark, modifier = Modifier.size(19.dp))
+                Spacer(Modifier.width(7.dp))
+                Text("تصویر رسید از $receiptSource آماده ارسال است", color = NivoraGreenDark, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
         error?.let { Text(it, color = NivoraDanger, style = MaterialTheme.typography.bodyMedium) }
         Button(
             onClick = {
@@ -1187,7 +1289,7 @@ private fun TopupDialog(
             enabled = !busy && cards.isNotEmpty(),
             modifier = Modifier.fillMaxWidth()
         ) { Text("ارسال برای تأیید") }
-        TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("انصراف") }
+        TextButton(onClick = ::dismissTopup, modifier = Modifier.fillMaxWidth()) { Text("انصراف") }
     }
 }
 
