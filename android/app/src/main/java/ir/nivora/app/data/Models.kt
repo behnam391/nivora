@@ -1,5 +1,7 @@
 package ir.nivora.app.data
 
+data class AppRelease(val versionCode:Int,val versionName:String,val downloadUrl:String,val releaseNotes:String,val forceUpdate:Boolean)
+
 data class Plan(
     val id: String,
     val name: String,

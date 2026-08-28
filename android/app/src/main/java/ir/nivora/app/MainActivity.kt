@@ -204,6 +204,8 @@ class MainActivity : FragmentActivity(), NivoraActions {
         }
         if(signedIn)scheduleNotificationWorker()
         if(signedIn&&Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        AppUpdateNotifier.check(this){release->showNotice("نسخه ${release.versionName} آماده است؛ از اعلان بالای صفحه نصب کنید")}
+        NetworkSettingsAdvisor.inspect(this)
         handler.postDelayed(notificationPoll,60_000)
     }
 
@@ -450,7 +452,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
         }
         if (state.vpnState == "disconnecting") return
         if (!SessionValidationPolicy.canStartVpn(state.signedIn, liveSessionValidated)) {
-            showNotice("حساب و دستگاه در حال تأیید است؛ چند لحظه دیگر دوباره بزنید", true)
+            showNotice(sessionValidationNotice(), true)
             if (!state.loading && !state.refreshing && !dashboardValidationInFlight) {
                 loadDashboard(initial = state.account == null && state.reseller == null)
             }
@@ -846,7 +848,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
 
     private fun startVpn(mode: VpnConnectionMode) {
         if (!SessionValidationPolicy.canStartVpn(state.signedIn, liveSessionValidated)) {
-            showNotice("اتصال پس از تأیید حساب و دستگاه فعال می‌شود", true)
+            showNotice(sessionValidationNotice(), true)
             return
         }
         val token = activeSessionToken ?: return
@@ -883,6 +885,15 @@ class MainActivity : FragmentActivity(), NivoraActions {
                 )
                 .putExtra(NivoraVpnService.EXTRA_CONNECTION_MODE, mode.wireValue)
         )
+    }
+
+    private fun sessionValidationNotice(): String = when {
+        state.account != null && !state.loadError.isNullOrBlank() ->
+            "ارتباط امن با سرور برقرار نشد؛ شبکه را بررسی و دوباره تلاش کنید"
+        dashboardValidationInFlight ->
+            "در حال بررسی امن حساب؛ چند لحظه دیگر دوباره بزنید"
+        else ->
+            "تأیید آنلاین حساب انجام نشد؛ صفحه را تازه‌سازی کنید"
     }
 
     private fun loadDashboard(initial: Boolean) {
@@ -1259,11 +1270,11 @@ class MainActivity : FragmentActivity(), NivoraActions {
         items.forEach{seen.add(it.id)}
         alertPreferences.edit().putStringSet("seen_ids",seen.toList().takeLast(150).toSet()).putBoolean("initialized",true).apply()
         if(!initialized||fresh.isEmpty())return
-        val manager=getSystemService(NotificationManager::class.java);val channel="nivora_alerts_v3"
+        val manager=getSystemService(NotificationManager::class.java);val channel="nivora_alerts_v4"
         val sound=android.provider.Settings.System.DEFAULT_NOTIFICATION_URI
-        if(Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(NotificationChannel(channel,"اعلان‌های نیورا",NotificationManager.IMPORTANCE_HIGH).apply{enableVibration(true);vibrationPattern=longArrayOf(0,220,120,220);setSound(sound,AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).build())})
+        if(Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(NotificationChannel(channel,"اعلان‌های نیورا",NotificationManager.IMPORTANCE_HIGH).apply{enableVibration(true);setShowBadge(true);vibrationPattern=longArrayOf(0,220,120,220);setSound(sound,AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).build())})
         val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        fresh.take(3).forEach{n->manager.notify(n.id.hashCode(),Notification.Builder(this,channel).setSmallIcon(R.drawable.ic_nivora_notification).setContentTitle(n.title).setContentText(n.body).setContentIntent(open).setSound(sound).setAutoCancel(true).build())}
+        fresh.take(3).forEachIndexed{index,n->manager.notify(n.id.hashCode(),Notification.Builder(this,channel).setSmallIcon(R.drawable.ic_nivora_notification).setContentTitle(n.title).setContentText(n.body).setContentIntent(open).setSound(sound).setNumber(fresh.size-index).setAutoCancel(true).build())}
     }
 
     private fun scheduleNotificationWorker(){

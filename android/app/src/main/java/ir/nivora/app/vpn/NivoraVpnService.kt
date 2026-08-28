@@ -257,61 +257,14 @@ class NivoraVpnService : VpnService(), DialerController {
         // Application DNS must never be sent to the Iranian access provider:
         // filtered resolvers commonly return private sinkhole addresses for
         // Instagram/YouTube even when the proxy itself is perfectly healthy.
-        val tunnelDnsTag = "dns-tunnel"
-        val usesTunneledDoh = smartRoute.policy.primaryTransport == VpnRoutingPolicy.PrimaryTransport.HYSTERIA2
-        val dnsConfig = if (usesTunneledDoh) {
-            JSONObject()
-                // Remote DoH is tagged into the selected proxy. Unlike plain
-                // DNS-over-TCP, Xray reuses its HTTP/2 connection instead of
-                // paying a new handshake for every query. Parallel resolvers
-                // remove a single-provider cold-start penalty.
-                .put("tag", tunnelDnsTag)
-                .put(
-                    "servers",
-                    JSONArray()
-                        .put(
-                            JSONObject()
-                                .put("address", "https://1.1.1.1/dns-query")
-                                .put("queryStrategy", "UseIPv4")
-                                .put("timeoutMs", 1_500)
-                        )
-                        .put(
-                            JSONObject()
-                                .put("address", "https://8.8.8.8/dns-query")
-                                .put("queryStrategy", "UseIPv4")
-                                .put("timeoutMs", 1_500)
-                        )
-                )
-                .put("queryStrategy", "UseIPv4")
-                .put("disableCache", false)
-                .put("serveStale", true)
-                .put("serveExpiredTTL", 300)
-                .put("enableParallelQuery", true)
-                .put("disableFallback", false)
-                .put("disableFallbackIfMatch", false)
-                .put("useSystemHosts", false)
-        } else {
-            // TCP DNS remains the conservative fallback for Reality routes.
-            // It is slower per cold query, but avoids nesting two TLS sessions
-            // inside unstable TCP paths and has proved more reliable there.
-            JSONObject()
-                .put("servers", JSONArray().put("tcp://1.1.1.1"))
-                .put("queryStrategy", "UseIPv4")
-        }
+        val dnsConfig = JSONObject()
+            .put("servers", JSONArray().put("tcp://1.1.1.1"))
+            .put("queryStrategy", "UseIPv4")
         config.put("dns", dnsConfig)
         outbounds.put(
             JSONObject()
                 .put("tag", "dns-out")
                 .put("protocol", "dns")
-                .put(
-                    "settings",
-                    JSONObject()
-                        // With no direct catch-all rule, A/AAAA requests are
-                        // handed to the encrypted built-in resolver above.
-                        // This is intentional: `direct` would leak port 53 to
-                        // the mobile provider outside the proxy tunnel.
-                        .put("rules", JSONArray())
-                )
         )
         // Reality-over-TCP benefits from an immediate QUIC rejection so apps
         // fall back to HTTPS instead of waiting on an unusable UDP path.
@@ -349,18 +302,11 @@ class NivoraVpnService : VpnService(), DialerController {
             .put("network", "udp")
             .put("port", "443")
             .put("outboundTag", "quic-reject") else null
-        // DNS module traffic must follow the same selected route as customer
-        // traffic. Literal resolver IPs avoid bootstrap recursion.
-        val tunneledDnsRule = JSONObject().put("type", "field")
-            .apply {
-                if (usesTunneledDoh) {
-                    put("inboundTag", JSONArray().put(tunnelDnsTag))
-                } else {
-                    put("ip", JSONArray().put("1.1.1.1"))
-                    put("network", "tcp")
-                    put("port", "53")
-                }
-            }
+        val tunneledDnsRule = JSONObject()
+            .put("type", "field")
+            .put("ip", JSONArray().put("1.1.1.1"))
+            .put("network", "tcp")
+            .put("port", "53")
             .apply {
                 if (smartRoute.balancers != null) put("balancerTag", "smart-route")
                 else put("outboundTag", "proxy")
@@ -407,7 +353,10 @@ class NivoraVpnService : VpnService(), DialerController {
             LibXray.setDNS(this, "$bootstrapDns:53")
             val result = JSONObject(LibXray.invoke(run.toString()))
             ensureCurrent(runId)
-            if (!result.optBoolean("success")) throw IllegalStateException("XRAY_START_FAILED")
+            if (!result.optBoolean("success")) {
+                Log.e("NivoraVpnService", "Xray rejected generated config: ${result.optString("message")}")
+                throw IllegalStateException("XRAY_START_FAILED")
+            }
             coreRunning.set(true)
         }
         // Network Lab performs its own end-to-end probes and scoring. Report

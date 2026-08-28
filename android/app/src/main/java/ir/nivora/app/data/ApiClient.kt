@@ -86,6 +86,11 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         return runCatching { JSONObject(raw) }.getOrElse { throw ApiException("INVALID_SERVER_RESPONSE", 502) }
     }
 
+    fun appRelease(audience:String):AppRelease{
+        val j=request("/api/app-release/android?audience=${URLEncoder.encode(audience,"UTF-8")}")
+        return AppRelease(j.optInt("versionCode"),j.optString("versionName"),j.optString("downloadUrl"),j.optString("releaseNotes"),j.optBoolean("forceUpdate"))
+    }
+
     private fun deviceRecovery(root: JSONObject): DeviceRecoveryRequest {
         // Accept both the flat response planned by Nivora and common wrapped
         // shapes so the app can be released before the server endpoint lands.

@@ -3,4 +3,5 @@
     <cache-path
         name="receipt_images"
         path="receipt-images/" />
+    <cache-path name="app_updates" path="app-updates/" />
 </paths>

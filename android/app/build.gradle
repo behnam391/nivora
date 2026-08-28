@@ -9,10 +9,10 @@ android {
         applicationId 'ir.nivora.app'
         minSdk 26
         targetSdk 36
-        versionCode 39
-        versionName '0.21.0'
+        versionCode 41
+        versionName '0.22.0'
         ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
-        def apiUrl = providers.gradleProperty('NIVORA_API_BASE_URL').getOrElse('https://b.nivorali.com')
+        def apiUrl = providers.gradleProperty('NIVORA_API_BASE_URL').getOrElse('https://api.nivorali.com')
         def neuralMeshPublicKey = providers.gradleProperty('NEURALMESH_PUBLIC_KEY_SPKI').getOrElse('')
         buildConfigField 'String', 'API_BASE_URL', '"' + apiUrl + '"'
         buildConfigField 'String', 'NEURALMESH_PUBLIC_KEY_SPKI', '"' + neuralMeshPublicKey + '"'
@@ -95,7 +95,7 @@ dependencies {
     implementation 'com.google.android.gms:play-services-auth-api-phone:18.3.1'
     // Biometric 1.1 pulls an obsolete Fragment transitively; Activity Result
     // APIs require Fragment 1.3+ and release lint correctly rejects the old one.
-    implementation 'androidx.fragment:fragment:1.8.9'
+    implementation 'androidx.fragment:fragment:1.8.5'
     implementation 'androidx.compose.material3:material3'
     implementation 'androidx.compose.material:material-icons-extended'
     implementation 'androidx.compose.runtime:runtime-saveable'

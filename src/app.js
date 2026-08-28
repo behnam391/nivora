@@ -505,6 +505,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         db.prepare('SELECT 1').get();
         return json(res, 200, { ok: true, service: 'nivora' });
       }
+      if(req.method==='GET'&&path==='/api/app-release/android'){
+        const audience=url.searchParams.get('audience')==='partner'?'partner':'customer';
+        const prefix=`android_${audience}_`;
+        return json(res,200,{audience,versionCode:Number(settingGet(`${prefix}version_code`)||0),versionName:settingGet(`${prefix}version_name`)||'',downloadUrl:settingGet(`${prefix}download_url`)||'',releaseNotes:settingGet(`${prefix}release_notes`)||'',forceUpdate:settingGet(`${prefix}force_update`)==='true',publishedAt:settingGet(`${prefix}published_at`)||null});
+      }
       const hysteriaNodeAuth=path.match(/^\/internal\/v1\/hysteria\/auth\/([A-Za-z0-9_.-]{2,80})$/);
       if(req.method==='POST'&&hysteriaNodeAuth){
         const nodeSecret=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1]||'';
@@ -1361,6 +1366,24 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           UNION ALL SELECT 'device_recovery','درخواست آزادسازی دستگاه',a.name||' · '||a.phone,r.requested_at FROM device_recovery_requests r JOIN accounts a ON a.id=r.account_id WHERE r.status='pending'
           ORDER BY created_at DESC LIMIT 30`).all();
         return json(res,200,{counts:{openTickets,pendingOrders,pendingTopups,pendingResets,pendingDevices},items:latest});
+      }
+      if(req.method==='POST'&&path==='/api/admin/announcements'){
+        const b=await readJson(req),title=String(b.title||'').trim(),body=String(b.body||'').trim(),audience=['customer','reseller','all'].includes(b.audience)?b.audience:'all';
+        if(title.length<2||title.length>100||body.length<2||body.length>1000)return json(res,400,{error:'INVALID_ANNOUNCEMENT'});
+        const roles=audience==='all'?['customer','reseller']:[audience],accounts=db.prepare(`SELECT id FROM accounts WHERE role IN (${roles.map(()=>'?').join(',')}) AND active=1`).all(...roles),now=new Date().toISOString();
+        const insert=db.prepare('INSERT INTO notifications(id,account_id,title,body,created_at) VALUES(?,?,?,?,?)');
+        db.transaction(()=>accounts.forEach(account=>insert.run(randomUUID(),account.id,title,body,now)))();
+        audit('admin','broadcast','notification',audience,{title,recipients:accounts.length});return json(res,201,{sent:accounts.length});
+      }
+      if(req.method==='GET'&&path==='/api/admin/app-release'){
+        const read=audience=>{const p=`android_${audience}_`;return {audience,versionCode:Number(settingGet(`${p}version_code`)||0),versionName:settingGet(`${p}version_name`)||'',downloadUrl:settingGet(`${p}download_url`)||'',releaseNotes:settingGet(`${p}release_notes`)||'',forceUpdate:settingGet(`${p}force_update`)==='true',publishedAt:settingGet(`${p}published_at`)||null}};
+        return json(res,200,{customer:read('customer'),partner:read('partner')});
+      }
+      if(req.method==='PUT'&&path==='/api/admin/app-release'){
+        const b=await readJson(req),audience=b.audience==='partner'?'partner':'customer',versionCode=Number(b.versionCode),versionName=String(b.versionName||'').trim(),downloadUrl=String(b.downloadUrl||'').trim(),notes=String(b.releaseNotes||'').trim();
+        if(!Number.isInteger(versionCode)||versionCode<1||versionName.length<1||versionName.length>40||notes.length>2000)return json(res,400,{error:'INVALID_RELEASE'});
+        try{const u=new URL(downloadUrl);if(u.protocol!=='https:'||!['github.com','objects.githubusercontent.com'].some(host=>u.hostname===host||u.hostname.endsWith(`.${host}`)))throw new Error();}catch{return json(res,400,{error:'INVALID_RELEASE_URL'});}
+        const p=`android_${audience}_`,now=new Date().toISOString();settingSet(`${p}version_code`,versionCode);settingSet(`${p}version_name`,versionName);settingSet(`${p}download_url`,downloadUrl);settingSet(`${p}release_notes`,notes);settingSet(`${p}force_update`,b.forceUpdate===true);settingSet(`${p}published_at`,now);settingSet('telegram_latest_release_url',downloadUrl);audit('admin','publish','app_release',audience,{versionCode,versionName});return json(res,200,{saved:true,publishedAt:now});
       }
       const adminTicket=path.match(/^\/api\/admin\/tickets\/([^/]+)$/);if(adminTicket&&req.method==='GET'){const ticket=db.prepare(`SELECT t.*,a.name customer_name,a.phone FROM support_tickets t JOIN accounts a ON a.id=t.account_id WHERE t.id=?`).get(adminTicket[1]);if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});return json(res,200,{...ticket,messages:db.prepare('SELECT id,sender_role,body,created_at FROM ticket_messages WHERE ticket_id=? ORDER BY created_at').all(ticket.id)});}if(adminTicket&&req.method==='POST'){const ticket=db.prepare('SELECT * FROM support_tickets WHERE id=?').get(adminTicket[1]),b=await readJson(req),body=String(b.body||'').trim();if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});if(b.close===true){db.prepare("UPDATE support_tickets SET status='closed',owner_archived_at=NULL,updated_at=? WHERE id=?").run(new Date().toISOString(),ticket.id);notify(ticket.account_id,'تیکت بسته شد',ticket.subject);return json(res,200,{status:'closed'});}if(body.length<2)return json(res,400,{error:'INVALID_MESSAGE'});const now=new Date().toISOString();db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'admin',?,?)`).run(randomUUID(),ticket.id,body,now);db.prepare("UPDATE support_tickets SET status='answered',owner_archived_at=NULL,updated_at=? WHERE id=?").run(now,ticket.id);notify(ticket.account_id,'پاسخ پشتیبانی',ticket.subject);return json(res,201,{sent:true});}
 
