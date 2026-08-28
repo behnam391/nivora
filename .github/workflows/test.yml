@@ -19,4 +19,13 @@ jobs:
           java-version: 17
       - name: Fetch pinned official libXray
         run: bash android/fetch-libxray.sh
-      - run: chmod +x android/gradlew && android/gradlew -p android testDebugUnitTest lintDebug assembleDebug
+      - name: Test and build customer and partner Android apps
+        run: |
+          chmod +x android/gradlew
+          android/gradlew -p android \
+            testCustomerDebugUnitTest \
+            testPartnerDebugUnitTest \
+            lintCustomerDebug \
+            lintPartnerDebug \
+            assembleCustomerDebug \
+            assemblePartnerDebug
