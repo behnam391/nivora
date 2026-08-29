@@ -367,6 +367,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     });
   };
   const telegramConfig=()=>({enabled:settingGet('telegram_enabled')==='true',token:decrypt(settingGet('telegram_token')||'')||process.env.TELEGRAM_BOT_TOKEN,secret:decrypt(settingGet('telegram_secret')||'')||process.env.TELEGRAM_WEBHOOK_SECRET,username:settingGet('telegram_username')||'',channel:settingGet('telegram_channel')||'',latestReleaseUrl:settingGet('telegram_latest_release_url')||'',adminIds:(settingGet('telegram_admin_ids')||'').split(',').map(x=>x.trim()).filter(Boolean)});
+  const aiConfig=()=>({enabled:settingGet('ai_enabled')==='true',token:decrypt(settingGet('ai_hetzner_token')||'')||process.env.HETZNER_INFERENCE_TOKEN||'',model:settingGet('ai_model')||'Qwen/Qwen3.6-35B-A3B-FP8',baseUrl:'https://inference.hetzner.com/api/v1'});
   const telegramRecovery=createTelegramRecovery(db,{getConfig:telegramConfig});
   const settingOrEnv=(settingKey,envKey,fallback='')=>settingGet(settingKey)??process.env[envKey]??fallback;
   const autoReviewConfig=()=>loadAutoReviewConfig({
@@ -637,6 +638,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/admin-growth.js'){const js=await readFile(resolve('public/admin-growth.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-telegram.js'){const js=await readFile(resolve('public/admin-telegram.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-httpsms.js'){const js=await readFile(resolve('public/admin-httpsms.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
+      if(req.method==='GET'&&path==='/admin-ai.js'){const js=await readFile(resolve('public/admin-ai.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-emergency.js'){const js=await readFile(resolve('public/admin-emergency.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if (req.method === 'GET' && path === '/admin.js') {
         const js = await readFile(resolve('public/admin.js'));
@@ -1312,6 +1314,21 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
       if(req.method==='GET'&&path==='/api/admin/telegram-settings'){
         const c=telegramConfig();return json(res,200,{enabled:c.enabled,username:c.username,channel:c.channel,latestReleaseUrl:c.latestReleaseUrl,adminIds:c.adminIds.join(','),tokenConfigured:Boolean(c.token),tokenHint:c.token?`…${c.token.slice(-4)}`:'',webhookSecretConfigured:Boolean(c.secret),webhookUrl:'https://b.nivorali.com/api/telegram/webhook'});
+      }
+      if(req.method==='GET'&&path==='/api/admin/ai-settings'){
+        const c=aiConfig();return json(res,200,{enabled:c.enabled,provider:'Hetzner Experiments',baseUrl:c.baseUrl,model:c.model,tokenConfigured:Boolean(c.token),tokenHint:c.token?`…${c.token.slice(-4)}`:'',experimental:true});
+      }
+      if(req.method==='PATCH'&&path==='/api/admin/ai-settings'){
+        const b=await readJson(req),token=String(b.token||'').trim(),model=String(b.model??aiConfig().model).trim();
+        if(token&&(token.length<20||token.length>500||/[\s]/.test(token)))return json(res,400,{error:'INVALID_AI_TOKEN'});
+        if(!/^[A-Za-z0-9._\/-]{2,160}$/.test(model))return json(res,400,{error:'INVALID_AI_MODEL'});
+        if(token)settingSet('ai_hetzner_token',encrypt(token));settingSet('ai_model',model);
+        const configured=Boolean(token||aiConfig().token);if(b.enabled===true&&!configured)return json(res,400,{error:'AI_TOKEN_REQUIRED'});if(typeof b.enabled==='boolean')settingSet('ai_enabled',b.enabled);
+        audit('admin','update','ai_settings','hetzner',{enabled:b.enabled===undefined?aiConfig().enabled:Boolean(b.enabled),model});return json(res,200,{saved:true,tokenConfigured:configured});
+      }
+      if(req.method==='POST'&&path==='/api/admin/ai-settings/test'){
+        const c=aiConfig();if(!c.token)return json(res,400,{error:'AI_TOKEN_REQUIRED'});
+        try{const response=await fetch(`${c.baseUrl}/models`,{headers:{authorization:`Bearer ${c.token}`,accept:'application/json'},signal:AbortSignal.timeout(15000)}),data=await response.json().catch(()=>({}));if(!response.ok)return json(res,response.status===401?401:502,{error:response.status===401?'INVALID_AI_TOKEN':'AI_PROVIDER_ERROR'});const models=Array.isArray(data.data)?data.data.map(item=>String(item?.id||'')).filter(Boolean).slice(0,50):[];settingSet('ai_last_checked_at',new Date().toISOString());return json(res,200,{connected:true,models,selectedModel:c.model,checkedAt:new Date().toISOString()});}catch(error){return json(res,503,{error:error?.name==='TimeoutError'?'AI_PROVIDER_TIMEOUT':'AI_PROVIDER_UNAVAILABLE'});}
       }
       if(req.method==='PATCH'&&path==='/api/admin/telegram-settings'){
         const b=await readJson(req),channel=String(b.channel??'').trim(),releaseUrl=String(b.latestReleaseUrl??'').trim();if(channel&&!/^@[A-Za-z][A-Za-z0-9_]{4,}$/.test(channel)&&!/^-[0-9]{6,}$/.test(channel))return json(res,400,{error:'INVALID_TELEGRAM_CHANNEL'});if(releaseUrl){try{const u=new URL(releaseUrl);if(u.protocol!=='https:')throw new Error()}catch{return json(res,400,{error:'INVALID_RELEASE_URL'});}}if(typeof b.enabled==='boolean')settingSet('telegram_enabled',b.enabled);if(b.adminIds!==undefined)settingSet('telegram_admin_ids',String(b.adminIds).split(',').map(x=>x.trim()).filter(x=>/^\\d+$/.test(x)).join(','));if(b.channel!==undefined)settingSet('telegram_channel',channel);if(b.latestReleaseUrl!==undefined)settingSet('telegram_latest_release_url',releaseUrl);if(String(b.token||'').trim()){if(!/^\d+:[A-Za-z0-9_-]{20,}$/.test(String(b.token).trim()))return json(res,400,{error:'INVALID_TELEGRAM_TOKEN'});settingSet('telegram_token',encrypt(String(b.token).trim()));}if(b.rotateSecret===true||!telegramConfig().secret)settingSet('telegram_secret',encrypt(randomBytes(32).toString('base64url')));audit('admin','update','telegram_settings','telegram');return json(res,200,{saved:true});
