@@ -84,9 +84,10 @@
         <div><b>${esc(ticket.subject)}</b><small>${esc(ticket.customer_name)} · ${esc(ticket.phone)}</small></div>
         <div>${esc(ticket.last_message||'بدون پیام')}</div>
         <div><span class="status ${ticket.status==='closed'?'rejected':ticket.status==='answered'?'approved':'under_review'}">${esc(labels[ticket.status]||ticket.status)}</span></div>
-        <div class="topup-actions"><button class="primary reply-ticket" data-id="${esc(ticket.id)}">پاسخ</button>${ticket.status!=='closed'?`<button class="danger close-ticket" data-id="${esc(ticket.id)}">بستن</button>`:''}</div>
+        <div class="topup-actions"><button class="ghost ai-reply-ticket" data-id="${esc(ticket.id)}">پیشنهاد AI</button><button class="primary reply-ticket" data-id="${esc(ticket.id)}">پاسخ</button>${ticket.status!=='closed'?`<button class="danger close-ticket" data-id="${esc(ticket.id)}">بستن</button>`:''}</div>
       </article>`).join(''):'<div class="empty">تیکتی وجود ندارد.</div>';
     document.querySelectorAll('.reply-ticket').forEach(button=>button.onclick=()=>reply(button.dataset.id));
+    document.querySelectorAll('.ai-reply-ticket').forEach(button=>button.onclick=()=>aiReply(button.dataset.id,button));
     document.querySelectorAll('.close-ticket').forEach(button=>button.onclick=()=>closeTicket(button.dataset.id));
   }
 
@@ -99,6 +100,16 @@
     await api(`/api/admin/tickets/${id}`,{method:'POST',body:JSON.stringify({body})});
     toast('پاسخ ارسال شد');
     await openTickets();
+  }
+
+  async function aiReply(id,button){
+    const label=button.textContent;button.disabled=true;button.textContent='در حال نوشتن…';
+    try{
+      const result=await api('/api/admin/ai/draft-ticket',{method:'POST',body:JSON.stringify({ticketId:id})});
+      const body=await adminPrompt({title:'پیشنهاد هوش مصنوعی',message:'متن زیر پیش‌نویس است؛ قبل از ارسال آن را بررسی و در صورت نیاز ویرایش کنید.',label:'پاسخ پیشنهادی',value:result.draft,multiline:true,required:true,minLength:2,confirmText:'تأیید و ارسال'});
+      if(!body)return;
+      await api(`/api/admin/tickets/${id}`,{method:'POST',body:JSON.stringify({body})});toast('پاسخ تأییدشده ارسال شد');await openTickets();
+    }catch(error){const messages={AI_NOT_CONFIGURED:'ابتدا هوش مصنوعی را در تنظیمات فعال کنید.',AI_RATE_LIMITED:'سقف موقت سرویس رایگان پر شده؛ کمی بعد دوباره امتحان کنید.',AI_PROVIDER_ERROR:'سرویس آزمایشی هتزنر پاسخ نداد.'};toast(messages[error.message]||'ساخت پاسخ پیشنهادی انجام نشد',true)}finally{button.disabled=false;button.textContent=label}
   }
 
   async function closeTicket(id){
