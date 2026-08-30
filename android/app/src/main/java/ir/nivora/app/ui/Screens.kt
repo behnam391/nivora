@@ -376,6 +376,7 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
     var topupOpen by rememberSaveable { mutableStateOf(false) }
     var ticketOpen by rememberSaveable { mutableStateOf(false) }
     var passwordOpen by rememberSaveable { mutableStateOf(false) }
+    var nameOpen by rememberSaveable { mutableStateOf(false) }
     var clearNotificationsConfirm by rememberSaveable { mutableStateOf(false) }
     var clearTicketsConfirm by rememberSaveable { mutableStateOf(false) }
 
@@ -418,6 +419,7 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
                         onNewTicket = { ticketOpen = true },
                         onOpenTicket = actions::openTicket,
                         onBiometricChanged = actions::setBiometricEnabled,
+                        onChangeName = { nameOpen = true },
                         onChangePassword = { passwordOpen = true },
                         onClearNotifications = { clearNotificationsConfirm = true },
                         onClearTickets = { clearTicketsConfirm = true },
@@ -472,6 +474,12 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
         busy = state.actionBusy,
         onDismiss = { passwordOpen = false },
         onSubmit = { current, fresh -> actions.changePassword(current, fresh); passwordOpen = false }
+    )
+    if (nameOpen) ChangeNameDialog(
+        currentName = state.account?.name.orEmpty(),
+        busy = state.actionBusy,
+        onDismiss = { nameOpen = false },
+        onSubmit = { actions.changeName(it); nameOpen = false }
     )
     if (clearNotificationsConfirm) ConfirmDialog(
         icon = Icons.Rounded.NotificationsOff,
@@ -934,6 +942,7 @@ private fun SupportScreen(
     onNewTicket: () -> Unit,
     onOpenTicket: (SupportTicket) -> Unit,
     onBiometricChanged: (Boolean) -> Unit,
+    onChangeName: () -> Unit,
     onChangePassword: () -> Unit,
     onClearNotifications: () -> Unit,
     onClearTickets: () -> Unit,
@@ -984,6 +993,12 @@ private fun SupportScreen(
                             )
                         }
                         Switch(checked = state.biometricEnabled, onCheckedChange = onBiometricChanged)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(.18f))
+                    TextButton(onClick = onChangeName, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 3.dp)) {
+                        Icon(Icons.Rounded.Edit, null)
+                        Spacer(Modifier.width(7.dp))
+                        Text("ویرایش نام حساب")
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(.18f))
                     TextButton(onClick = onChangePassword, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 3.dp)) {
@@ -1451,6 +1466,18 @@ private fun ChangePasswordDialog(busy: Boolean, onDismiss: () -> Unit, onSubmit:
         Button(onClick = { onSubmit(current, fresh) }, enabled = valid && !busy, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Rounded.Security, null); Spacer(Modifier.width(7.dp)); Text("ثبت رمز جدید")
         }
+        TextButton(onClick = onDismiss, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("انصراف") }
+    }
+}
+
+@Composable
+private fun ChangeNameDialog(currentName: String, busy: Boolean, onDismiss: () -> Unit, onSubmit: (String) -> Unit) {
+    var name by rememberSaveable(currentName) { mutableStateOf(currentName) }
+    val clean = name.trim().replace(Regex("\\s+"), " ")
+    AppDialog(onDismiss) {
+        DialogTitle(Icons.Rounded.Edit, "ویرایش نام حساب", "نام تازه در حساب، پشتیبانی و دفتر مشتری نمایش داده می‌شود.")
+        OutlinedTextField(value = name, onValueChange = { name = it.take(80) }, modifier = Modifier.fillMaxWidth(), label = { Text("نام و نام خانوادگی") }, singleLine = true)
+        Button(onClick = { onSubmit(clean) }, enabled = clean.length in 3..80 && clean != currentName && !busy, modifier = Modifier.fillMaxWidth()) { Text("ذخیره نام") }
         TextButton(onClick = onDismiss, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("انصراف") }
     }
 }

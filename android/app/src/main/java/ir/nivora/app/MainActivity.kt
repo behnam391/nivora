@@ -667,6 +667,14 @@ class MainActivity : FragmentActivity(), NivoraActions {
         )
     }
 
+    override fun changeName(name: String) = withToken { token ->
+        if (state.role != "customer") return@withToken
+        runAction(
+            work = { api.changeName(token, name) },
+            success = { showNotice("نام حساب تغییر کرد"); loadDashboard(initial = false) }
+        )
+    }
+
     override fun clearNotifications() = withToken { token ->
         runAction(
             work = { api.clearNotifications(token, state.role) },

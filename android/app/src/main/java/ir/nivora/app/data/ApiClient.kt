@@ -523,6 +523,10 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         )
     }
 
+    fun changeName(token: String, name: String) {
+        request("/api/customer/profile", "PATCH", token, JSONObject().put("name", name.trim()))
+    }
+
     fun clearNotifications(token: String, role: String = "customer") {
         request("/api/${if(role=="reseller") "reseller" else "customer"}/notifications", "DELETE", token)
     }

@@ -106,6 +106,7 @@ interface NivoraActions {
     fun replyTicket(body: String)
     fun closeTicketConversation()
     fun markNotificationsRead()
+    fun changeName(name: String)
     fun changePassword(currentPassword: String, newPassword: String)
     fun clearNotifications()
     fun clearTickets()

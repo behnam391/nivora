@@ -46,6 +46,18 @@ test('customer changes password while the current session survives and other ses
   assert.equal((await fetch(`${base}/api/customer/login`,{method:'POST',headers,body:JSON.stringify({phone:'09124440001',password:'updated-password'})})).status,200);
 });
 
+test('customer can change the account name and invalid names are rejected', async t => {
+  const {server,base}=await start();t.after(()=>server.close());
+  const {session,headers}=await register(base,'09124440003');
+  const auth={...headers,authorization:`Bearer ${session.token}`};
+  let response=await fetch(`${base}/api/customer/profile`,{method:'PATCH',headers:auth,body:JSON.stringify({name:'  بهنام   شفیعی  '})});
+  assert.equal(response.status,200);assert.equal((await response.json()).name,'بهنام شفیعی');
+  response=await fetch(`${base}/api/customer/me`,{headers:auth});
+  assert.equal(response.status,200);assert.equal((await response.json()).name,'بهنام شفیعی');
+  response=await fetch(`${base}/api/customer/profile`,{method:'PATCH',headers:auth,body:JSON.stringify({name:'<x>'})});
+  assert.equal(response.status,400);assert.equal((await response.json()).error,'INVALID_NAME');
+});
+
 test('customer clears notifications and archives tickets without deleting support history', async t => {
   const {db,server,base}=await start();t.after(()=>server.close());
   const {session,headers}=await register(base,'09124440002');
