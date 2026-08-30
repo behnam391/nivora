@@ -922,7 +922,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             if(amount===null)throw new PaymentRequestError('INVALID_PAYMENT_AMOUNT');
             receiptReference=optionalReceiptReference(b.receiptReference);
             receiptCapability=receiptCapabilityFromUrl(b.receiptImageUrl,req);
-            if(!receiptReference||!receiptCapability)throw new PaymentRequestError('RECEIPT_REQUIRED');
+            if(!receiptCapability)throw new PaymentRequestError('RECEIPT_REQUIRED');
           }catch(error){return paymentRequestError(res,error,'INVALID_TOPUP');}
           const id=randomUUID(),now=new Date().toISOString();
           try{
@@ -1355,6 +1355,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const stats=operationsStats();
         try{const summary=await aiOperationsSummary();audit('admin','analyze','ai_operations','summary',{model:aiConfig().model});return json(res,200,{summary,stats,generatedAt:new Date().toISOString()});}catch(error){return json(res,error.status||503,{error:error.message||'AI_PROVIDER_UNAVAILABLE'});}
       }
+      if(req.method==='POST'&&path==='/api/admin/ai/sales-advice'){
+        const planStats=db.prepare(`SELECT p.name,p.price_irr/10 price_toman,COUNT(o.id) sales_count,COALESCE(SUM(o.amount_transferred_irr/10),0) revenue_toman FROM plans p LEFT JOIN orders o ON o.plan_id=p.id AND o.status='approved' AND o.created_at>=datetime('now','-30 day') WHERE p.active=1 GROUP BY p.id ORDER BY sales_count DESC,revenue_toman DESC LIMIT 12`).all();
+        const funnel=db.prepare(`SELECT (SELECT COUNT(*) FROM accounts WHERE role='customer' AND created_at>=datetime('now','-30 day')) new_customers,(SELECT COUNT(*) FROM orders WHERE status='approved' AND created_at>=datetime('now','-30 day')) approved_orders,(SELECT COUNT(*) FROM orders WHERE status IN ('awaiting_receipt','under_review') AND created_at>=datetime('now','-30 day')) pending_orders,(SELECT COUNT(*) FROM wallet_topups WHERE status='approved' AND created_at>=datetime('now','-30 day')) approved_topups,(SELECT COUNT(*) FROM support_tickets WHERE created_at>=datetime('now','-30 day')) support_tickets`).get();
+        try{const advice=await aiCompletion({system:'شما مشاور فروش Nivora هستید. فقط بر اساس آمار تجمیعی ۳۰ روزه، حداکثر ۶ پیشنهاد کوتاه، عملی و اخلاقی فارسی برای افزایش فروش و کاهش ریزش ارائه کنید. نام یا اطلاعات فردی نسازید، تخفیف یا درآمد قطعی وعده ندهید و تصمیم مالی خودکار نگیرید.',user:JSON.stringify({funnel,plans:planStats}),maxTokens:650});audit('admin','analyze','ai_sales','summary',{model:aiConfig().model});return json(res,200,{advice,generatedAt:new Date().toISOString()});}catch(error){return json(res,error.status||503,{error:error.message||'AI_PROVIDER_UNAVAILABLE'});}
+      }
       if(req.method==='PATCH'&&path==='/api/admin/telegram-settings'){
         const b=await readJson(req),channel=String(b.channel??'').trim(),releaseUrl=String(b.latestReleaseUrl??'').trim();if(channel&&!/^@[A-Za-z][A-Za-z0-9_]{4,}$/.test(channel)&&!/^-[0-9]{6,}$/.test(channel))return json(res,400,{error:'INVALID_TELEGRAM_CHANNEL'});if(releaseUrl){try{const u=new URL(releaseUrl);if(u.protocol!=='https:')throw new Error()}catch{return json(res,400,{error:'INVALID_RELEASE_URL'});}}if(typeof b.enabled==='boolean')settingSet('telegram_enabled',b.enabled);if(b.adminIds!==undefined)settingSet('telegram_admin_ids',String(b.adminIds).split(',').map(x=>x.trim()).filter(x=>/^\d+$/.test(x)).join(','));if(b.channel!==undefined)settingSet('telegram_channel',channel);if(b.latestReleaseUrl!==undefined)settingSet('telegram_latest_release_url',releaseUrl);if(String(b.token||'').trim()){if(!/^\d+:[A-Za-z0-9_-]{20,}$/.test(String(b.token).trim()))return json(res,400,{error:'INVALID_TELEGRAM_TOKEN'});settingSet('telegram_token',encrypt(String(b.token).trim()));}if(b.rotateSecret===true||!telegramConfig().secret)settingSet('telegram_secret',encrypt(randomBytes(32).toString('base64url')));audit('admin','update','telegram_settings','telegram');return json(res,200,{saved:true});
       }
@@ -1644,8 +1649,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         }catch(error){return paymentRequestError(res,error,'INVALID_ORDER');}
         const plan = db.prepare('SELECT * FROM plans WHERE id=? AND active=1').get(planId);
         if (!plan) return json(res, 400, { error: 'INVALID_ORDER' });
-        if(Boolean(receiptReference)!==Boolean(receiptCapability))return json(res,400,{error:'INCOMPLETE_RECEIPT'});
-        const hasReceipt = Boolean(receiptReference && receiptCapability);
+        if(receiptReference&&!receiptCapability)return json(res,400,{error:'INCOMPLETE_RECEIPT'});
+        const hasReceipt = Boolean(receiptCapability);
         const id = randomUUID(), trackingToken = randomUUID().replace(/-/g, ''),now=new Date(),createdAt=now.toISOString(),cutoff=new Date(now.getTime()-PAYMENT_PENDING_WINDOW_MS).toISOString();
         try{
           db.exec('BEGIN IMMEDIATE');
@@ -1680,7 +1685,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           amountToman=optionalPaymentAmount(b.amountTransferredIrr);
           receiptReference=optionalReceiptReference(b.receiptReference);
           receiptCapability=receiptCapabilityFromUrl(b.receiptImageUrl,req);
-          if(!receiptReference||!receiptCapability)throw new PaymentRequestError('RECEIPT_REQUIRED');
+          if(!receiptCapability)throw new PaymentRequestError('RECEIPT_REQUIRED');
         }catch(error){return paymentRequestError(res,error,'INVALID_RENEWAL');}
         const id=randomUUID(),trackingToken=randomUUID().replace(/-/g,''),nowDate=new Date(),now=nowDate.toISOString(),cutoff=new Date(nowDate.getTime()-PAYMENT_PENDING_WINDOW_MS).toISOString();
         try{

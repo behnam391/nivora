@@ -406,6 +406,8 @@ test('wallet top-up receipt is reviewed once and credits the customer ledger', a
   r=await fetch(`${base}/api/admin/wallet-topups/${topup.id}/approve`,{method:'POST',headers:admin,body:JSON.stringify({note:'تأیید بانکی'})});assert.equal(r.status,200);assert.equal((await r.json()).balanceToman,250000);
   r=await fetch(`${base}/api/admin/wallet-topups/${topup.id}/approve`,{method:'POST',headers:admin,body:'{}'});assert.equal(r.status,409);
   r=await fetch(`${base}/api/customer/me`,{headers:auth});const me=await r.json();assert.equal(me.balanceToman,250000);assert.equal(me.topups[0].status,'approved');assert.equal(me.transactions.filter(x=>x.reference===`wallet-topup:${topup.id}`).length,1);
+  const referenceFreeReceipt=await uploadReceipt(base,registration.token);t.after(referenceFreeReceipt.cleanup);
+  r=await fetch(`${base}/api/customer/wallet/topups`,{method:'POST',headers:auth,body:JSON.stringify({amountToman:30000,receiptImageUrl:referenceFreeReceipt.url})});assert.equal(r.status,201);assert.equal((await r.json()).status,'under_review');
   r=await fetch(`${base}/api/customer/wallet/topups`,{method:'POST',headers:auth,body:JSON.stringify({amountToman:500,receiptReference:'too-small'})});assert.equal(r.status,400);
 });
 

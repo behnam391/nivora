@@ -1176,10 +1176,6 @@ private fun TopupDialog(
     var receiptSource by rememberSaveable { mutableStateOf("") }
     var pendingCameraUri by rememberSaveable { mutableStateOf("") }
     val context = LocalContext.current
-    val smsConsent = rememberPaymentSmsConsent { detectedReference ->
-        reference = detectedReference.take(40)
-        error = null
-    }
     fun deletePendingCameraReceipt() {
         val uri = pendingCameraUri.takeIf(String::isNotBlank)?.let(Uri::parse) ?: return
         if (uri.authority == "${context.packageName}.receipt-files") {
@@ -1237,7 +1233,7 @@ private fun TopupDialog(
     }
     LaunchedEffect(Unit) { onLoadCards() }
     AppDialog(::dismissTopup) {
-        DialogTitle(Icons.Rounded.AccountBalanceWallet, "شارژ کیف پول", "مبلغ را کارت‌به‌کارت کنید و شماره پیگیری را ثبت کنید.")
+        DialogTitle(Icons.Rounded.AccountBalanceWallet, "شارژ کیف پول", "مبلغ را کارت‌به‌کارت کنید و تصویر رسید را بفرستید؛ شماره پیگیری اختیاری است.")
         if (cards.isEmpty()) {
             Box(Modifier.fillMaxWidth().height(130.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else cards.forEach { card -> BankCard(card, onCopy) }
@@ -1252,20 +1248,7 @@ private fun TopupDialog(
             supportingText = { amount.toIntOrNull()?.let { Text(toman(it)) } },
             shape = RoundedCornerShape(16.dp)
         )
-        NivoraField(reference, { reference = it.take(40) }, "شماره پیگیری واریز", Icons.AutoMirrored.Rounded.ReceiptLong)
-        Row(
-            Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp)).padding(11.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Rounded.Sms, null, tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.width(9.dp))
-            Text(smsConsent.status, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (smsConsent.listening) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            } else {
-                TextButton(onClick = smsConsent.retry) { Text("تلاش دوباره") }
-            }
-        }
+        NivoraField(reference, { reference = it.take(40) }, "شماره پیگیری (اختیاری)", Icons.AutoMirrored.Rounded.ReceiptLong)
         Text("تصویر رسید", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick = ::openCamera, modifier = Modifier.weight(1f).height(50.dp)) {
@@ -1295,7 +1278,6 @@ private fun TopupDialog(
                 val value = amount.toIntOrNull()
                 error = when {
                     value == null || value < 1000 -> "مبلغ معتبر وارد کنید"
-                    reference.trim().length < 3 -> "شماره پیگیری واریز را وارد کنید"
                     else -> null
                 }
                 if(error==null&&receiptUri.isBlank())error="تصویر رسید را انتخاب کنید"
