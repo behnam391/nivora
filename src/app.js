@@ -380,7 +380,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     AUTO_REVIEW_ALLOW_AMOUNT_ONLY:settingOrEnv('auto_review_allow_amount_only','AUTO_REVIEW_ALLOW_AMOUNT_ONLY','false'),
     AUTO_REVIEW_AMOUNT_TOLERANCE_RIAL:settingOrEnv('auto_review_amount_tolerance_rial','AUTO_REVIEW_AMOUNT_TOLERANCE_RIAL','0'),
     AUTO_REVIEW_LOOKBACK_HOURS:settingOrEnv('auto_review_lookback_hours','AUTO_REVIEW_LOOKBACK_HOURS','2'),
-    BANK_SMS_DEFAULT_UNIT:settingOrEnv('bank_sms_default_unit','BANK_SMS_DEFAULT_UNIT','rial')
+    BANK_SMS_DEFAULT_UNIT:settingOrEnv('bank_sms_default_unit','BANK_SMS_DEFAULT_UNIT','rial'),
+    RECEIPT_OCR_ENABLED:settingOrEnv('receipt_ocr_enabled','RECEIPT_OCR_ENABLED','false')
   });
   const httpsmsConfig=req=>{
     let allowedSenders=[],rawSenders=settingGet('httpsms_allowed_senders')??process.env.HTTPSMS_ALLOWED_SENDERS??'[]';
