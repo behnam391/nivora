@@ -102,8 +102,10 @@ export function parseBankMessage(message, { defaultUnit = 'rial' } = {}) {
   const norm = normalizeDigits(raw);
   // Iranian banks do not use one vocabulary. In particular Day Bank uses
   // «افزایش» in some credit notifications instead of «واریز».
-  const isCredit = /واریز|واريز|واریزی|بستانکار|افزایش|افزايش|دریافت|دريافت|deposit|credit|به حساب شما/i.test(norm);
-  const isDebit = /برداشت|بدهکار|خرید|خريد|پرداخت از|کاهش|كاهش|withdraw|debit/i.test(norm);
+  const signedCredit = /(?:^|\s)\+\s*[0-9]|[0-9][0-9,٬،.\s]*\s*\+(?:\s|$)/m.test(norm);
+  const signedDebit = /(?:^|\s)-\s*[0-9]|[0-9][0-9,٬،.\s]*\s*-(?:\s|$)/m.test(norm);
+  const isCredit = signedCredit || /واریز|واريز|واریزی|بستانکار|افزایش|افزايش|دریافت|دريافت|deposit|credit|به حساب شما/i.test(norm);
+  const isDebit = signedDebit || /برداشت|بدهکار|خرید|خريد|پرداخت از|کاهش|كاهش|withdraw|debit/i.test(norm);
   // A forwarded thread, notification summary, or malicious body may contain
   // both vocabularies. Ambiguous direction is never eligible for auto-credit.
   const direction = isCredit === isDebit ? 'unknown' : isCredit ? 'credit' : 'debit';

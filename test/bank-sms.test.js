@@ -37,6 +37,11 @@ test('Day Bank increase notifications are recognised as credit', () => {
   assert.equal(parsed.bank, 'Day');
 });
 
+test('signed bank notifications use plus and minus as direction signals', () => {
+  assert.equal(parseBankMessage('Day Bank\n+ 500,000 ریال\nمانده 2,000,000 ریال').direction, 'credit');
+  assert.equal(parseBankMessage('Day Bank\n- 500,000 ریال\nمانده 2,000,000 ریال').direction, 'debit');
+});
+
 test('masked card number yields the last four digits', () => {
   const fields = extractFinancialFields('کارت ****1234 مبلغ 300,000 ریال واریز شد پیگیری 111222');
   assert.equal(fields.cardLast4, '1234');
