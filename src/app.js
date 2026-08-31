@@ -491,6 +491,10 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       onApproved:topup=>{
         notify(topup.account_id,'شارژ کیف پول تأیید شد',`${Number(topup.amount_toman).toLocaleString('fa-IR')} تومان به کیف پول شما افزوده شد.`);
         audit('httpsms-agent','approve','wallet_topup',topup.id,{amountToman:topup.amount_toman});
+      },
+      onRejected:item=>{
+        if(item.account_id)notify(item.account_id,'پرداخت تأیید نشد','در مهلت بررسی، پیامک واریز معتبر و مطابق با مبلغ واردشده دریافت نشد. در صورت کسر وجه با پشتیبانی تماس بگیرید.');
+        audit('httpsms-agent','reject',item.amount_toman!=null?'wallet_topup':'order',item.id,{reason:'BANK_MATCH_TIMEOUT'});
       }
     };
   };

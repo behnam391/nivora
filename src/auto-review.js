@@ -283,7 +283,20 @@ export async function sweepPendingTopups(db, deps = {}) {
     const result = await evaluateWalletTopup(db, id, { ...deps, config });
     if (result.decision === 'approved') approved++; else if (result.decision === 'rejected') rejected++;
   }
-  return { evaluated: rows.length, approved, rejected };
+  // Do not reject immediately: bank delivery can lag behind the customer's
+  // request. Once the configured review window is over, requests with no
+  // unique bank match are expired automatically instead of staying pending.
+  const expired = db.prepare("SELECT id,account_id,amount_toman FROM wallet_topups WHERE status='under_review' AND created_at<? ORDER BY created_at").all(cutoff);
+  for (const topup of expired) {
+    const reason = 'در مهلت بررسی، واریز بانکی معتبر و یکتایی با این مبلغ دریافت نشد';
+    const changed = db.prepare("UPDATE wallet_topups SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='under_review'")
+      .run(reason, deps.actor || 'httpsms-agent', new Date().toISOString(), topup.id);
+    if (!changed.changes) continue;
+    recordTopupReview(db, { topupId: topup.id, decision: 'rejected', confidence: 90, reason });
+    rejected++;
+    try { await deps.onRejected?.(topup); } catch { /* notification must not change the decision */ }
+  }
+  return { evaluated: rows.length + expired.length, approved, rejected };
 }
 
 export async function sweepPendingOrders(db, deps = {}) {
@@ -296,7 +309,17 @@ export async function sweepPendingOrders(db, deps = {}) {
     const result = await evaluateOrder(db, id, { ...deps, config });
     if (result.decision === 'approved') approved++; else if (result.decision === 'rejected') rejected++;
   }
-  return { evaluated: rows.length, approved, rejected };
+  const expired = db.prepare("SELECT id,account_id,customer_name FROM orders WHERE status='under_review' AND created_at<? ORDER BY created_at").all(cutoff);
+  for (const order of expired) {
+    const reason = 'در مهلت بررسی، واریز بانکی معتبر و یکتایی با این مبلغ دریافت نشد';
+    const changed = db.prepare("UPDATE orders SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='under_review'")
+      .run(reason, deps.actor || 'httpsms-agent', new Date().toISOString(), order.id);
+    if (!changed.changes) continue;
+    recordOrderReview(db, { orderId: order.id, decision: 'rejected', confidence: 90, reason });
+    rejected++;
+    try { await deps.onRejected?.(order); } catch { /* notification must not change the decision */ }
+  }
+  return { evaluated: rows.length + expired.length, approved, rejected };
 }
 
 export async function sweepPendingPayments(db, deps = {}) {

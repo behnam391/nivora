@@ -16,7 +16,7 @@ const BANKS = [
   ['ملت', 'Mellat'], ['ملی', 'Melli'], ['صادرات', 'Saderat'], ['تجارت', 'Tejarat'],
   ['سامان', 'Saman'], ['پاسارگاد', 'Pasargad'], ['پارسیان', 'Parsian'], ['سپه', 'Sepah'],
   ['رفاه', 'Refah'], ['کشاورزی', 'Keshavarzi'], ['اقتصاد نوین', 'EN'], ['اقتصادنوین', 'EN'],
-  ['سینا', 'Sina'], ['شهر', 'Shahr'], ['دی', 'Day'], ['آینده', 'Ayandeh'], ['بلو', 'Blu'],
+  ['سینا', 'Sina'], ['شهر', 'Shahr'], ['دی', 'Day'], ['Day Bank', 'Day'], ['DAY BANK', 'Day'], ['آینده', 'Ayandeh'], ['بلو', 'Blu'],
   ['بلوبانک', 'Blu'], ['مسکن', 'Maskan'], ['کارآفرین', 'Karafarin'], ['گردشگری', 'Gardeshgari'],
   ['ایران زمین', 'IranZamin'], ['قوامین', 'Ghavamin'], ['رسالت', 'Resalat'], ['ملل', 'Melal']
 ];
@@ -100,8 +100,10 @@ export function extractFinancialFields(text, { defaultUnit = 'rial' } = {}) {
 export function parseBankMessage(message, { defaultUnit = 'rial' } = {}) {
   const raw = String(message ?? '');
   const norm = normalizeDigits(raw);
-  const isCredit = /واریز|بستانکار|deposit|credit|به حساب شما/i.test(norm);
-  const isDebit = /برداشت|بدهکار|خرید|پرداخت از|withdraw|debit/i.test(norm);
+  // Iranian banks do not use one vocabulary. In particular Day Bank uses
+  // «افزایش» in some credit notifications instead of «واریز».
+  const isCredit = /واریز|واريز|واریزی|بستانکار|افزایش|افزايش|دریافت|دريافت|deposit|credit|به حساب شما/i.test(norm);
+  const isDebit = /برداشت|بدهکار|خرید|خريد|پرداخت از|کاهش|كاهش|withdraw|debit/i.test(norm);
   // A forwarded thread, notification summary, or malicious body may contain
   // both vocabularies. Ambiguous direction is never eligible for auto-credit.
   const direction = isCredit === isDebit ? 'unknown' : isCredit ? 'credit' : 'debit';

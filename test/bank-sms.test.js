@@ -30,6 +30,13 @@ test('a message containing both credit and debit signals stays ambiguous', () =>
   assert.equal(parsed.direction, 'unknown');
 });
 
+test('Day Bank increase notifications are recognised as credit', () => {
+  const parsed = parseBankMessage('Day Bank\nافزایش موجودی کارت\nمبلغ 500,000 ریال\nمانده 2,000,000 ریال');
+  assert.equal(parsed.direction, 'credit');
+  assert.equal(parsed.amountRial, 500000);
+  assert.equal(parsed.bank, 'Day');
+});
+
 test('masked card number yields the last four digits', () => {
   const fields = extractFinancialFields('کارت ****1234 مبلغ 300,000 ریال واریز شد پیگیری 111222');
   assert.equal(fields.cardLast4, '1234');
