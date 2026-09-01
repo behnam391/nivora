@@ -417,6 +417,7 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
                     AppDestination.SUPPORT -> SupportScreen(
                         state,
                         onNewTicket = { ticketOpen = true },
+                        onAskAi = actions::askAiSupport,
                         onOpenTicket = actions::openTicket,
                         onBiometricChanged = actions::setBiometricEnabled,
                         onChangeName = { nameOpen = true },
@@ -940,6 +941,7 @@ private fun TransactionRow(transaction: WalletTransaction) {
 private fun SupportScreen(
     state: NivoraUiState,
     onNewTicket: () -> Unit,
+    onAskAi: (String) -> Unit,
     onOpenTicket: (SupportTicket) -> Unit,
     onBiometricChanged: (Boolean) -> Unit,
     onChangeName: () -> Unit,
@@ -950,6 +952,7 @@ private fun SupportScreen(
     onNetworkLab: () -> Unit
 ) {
     val account = state.account ?: return
+    var aiQuestion by rememberSaveable { mutableStateOf("") }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -958,6 +961,17 @@ private fun SupportScreen(
         item {
             Text("پشتیبانی و حساب", style = MaterialTheme.typography.headlineLarge)
             Text("اعلان‌ها و گفتگو با تیم Nivora", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        item {
+            Card(Modifier.fillMaxWidth(), colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.primaryContainer.copy(.55f)), shape=RoundedCornerShape(22.dp)) {
+                Column(Modifier.padding(17.dp), verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment=Alignment.CenterVertically){Icon(Icons.Rounded.AutoAwesome,null,tint=MaterialTheme.colorScheme.primary);Spacer(Modifier.width(8.dp));Column{Text("دستیار هوشمند Nivora",style=MaterialTheme.typography.titleMedium);Text("پاسخ سریع درباره برنامه، خرید و اتصال",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}}
+                    OutlinedTextField(value=aiQuestion,onValueChange={if(it.length<=600)aiQuestion=it},modifier=Modifier.fillMaxWidth(),label={Text("سؤال شما")},minLines=2,maxLines=4,enabled=!state.aiSupportBusy)
+                    Button(onClick={onAskAi(aiQuestion)},enabled=!state.aiSupportBusy&&aiQuestion.trim().length>=3,modifier=Modifier.fillMaxWidth()){if(state.aiSupportBusy)CircularProgressIndicator(Modifier.size(19.dp),strokeWidth=2.dp,color=MaterialTheme.colorScheme.onPrimary) else Icon(Icons.AutoMirrored.Rounded.Send,null);Spacer(Modifier.width(7.dp));Text(if(state.aiSupportBusy)"در حال پاسخ…" else "پرسیدن از دستیار")}
+                    state.aiSupportAnswer?.let { Text(it,style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurface,modifier=Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface.copy(.65f),RoundedCornerShape(14.dp)).padding(13.dp)) }
+                    TextButton(onClick=onNewTicket,modifier=Modifier.align(Alignment.End)){Text("ارتباط با پشتیبان انسانی")}
+                }
+            }
         }
         item {
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = NivoraInk), shape = RoundedCornerShape(24.dp)) {

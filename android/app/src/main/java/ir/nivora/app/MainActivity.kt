@@ -584,7 +584,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
                         contentResolver.openInputStream(uri)?.use { ReceiptUploadPolicy.readBounded(it) }
                             ?: throw ApiException("INVALID_RECEIPT", 400)
                     } catch (_: ReceiptTooLargeException) {
-                        throw ApiException("INVALID_RECEIPT", 400)
+                        throw ApiException("RECEIPT_TOO_LARGE", 413)
                     }
                     if (bytes.isEmpty()) throw ApiException("INVALID_RECEIPT", 400)
                     val uploaded = api.uploadReceipt(token, bytes, mimeType)
@@ -607,6 +607,16 @@ class MainActivity : FragmentActivity(), NivoraActions {
         runAction(
             work = { api.createTicket(token, subject, body, state.role) },
             success = { showNotice("تیکت برای پشتیبانی ارسال شد"); loadDashboard(initial = false) }
+        )
+    }
+
+    override fun askAiSupport(question: String) = withToken { token ->
+        if (question.trim().length < 3) { showNotice("پرسش را کامل‌تر بنویسید", true); return@withToken }
+        state = state.copy(aiSupportBusy = true)
+        background(
+            work = { api.askAiSupport(token, question) },
+            success = { state = state.copy(aiSupportBusy = false, aiSupportAnswer = it) },
+            failure = { state = state.copy(aiSupportBusy = false); showNotice(friendly(it), true) }
         )
     }
 
@@ -1317,6 +1327,9 @@ class MainActivity : FragmentActivity(), NivoraActions {
             "RECEIPT_RATE_LIMITED" -> "تعداد آپلودها زیاد بود؛ کمی بعد دوباره تلاش کنید"
             "RECEIPT_STORAGE_BUSY" -> "فضای دریافت رسید موقتاً در دسترس نیست؛ کمی بعد دوباره تلاش کنید"
             "INVALID_TICKET" -> "موضوع و متن پیام را کامل وارد کنید"
+            "INVALID_AI_QUESTION" -> "پرسش را کامل‌تر بنویسید"
+            "AI_NOT_CONFIGURED", "AI_PROVIDER_UNAVAILABLE", "AI_PROVIDER_TIMEOUT", "AI_PROVIDER_ERROR" -> "دستیار هوشمند موقتاً در دسترس نیست؛ از تیکت پشتیبانی استفاده کنید"
+            "AI_RATE_LIMITED" -> "ظرفیت دستیار موقتاً تکمیل است؛ کمی بعد دوباره امتحان کنید"
             "INVALID_CUSTOMER" -> "نام یا شماره موبایل مشتری معتبر نیست"
             "CUSTOMER_ALREADY_EXISTS" -> "این شماره قبلاً در دفترچه ثبت شده است"
             "CUSTOMER_NOT_FOUND" -> "پرونده مشتری پیدا نشد"

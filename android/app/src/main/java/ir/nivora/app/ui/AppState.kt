@@ -49,6 +49,8 @@ data class NivoraUiState(
     val tickets: List<SupportTicket> = emptyList(),
     val ticketConversation: TicketConversation? = null,
     val ticketLoading: Boolean = false,
+    val aiSupportAnswer: String? = null,
+    val aiSupportBusy: Boolean = false,
     val paymentCards: List<PaymentCard> = emptyList(),
     val loadError: String? = null,
     val vpnState: String = "disconnected",
@@ -102,6 +104,7 @@ interface NivoraActions {
     fun loadPaymentCards()
     fun submitTopup(amountToman: Int, reference: String, receiptUri: String)
     fun createTicket(subject: String, body: String)
+    fun askAiSupport(question: String)
     fun openTicket(ticket: SupportTicket)
     fun replyTicket(body: String)
     fun closeTicketConversation()

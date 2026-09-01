@@ -367,6 +367,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     });
   };
   const telegramConfig=()=>({enabled:settingGet('telegram_enabled')==='true',token:decrypt(settingGet('telegram_token')||'')||process.env.TELEGRAM_BOT_TOKEN,secret:decrypt(settingGet('telegram_secret')||'')||process.env.TELEGRAM_WEBHOOK_SECRET,username:settingGet('telegram_username')||'',channel:settingGet('telegram_channel')||'',latestReleaseUrl:settingGet('telegram_latest_release_url')||'',adminUrl:`${String(process.env.PUBLIC_BASE_URL||'https://b.nivorali.com').replace(/\/$/,'')}/admin`,adminIds:(settingGet('telegram_admin_ids')||'').split(',').map(x=>x.trim()).filter(Boolean)});
+  const telegramAdminAlert=async(text,replyMarkup)=>{const c=telegramConfig();if(!c.enabled||!c.token||!c.adminIds.length)return;await Promise.allSettled(c.adminIds.map(chat=>fetch(`https://api.telegram.org/bot${c.token}/sendMessage`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chat,text,...(replyMarkup?{reply_markup:replyMarkup}:{})})})));};
   const aiConfig=()=>({enabled:settingGet('ai_enabled')==='true',token:decrypt(settingGet('ai_hetzner_token')||'')||process.env.HETZNER_INFERENCE_TOKEN||'',model:settingGet('ai_model')||'Qwen/Qwen3.6-35B-A3B-FP8',baseUrl:'https://inference.hetzner.com/api/v1'});
   const redactForAi=value=>String(value||'').replace(/(?:vless|vmess|trojan|ss|hysteria2):\/\/\S+/gi,'[لینک اشتراک حذف شد]').replace(/https?:\/\/\S+/gi,'[نشانی حذف شد]').replace(/\b(?:\+?98|0)?9\d{9}\b/g,'[شماره حذف شد]').replace(/\b[a-f0-9]{24,}\b/gi,'[شناسه محرمانه حذف شد]').replace(/\b[A-Za-z0-9_-]{32,}\b/g,'[کلید حذف شد]').slice(0,7000);
   const aiCompletion=async({system,user,maxTokens=500})=>{const c=aiConfig();if(!c.enabled||!c.token){const error=new Error('AI_NOT_CONFIGURED');error.status=400;throw error;}const response=await fetch(`${c.baseUrl}/chat/completions`,{method:'POST',headers:{authorization:`Bearer ${c.token}`,'content-type':'application/json'},body:JSON.stringify({model:c.model,messages:[{role:'system',content:system},{role:'user',content:redactForAi(user)}],temperature:.25,max_tokens:maxTokens}),signal:AbortSignal.timeout(30000)}),data=await response.json().catch(()=>({}));if(!response.ok){const code=response.status===429?'AI_RATE_LIMITED':response.status===401?'INVALID_AI_TOKEN':response.status===503?'AI_PROVIDER_UNAVAILABLE':'AI_PROVIDER_ERROR',error=new Error(code);error.status=response.status===429?429:response.status===503?503:502;throw error;}const text=String(data?.choices?.[0]?.message?.content||'').trim();if(!text){const error=new Error('AI_EMPTY_RESPONSE');error.status=502;throw error;}return text.slice(0,2000);};
@@ -495,6 +496,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       onRejected:item=>{
         if(item.account_id)notify(item.account_id,'پرداخت تأیید نشد','در مهلت بررسی، پیامک واریز معتبر و مطابق با مبلغ واردشده دریافت نشد. در صورت کسر وجه با پشتیبانی تماس بگیرید.');
         audit('httpsms-agent','reject',item.amount_toman!=null?'wallet_topup':'order',item.id,{reason:'BANK_MATCH_TIMEOUT'});
+        telegramAdminAlert(`⏱ پرداخت پس از پایان مهلت رد شد\nشناسه: ${item.id}`);
       }
     };
   };
@@ -918,6 +920,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if(req.method==='POST'&&path==='/api/customer/notifications/read'){db.prepare('UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE account_id=?').run(new Date().toISOString(),account.id);return json(res,200,{success:true});}
         if(req.method==='DELETE'&&path==='/api/customer/notifications'){const now=new Date().toISOString(),result=db.prepare('UPDATE notifications SET dismissed_at=?,read_at=COALESCE(read_at,?) WHERE account_id=? AND dismissed_at IS NULL').run(now,now,account.id);return json(res,200,{cleared:Number(result.changes)});}
         if(req.method==='DELETE'&&path==='/api/customer/tickets'){const now=new Date().toISOString(),result=db.prepare('UPDATE support_tickets SET owner_archived_at=? WHERE account_id=? AND owner_archived_at IS NULL').run(now,account.id);return json(res,200,{cleared:Number(result.changes)});}
+        if(req.method==='POST'&&path==='/api/customer/ai/support'){
+          const b=await readJson(req),question=String(b.question||'').trim();if(question.length<3||question.length>600)return json(res,400,{error:'INVALID_AI_QUESTION'});
+          const context=db.prepare(`SELECT COALESCE(w.balance_toman,0) balance_toman,(SELECT COUNT(*) FROM orders o JOIN subscriptions s ON s.order_id=o.id WHERE o.account_id=a.id AND s.status='active') active_subscriptions,(SELECT COUNT(*) FROM wallet_topups t WHERE t.account_id=a.id AND t.status='under_review') pending_payments FROM accounts a LEFT JOIN wallet_accounts w ON w.account_id=a.id WHERE a.id=?`).get(account.id)||{};
+          try{const answer=await aiCompletion({system:'شما دستیار پشتیبانی فارسی Nivora هستید. فقط درباره استفاده از برنامه، حساب، کیف پول، خرید، تمدید، اتصال و رفع اشکال عمومی پاسخ کوتاه و روشن بدهید. رمز، توکن، لینک خصوصی یا تنظیمات محرمانه درخواست نکنید. هیچ پرداختی را تأیید یا رد نکنید و درباره وضعیت مالی فقط از زمینه داده‌شده استفاده کنید. اگر مسئله نیازمند دسترسی مدیر، بررسی پرداخت یا تشخیص قطعی شبکه است، صریحاً پیشنهاد ساخت تیکت انسانی بدهید. حداکثر ۸ خط.',user:`زمینه حساب: ${JSON.stringify(context)}\nپرسش مشتری: ${question}`,maxTokens:500});return json(res,200,{answer});}catch(error){return json(res,error.status||503,{error:error.message||'AI_PROVIDER_UNAVAILABLE'});}
+        }
         if(req.method==='POST'&&path==='/api/customer/wallet/topups'){
           let b,amount,receiptReference,receiptCapability;
           try{
@@ -938,7 +945,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             db.prepare(`INSERT INTO wallet_topups(id,account_id,amount_toman,receipt_reference,receipt_image_url,status,created_at) VALUES(?,?,?,?,?,'under_review',?)`).run(id,account.id,amount,receiptReference,receiptImageUrl,now);
             db.exec('COMMIT');
           }catch(error){try{db.exec('ROLLBACK')}catch{}if(error instanceof PaymentRequestError){if(error.status===429)res.setHeader('retry-after','3600');return paymentRequestError(res,error);}throw error;}
-          audit(account.id,'create','wallet_topup',id,{amountToman:amount});schedulePaymentSweep();return json(res,201,{id,status:'under_review',amountToman:amount});
+          audit(account.id,'create','wallet_topup',id,{amountToman:amount});schedulePaymentSweep();setTimeout(()=>{const pending=db.prepare("SELECT t.id,t.amount_toman,a.name,a.phone FROM wallet_topups t JOIN accounts a ON a.id=t.account_id WHERE t.id=? AND t.status='under_review'").get(id);if(pending)telegramAdminAlert(`🧾 پرداخت نیازمند بررسی\n${pending.name} — ${pending.phone}\n${Number(pending.amount_toman).toLocaleString('fa-IR')} تومان`,{inline_keyboard:[[{text:'✅ تأیید و شارژ',callback_data:`topup:approve:${pending.id}`},{text:'❌ رد',callback_data:`topup:reject:${pending.id}`}]]});},2000).unref();return json(res,201,{id,status:'under_review',amountToman:amount});
         }
         if(req.method==='POST'&&path==='/api/customer/wallet/purchase'){
           const b=await readJson(req),plan=db.prepare('SELECT * FROM plans WHERE id=? AND active=1').get(b.planId);if(!plan)return json(res,404,{error:'PLAN_NOT_FOUND'});const location=selectLocationForPlan(db,plan.id);if(!location)return json(res,409,{error:'NO_CAPACITY'});
@@ -1156,8 +1163,12 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const bytes=decodeReceiptBase64(b.data);
         if(!bytes)return json(res,400,{error:'INVALID_RECEIPT'});
         if(bytes.length>4*1024*1024)return json(res,413,{error:'RECEIPT_TOO_LARGE'});
+        // Android camera/gallery providers sometimes report a stale or generic
+        // MIME type (for example JPEG for a PNG screenshot). Trust the verified
+        // file signature, not client metadata; the stored extension/MIME below
+        // always comes from this server-side detection.
         const detected=receiptType(bytes);
-        if(!detected||b.mimeType!==detected.mimeType)return json(res,400,{error:'INVALID_RECEIPT_TYPE'});
+        if(!detected)return json(res,400,{error:'INVALID_RECEIPT_TYPE'});
         await mkdir(resolve('receipts'), { recursive:true });
         const name = `${randomUUID()}.${detected.extension}`,accessToken=randomBytes(32).toString('base64url');
         try{

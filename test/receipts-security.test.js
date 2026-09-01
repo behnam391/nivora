@@ -68,8 +68,8 @@ test('public store keeps secure guest receipt upload while owner access is prese
   assert.equal(response.status,200);
 
   response=await fetch(`${base}/api/receipts`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mimeType:'image/jpeg',data:png.toString('base64')})});
-  assert.equal(response.status,400);
-  assert.equal((await response.json()).error,'INVALID_RECEIPT_TYPE');
+  assert.equal(response.status,201);
+  const mismatched=await response.json(),mismatchedName=new URL(mismatched.url,base).pathname.split('/').at(-1);t.after(()=>unlink(resolve('receipts',mismatchedName)).catch(()=>{}));assert.match(mismatched.url,/\.png\?access=/);
   response=await fetch(`${base}/api/receipts`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mimeType:'image/png',data:''})});
   assert.equal(response.status,400);
   response=await fetch(`${base}/api/receipts`,{method:'POST',headers:{authorization:'Bearer invalid','content-type':'application/json'},body:payload});

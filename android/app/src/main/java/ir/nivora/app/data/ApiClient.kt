@@ -321,7 +321,12 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         request("/api/customer/orders/$orderId/renew", "POST", token, JSONObject())
     }
 
-    fun uploadReceipt(token:String, bytes:ByteArray, mimeType:String):String = request("/api/receipts","POST",token,JSONObject().put("mimeType",mimeType).put("data",Base64.encodeToString(bytes,Base64.NO_WRAP))).getString("url")
+    fun uploadReceipt(token:String, bytes:ByteArray, mimeType:String):String = request(
+        "/api/receipts", "POST", token,
+        JSONObject().put("mimeType",mimeType).put("data",Base64.encodeToString(bytes,Base64.NO_WRAP)),
+        connectTimeoutMs = 30_000,
+        readTimeoutMs = 60_000
+    ).getString("url")
     fun topup(token: String, amount: Int, reference: String, receiptUrl:String) {
         request(
             "/api/customer/wallet/topups",
@@ -489,6 +494,13 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
             JSONObject().put("subject", subject.trim()).put("body", body.trim())
         )
     }
+
+    fun askAiSupport(token: String, question: String): String = request(
+        "/api/customer/ai/support", "POST", token,
+        JSONObject().put("question", question.trim()),
+        connectTimeoutMs = 15_000,
+        readTimeoutMs = 45_000
+    ).getString("answer")
 
     fun ticket(token: String, ticketId: String, role: String = "customer"): TicketConversation {
         val json = request("/api/${if(role=="reseller") "reseller" else "customer"}/tickets/$ticketId", token = token)

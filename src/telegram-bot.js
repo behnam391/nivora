@@ -16,11 +16,21 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
     if(!c.enabled||!c.token||!c.secret)return json(res,503,{error:'TELEGRAM_RECOVERY_DISABLED'});
     if(req.headers['x-telegram-bot-api-secret-token']!==c.secret)return json(res,401,{error:'UNAUTHORIZED'});
     const send=(chat,text,extra={})=>fetchImpl(`https://api.telegram.org/bot${c.token}/sendMessage`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chat,text,...extra})});
-    const update=await readJson(req),m=update.message;if(!m?.chat?.id)return json(res,200,{ok:true});
-    const chat=String(m.chat.id),user=String(m.from?.id||''),text=String(m.text||'').trim(),now=new Date(),admin=c.adminIds.includes(user),actor=`telegram:${user}`;
+    const update=await readJson(req),callback=update.callback_query,m=update.message||callback?.message;if(!m?.chat?.id)return json(res,200,{ok:true});
+    const chat=String(m.chat.id),user=String((callback?.from||m.from)?.id||''),text=String(callback?.data||m.text||'').trim(),now=new Date(),admin=c.adminIds.includes(user),actor=`telegram:${user}`;
+    const answerCallback=text=>callback?.id?fetchImpl(`https://api.telegram.org/bot${c.token}/answerCallbackQuery`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({callback_query_id:callback.id,text})}):Promise.resolve();
 
     if(admin){
       const state=states.get(user)||{};
+      if(/^topup:approve:[a-f0-9-]+$/i.test(text)){
+        const id=text.split(':').at(-1);try{const result=approveWalletTopup(db,id,{actor,note:'تأیید مدیر در ربات تلگرام'});log(db,actor,'approve','wallet_topup',id);await answerCallback('تأیید شد');await send(chat,`✅ پرداخت تأیید و کیف پول شارژ شد. موجودی جدید: ${fa(result.balanceToman)} تومان`,{reply_markup:adminMenu});}catch{await answerCallback('قبلاً بررسی شده');await send(chat,'این درخواست قبلاً بررسی شده یا قابل تأیید نیست.',{reply_markup:adminMenu});}return json(res,200,{ok:true});
+      }
+      if(/^topup:reject:[a-f0-9-]+$/i.test(text)){
+        const id=text.split(':').at(-1),topup=db.prepare("SELECT id,amount_toman FROM wallet_topups WHERE id=? AND status='under_review'").get(id);if(!topup){await answerCallback('قبلاً بررسی شده');return json(res,200,{ok:true});}states.set(user,{mode:'topup-reject-reason',topup});await answerCallback('دلیل را بفرستید');await send(chat,'دلیل رد پرداخت را بنویسید.',{reply_markup:{keyboard:[[{text:'لغو'}]],resize_keyboard:true}});return json(res,200,{ok:true});
+      }
+      if(state.mode==='topup-reject-reason'){
+        if(text.length<3){await send(chat,'دلیل را کمی کامل‌تر بنویسید.');return json(res,200,{ok:true});}const result=db.prepare("UPDATE wallet_topups SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='under_review'").run(text.slice(0,300),actor,new Date().toISOString(),state.topup.id);if(result.changes)log(db,actor,'reject','wallet_topup',state.topup.id,{reason:text.slice(0,300)});states.delete(user);await send(chat,result.changes?'❌ درخواست پرداخت رد شد.':'درخواست دیگر قابل بررسی نیست.',{reply_markup:adminMenu});return json(res,200,{ok:true});
+      }
       if(text==='/cancel'||text==='لغو'){states.delete(user);await send(chat,'عملیات لغو شد.',{reply_markup:adminMenu});return json(res,200,{ok:true});}
       if(text==='/start'||text==='🛡 مدیریت'){
         states.delete(user);const s=db.prepare(`SELECT (SELECT COUNT(*) FROM accounts WHERE role='customer') customers,(SELECT COUNT(*) FROM orders WHERE status='under_review') pending,(SELECT COUNT(*) FROM subscriptions WHERE status='active') active,(SELECT COUNT(*) FROM support_tickets WHERE status<>'closed') tickets`).get();
