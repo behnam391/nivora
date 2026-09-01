@@ -578,16 +578,14 @@ class MainActivity : FragmentActivity(), NivoraActions {
             work = {
                 val uri = android.net.Uri.parse(receiptUri)
                 try {
-                    val mimeType = ReceiptUploadPolicy.acceptedMimeType(contentResolver.getType(uri))
-                        ?: throw ApiException("INVALID_RECEIPT", 400)
-                    val bytes = try {
-                        contentResolver.openInputStream(uri)?.use { ReceiptUploadPolicy.readBounded(it) }
-                            ?: throw ApiException("INVALID_RECEIPT", 400)
+                    val prepared = try {
+                        ReceiptUploadPolicy.prepare(contentResolver, uri)
                     } catch (_: ReceiptTooLargeException) {
                         throw ApiException("RECEIPT_TOO_LARGE", 413)
+                    } catch (_: Exception) {
+                        throw ApiException("INVALID_RECEIPT", 400)
                     }
-                    if (bytes.isEmpty()) throw ApiException("INVALID_RECEIPT", 400)
-                    val uploaded = api.uploadReceipt(token, bytes, mimeType)
+                    val uploaded = api.uploadReceipt(token, prepared.bytes, prepared.mimeType)
                     api.topup(token, amountToman, reference, uploaded)
                 } finally {
                     cleanupOwnedReceipt(uri)
