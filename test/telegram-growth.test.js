@@ -22,6 +22,11 @@ test('group messages never expose customer actions and only explicit mentions in
   assert.equal(answered.sent.length,1);assert.match(answered.sent[0].text,/پاسخ عمومی/);assert.doesNotMatch(answered.sent[0].text,/اشتراک:\/\//);
 });
 
+test('group AI fails closed until that group is explicitly allowed',async()=>{
+  const result=await run({message:{chat:{id:-1009999999,type:'supergroup'},from:{id:42},text:'@nivorali_bot قیمت چیست؟'},aiPublicAnswer:async()=>{throw new Error('must not run')}});
+  assert.equal(result.status,200);assert.equal(result.sent.length,0);
+});
+
 test('private campaign deep links are recorded and continue normal onboarding',async()=>{
   const first=await run({message:{chat:{id:42,type:'private'},from:{id:42},text:'/start camp_irancell-sep'}});
   assert.equal(first.status,200);assert.equal(first.sent.length,1);assert.match(first.sent[0].text,/شماره/);

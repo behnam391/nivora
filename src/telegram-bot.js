@@ -23,7 +23,8 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
     // Account, payment and recovery flows must never run in a group. In groups the
     // bot answers only an explicit mention/reply and reveals no customer data.
     if(!privateChat){
-      const allowed=!c.groupIds?.length||c.groupIds.includes(chat);
+      if(admin&&/^\/chatid(?:@\w+)?$/i.test(text)){await send(chat,`شناسه امن این گروه:\n${chat}`);return json(res,200,{ok:true});}
+      const allowed=Boolean(c.groupIds?.includes(chat));
       const mentioned=c.username&&new RegExp(`@${c.username}\\b`,'i').test(text);
       const invoked=/^\/(?:start|help)(?:@\w+)?\b/i.test(text)||mentioned||Boolean(m.reply_to_message?.from?.is_bot);
       if(!allowed||!c.groupAiEnabled||!invoked)return json(res,200,{ok:true});
