@@ -586,6 +586,19 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
     );
     CREATE INDEX IF NOT EXISTS idx_wallet_topup_reviews_topup
       ON wallet_topup_reviews(topup_id,created_at DESC);
+    CREATE TABLE IF NOT EXISTS telegram_growth_events (
+      id TEXT PRIMARY KEY,
+      telegram_user_id TEXT NOT NULL,
+      chat_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      campaign_code TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_telegram_growth_events_type_time
+      ON telegram_growth_events(event_type,created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_growth_start_once
+      ON telegram_growth_events(telegram_user_id,campaign_code,event_type)
+      WHERE campaign_code IS NOT NULL AND event_type='campaign_start';
   `);
   const redactLegacyBankMessage=db.prepare('UPDATE bank_transactions SET raw_message=? WHERE id=?');
   let redactedLegacyMessages=0;

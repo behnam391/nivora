@@ -9,7 +9,7 @@ const customerMenu={keyboard:[[{text:'👤 حساب من'},{text:'📦 اشتر�
 const adminMenu={keyboard:[[{text:'📊 داشبورد'},{text:'✨ تحلیل هوشمند'}],[{text:'🔎 جست‌وجوی مشتری'},{text:'🧾 پرداخت‌های منتظر'}],[{text:'🎫 تیکت‌های باز'},{text:'🖥 وضعیت سیستم'}],[{text:'🌐 بازکردن پنل'},{text:'🛡 مدیریت'}]],resize_keyboard:true};
 const log=(db,actor,action,type,id,details=null)=>db.prepare('INSERT INTO audit_log(actor,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)').run(actor,action,type,id,details&&JSON.stringify(details),new Date().toISOString());
 
-export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperationsSummary}={}){
+export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperationsSummary,aiPublicAnswer}={}){
   const states=new Map();
   return async(req,res,readJson,json)=>{
     const c=getConfig();
@@ -17,8 +17,29 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
     if(req.headers['x-telegram-bot-api-secret-token']!==c.secret)return json(res,401,{error:'UNAUTHORIZED'});
     const send=(chat,text,extra={})=>fetchImpl(`https://api.telegram.org/bot${c.token}/sendMessage`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chat,text,...extra})});
     const update=await readJson(req),callback=update.callback_query,m=update.message||callback?.message;if(!m?.chat?.id)return json(res,200,{ok:true});
-    const chat=String(m.chat.id),user=String((callback?.from||m.from)?.id||''),text=String(callback?.data||m.text||'').trim(),now=new Date(),admin=c.adminIds.includes(user),actor=`telegram:${user}`;
+    const chat=String(m.chat.id),user=String((callback?.from||m.from)?.id||''),text=String(callback?.data||m.text||'').trim(),now=new Date(),admin=c.adminIds.includes(user),actor=`telegram:${user}`,privateChat=m.chat.type==='private';
     const answerCallback=text=>callback?.id?fetchImpl(`https://api.telegram.org/bot${c.token}/answerCallbackQuery`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({callback_query_id:callback.id,text})}):Promise.resolve();
+
+    // Account, payment and recovery flows must never run in a group. In groups the
+    // bot answers only an explicit mention/reply and reveals no customer data.
+    if(!privateChat){
+      const allowed=!c.groupIds?.length||c.groupIds.includes(chat);
+      const mentioned=c.username&&new RegExp(`@${c.username}\\b`,'i').test(text);
+      const invoked=/^\/(?:start|help)(?:@\w+)?\b/i.test(text)||mentioned||Boolean(m.reply_to_message?.from?.is_bot);
+      if(!allowed||!c.groupAiEnabled||!invoked)return json(res,200,{ok:true});
+      const question=text.replace(/^\/(?:start|help)(?:@\w+)?\s*/i,'').replace(c.username?new RegExp(`@${c.username}\\b`,'ig'):/$^/g,'').trim();
+      const privateUrl=c.username?`https://t.me/${c.username}`:'https://t.me/nivorali_bot';
+      if(question.length<3){await send(chat,'من دستیار عمومی Nivora هستم. سؤال عمومی درباره خرید، نصب، اتصال یا پشتیبانی را با منشن ربات بپرسید. اطلاعات حساب فقط در گفت‌وگوی خصوصی نمایش داده می‌شود.',{reply_markup:{inline_keyboard:[[{text:'گفت‌وگوی خصوصی',url:privateUrl}]]}});return json(res,200,{ok:true});}
+      try{
+        const answer=aiPublicAnswer?await aiPublicAnswer(question):'برای راهنمایی دقیق‌تر، از گفت‌وگوی خصوصی ربات با پشتیبانی در ارتباط باشید.';
+        await send(chat,answer,{reply_markup:{inline_keyboard:[[{text:'ادامه خصوصی و خرید',url:privateUrl}]]}});
+      }catch{await send(chat,'الان پاسخ‌گوی هوشمند در دسترس نیست؛ لطفاً در گفت‌وگوی خصوصی پیام بدهید.',{reply_markup:{inline_keyboard:[[{text:'گفت‌وگوی خصوصی',url:privateUrl}]]}});}
+      return json(res,200,{ok:true});
+    }
+
+    const startMatch=text.match(/^\/start(?:@\w+)?\s+(?:camp|ref)_([A-Za-z0-9_-]{1,48})$/i);
+    if(startMatch)db.prepare("INSERT OR IGNORE INTO telegram_growth_events(id,telegram_user_id,chat_id,event_type,campaign_code,created_at) VALUES(?,?,?,'campaign_start',?,?)").run(randomUUID(),user,chat,startMatch[1],now.toISOString());
+    const normalizedText=startMatch?'/start':text;
 
     if(admin){
       const state=states.get(user)||{};
@@ -32,7 +53,7 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
         if(text.length<3){await send(chat,'دلیل را کمی کامل‌تر بنویسید.');return json(res,200,{ok:true});}const result=db.prepare("UPDATE wallet_topups SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='under_review'").run(text.slice(0,300),actor,new Date().toISOString(),state.topup.id);if(result.changes)log(db,actor,'reject','wallet_topup',state.topup.id,{reason:text.slice(0,300)});states.delete(user);await send(chat,result.changes?'❌ درخواست پرداخت رد شد.':'درخواست دیگر قابل بررسی نیست.',{reply_markup:adminMenu});return json(res,200,{ok:true});
       }
       if(text==='/cancel'||text==='لغو'){states.delete(user);await send(chat,'عملیات لغو شد.',{reply_markup:adminMenu});return json(res,200,{ok:true});}
-      if(text==='/start'||text==='🛡 مدیریت'){
+      if(normalizedText==='/start'||text==='🛡 مدیریت'){
         states.delete(user);const s=db.prepare(`SELECT (SELECT COUNT(*) FROM accounts WHERE role='customer') customers,(SELECT COUNT(*) FROM orders WHERE status='under_review') pending,(SELECT COUNT(*) FROM subscriptions WHERE status='active') active,(SELECT COUNT(*) FROM support_tickets WHERE status<>'closed') tickets`).get();
         await send(chat,`کنسول مدیریت Nivora\n\nمشتریان: ${fa(s.customers)}\nاشتراک فعال: ${fa(s.active)}\nپرداخت منتظر: ${fa(s.pending)}\nتیکت باز: ${fa(s.tickets)}`,{reply_markup:adminMenu});return json(res,200,{ok:true});
       }
@@ -91,7 +112,7 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
 
     const link=db.prepare('SELECT l.*,a.name FROM telegram_account_links l JOIN accounts a ON a.id=l.account_id WHERE l.telegram_user_id=?').get(user);
     if(text==='📥 دانلود برنامه'){if(!c.latestReleaseUrl){await send(chat,'لینک نسخه جدید هنوز منتشر نشده است.',{reply_markup:customerMenu});return json(res,200,{ok:true});}await send(chat,'آخرین نسخه رسمی Nivora آماده دانلود است.',{reply_markup:{inline_keyboard:[[{text:'📥 دانلود آخرین نسخه',url:c.latestReleaseUrl}]]}});return json(res,200,{ok:true});}
-    if((text==='/start'||text==='🔑 بازیابی رمز')&&!link){await send(chat,'برای اتصال امن حساب، شماره متعلق به همین حساب تلگرام را ارسال کنید.',{reply_markup:{keyboard:[[{text:'📱 ارسال شماره من',request_contact:true}]],resize_keyboard:true,one_time_keyboard:true}});return json(res,200,{ok:true});}
+    if((normalizedText==='/start'||text==='🔑 بازیابی رمز')&&!link){await send(chat,'برای اتصال امن حساب، شماره متعلق به همین حساب تلگرام را ارسال کنید.',{reply_markup:{keyboard:[[{text:'📱 ارسال شماره من',request_contact:true}]],resize_keyboard:true,one_time_keyboard:true}});return json(res,200,{ok:true});}
     if(m.contact){if(String(m.contact.user_id)!==user){await send(chat,'فقط شماره حساب تلگرام خودتان پذیرفته می‌شود.');return json(res,200,{ok:true});}const p=phone(m.contact.phone_number),a=db.prepare("SELECT id,name FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(p);if(!a){await send(chat,'حساب فعالی با این شماره پیدا نشد.');return json(res,200,{ok:true});}db.prepare(`INSERT INTO telegram_account_links(telegram_user_id,chat_id,account_id,phone,linked_at,last_seen_at) VALUES(?,?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET chat_id=excluded.chat_id,account_id=excluded.account_id,phone=excluded.phone,last_seen_at=excluded.last_seen_at`).run(user,chat,a.id,p,now.toISOString(),now.toISOString());await send(chat,`حساب ${a.name} با موفقیت متصل شد.`,{reply_markup:customerMenu});return json(res,200,{ok:true});}
     if(!link){await send(chat,'ابتدا /start را بزنید و شماره خودتان را تأیید کنید.');return json(res,200,{ok:true});}
     if(text==='👤 حساب من'){const w=db.prepare('SELECT balance_toman FROM wallet_accounts WHERE account_id=?').get(link.account_id);await send(chat,`${link.name}\n${link.phone}\nموجودی: ${fa(w?.balance_toman)} تومان`,{reply_markup:customerMenu});}
