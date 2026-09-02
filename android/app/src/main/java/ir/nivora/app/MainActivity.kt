@@ -78,7 +78,10 @@ class MainActivity : FragmentActivity(), NivoraActions {
     @Volatile private var liveSessionValidated = false
     @Volatile private var dashboardValidationInFlight = false
     private var requestedVpnMode = VpnConnectionMode.PRIMARY
+    private var pendingVpnMode: VpnConnectionMode? = null
     private var restartAfterDisconnect: VpnConnectionMode? = null
+    private val actionIds = AtomicLong()
+    @Volatile private var activeActionId = 0L
     private var deviceRecoveryCredentials: DeviceRecoveryCredentials? = null
     private lateinit var biometricPrompt: BiometricPrompt
     private var biometricPromptActive = false
@@ -452,7 +455,8 @@ class MainActivity : FragmentActivity(), NivoraActions {
         }
         if (state.vpnState == "disconnecting") return
         if (!SessionValidationPolicy.canStartVpn(state.signedIn, liveSessionValidated)) {
-            showNotice(sessionValidationNotice(), true)
+            pendingVpnMode = mode
+            showNotice(sessionValidationNotice())
             if (!state.loading && !state.refreshing && !dashboardValidationInFlight) {
                 loadDashboard(initial = state.account == null && state.reseller == null)
             }
@@ -591,7 +595,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
                     cleanupOwnedReceipt(uri)
                 }
             },
-            success = { showNotice("درخواست شارژ برای بررسی ارسال شد"); loadDashboard(initial = false) }
+            success = { showNotice("رسید ارسال شد؛ نتیجه با اعلان اطلاع داده می‌شود"); loadDashboard(initial = false) }
         )
     }
 
@@ -843,8 +847,10 @@ class MainActivity : FragmentActivity(), NivoraActions {
         activeSessionToken = null
         liveSessionValidated = false
         dashboardValidationInFlight = false
+        pendingVpnMode = null
         restartAfterDisconnect = null
         requestedVpnMode = VpnConnectionMode.PRIMARY
+        activeActionId = actionIds.incrementAndGet()
         suppressBiometricCallback = true
         biometricPromptActive = false
         if (::biometricPrompt.isInitialized) runCatching { biometricPrompt.cancelAuthentication() }
@@ -905,11 +911,18 @@ class MainActivity : FragmentActivity(), NivoraActions {
 
     private fun sessionValidationNotice(): String = when {
         state.account != null && !state.loadError.isNullOrBlank() ->
-            "ارتباط امن با سرور برقرار نشد؛ شبکه را بررسی و دوباره تلاش کنید"
+            "در حال برقراری دوباره ارتباط امن با حساب…"
         dashboardValidationInFlight ->
-            "در حال بررسی امن حساب؛ چند لحظه دیگر دوباره بزنید"
+            "در حال آماده‌سازی اتصال امن…"
         else ->
-            "تأیید آنلاین حساب انجام نشد؛ صفحه را تازه‌سازی کنید"
+            "در حال تأیید آنلاین حساب…"
+    }
+
+    private fun resumePendingVpnRequest() {
+        val mode = pendingVpnMode ?: return
+        if (!SessionValidationPolicy.canStartVpn(state.signedIn, liveSessionValidated)) return
+        pendingVpnMode = null
+        handler.post { requestVpn(mode) }
     }
 
     private fun loadDashboard(initial: Boolean) {
@@ -922,57 +935,37 @@ class MainActivity : FragmentActivity(), NivoraActions {
             refreshing = !initial,
             loadError = null
         )
-        if (initial && role != "reseller" && state.account == null) {
-            loadInitialCustomerDashboard(token)
+        if (role != "reseller") {
+            loadCustomerDashboard(token)
             return
         }
         background(
             work = {
-                if (role == "reseller") {
-                    val reseller = CompletableFuture.supplyAsync { api.resellerAccount(token) }
-                    val resellerPlans = CompletableFuture.supplyAsync { api.resellerPlans(token) }
-                    val tickets = CompletableFuture.supplyAsync { api.tickets(token,"reseller") }
-                    DashboardPayload(
-                        reseller = reseller.join(),
-                        resellerPlans = resellerPlans.join(),
-                        tickets = tickets.join()
-                    )
-                } else {
-                    // Device validation used to add a complete HTTPS round trip
-                    // before any dashboard request could start. Keep the gate,
-                    // but run it alongside the independent account payloads so
-                    // first paint costs one network latency instead of two.
-                    val binding = CompletableFuture.runAsync { api.bindDevice(token) }
-                    val account = CompletableFuture.supplyAsync { api.account(token) }
-                    val plans = CompletableFuture.supplyAsync { api.plans() }
-                    val tickets = CompletableFuture.supplyAsync { api.tickets(token) }
-                    val payload = DashboardPayload(account = account.join(), plans = plans.join(), tickets = tickets.join())
-                    binding.join()
-                    payload
-                }
+                val reseller = CompletableFuture.supplyAsync { api.resellerAccount(token) }
+                val resellerPlans = CompletableFuture.supplyAsync { api.resellerPlans(token) }
+                val tickets = CompletableFuture.supplyAsync { api.tickets(token,"reseller") }
+                DashboardPayload(
+                    reseller = reseller.join(),
+                    resellerPlans = resellerPlans.join(),
+                    tickets = tickets.join()
+                )
             },
             success = { payload ->
                 if (!isCurrentSession(token)) return@background
                 dashboardValidationInFlight = false
-                if (payload.reseller != null) {
-                    liveSessionValidated = true
-                    showNewNotifications(payload.reseller.notifications)
-                    state = state.copy(
-                        signedIn = true,
-                        loading = false,
-                        refreshing = false,
-                        reseller = payload.reseller,
-                        resellerPlans = payload.resellerPlans,
-                        resellerDirectoryLoading = false,
-                        tickets = payload.tickets,
-                        account = null,
-                        loadError = null
-                    )
-                    return@background
-                }
-                val account = payload.account ?: return@background
                 liveSessionValidated = true
-                applyCustomerAccount(token, account, payload.plans, payload.tickets)
+                showNewNotifications(payload.reseller?.notifications.orEmpty())
+                state = state.copy(
+                    signedIn = true,
+                    loading = false,
+                    refreshing = false,
+                    reseller = payload.reseller,
+                    resellerPlans = payload.resellerPlans,
+                    resellerDirectoryLoading = false,
+                    tickets = payload.tickets,
+                    account = null,
+                    loadError = null
+                )
             },
             failure = { error ->
                 if (!isCurrentSession(token)) return@background
@@ -1019,8 +1012,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
      * Account data is enough to paint the home screen. Plans and tickets are
      * independent and must not keep the user behind a second full-screen loader.
      */
-    private fun loadInitialCustomerDashboard(token: String) {
-        state = state.copy(loading = true, refreshing = false, loadError = null)
+    private fun loadCustomerDashboard(token: String) {
         background(
             work = {
                 val binding = CompletableFuture.runAsync { api.bindDevice(token) }
@@ -1034,12 +1026,20 @@ class MainActivity : FragmentActivity(), NivoraActions {
                 dashboardValidationInFlight = false
                 liveSessionValidated = true
                 applyCustomerAccount(token, account, state.plans, state.tickets)
+                resumePendingVpnRequest()
             },
             failure = { error ->
                 if (!isCurrentSession(token)) return@background
                 dashboardValidationInFlight = false
+                val hadPendingConnection = pendingVpnMode != null
+                pendingVpnMode = null
                 if (isUnauthorized(error)) invalidateSession(token)
-                else state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
+                else {
+                    state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
+                    if (hadPendingConnection || state.account == null) {
+                        showNotice("ارتباط امن با حساب برقرار نشد؛ شبکه را بررسی کنید", true)
+                    }
+                }
             }
         )
         background(
@@ -1136,17 +1136,21 @@ class MainActivity : FragmentActivity(), NivoraActions {
     private fun <T> runAction(work: () -> T, success: (T) -> Unit) {
         if (state.actionBusy) return
         val capturedToken = activeSessionToken
+        val actionId = actionIds.incrementAndGet()
+        activeActionId = actionId
         state = state.copy(actionBusy = true)
         background(
             work,
             success = {
-                if (capturedToken != null && !isCurrentSession(capturedToken)) return@background
+                if (activeActionId != actionId) return@background
                 state = state.copy(actionBusy = false)
+                if (capturedToken != null && !isCurrentSession(capturedToken)) return@background
                 success(it)
             },
             failure = { error ->
-                if (capturedToken != null && !isCurrentSession(capturedToken)) return@background
+                if (activeActionId != actionId) return@background
                 state = state.copy(actionBusy = false)
+                if (capturedToken != null && !isCurrentSession(capturedToken)) return@background
                 if (capturedToken != null && isUnauthorized(error)) invalidateSession(capturedToken)
                 else showNotice(friendly(error), true)
             }

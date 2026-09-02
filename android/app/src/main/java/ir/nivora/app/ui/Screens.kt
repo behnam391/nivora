@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Chat
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
@@ -48,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
@@ -379,58 +381,61 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
     var nameOpen by rememberSaveable { mutableStateOf(false) }
     var clearNotificationsConfirm by rememberSaveable { mutableStateOf(false) }
     var clearTicketsConfirm by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = destination != AppDestination.HOME) { destination = AppDestination.HOME }
 
     AuroraBackground(Modifier.fillMaxSize()) {
         Scaffold(
             containerColor = Color.Transparent,
-            snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) },
-            bottomBar = {
-                NavigationBar(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(.22f), RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)),
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = .82f),
-                    tonalElevation = 0.dp
-                ) {
-                    NavigationItem(AppDestination.HOME, destination, Icons.Rounded.Home, "خانه") { destination = it }
-                    NavigationItem(AppDestination.PLANS, destination, Icons.Rounded.ShoppingBag, "پلن‌ها") { destination = it }
-                    NavigationItem(AppDestination.WALLET, destination, Icons.Rounded.AccountBalanceWallet, "کیف پول") { destination = it }
-                    NavigationItem(AppDestination.SUPPORT, destination, Icons.Rounded.SupportAgent, "پشتیبانی") {
-                        destination = it
-                        actions.markNotificationsRead()
+            snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) }
+        ) { padding ->
+            Column(Modifier.fillMaxSize().padding(padding)) {
+                if (destination != AppDestination.HOME) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = .76f),
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(.18f))
+                    ) {
+                        TextButton(
+                            onClick = { destination = AppDestination.HOME },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("بازگشت به صفحه اتصال")
+                        }
                     }
                 }
-            }
-        ) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding)) {
-                when (destination) {
-                    AppDestination.HOME -> HomeScreen(
-                        state,
-                        actions,
-                        onPlans = { destination = AppDestination.PLANS },
-                        onWallet = { destination = AppDestination.WALLET },
-                        onNotifications = { destination = AppDestination.SUPPORT; actions.markNotificationsRead() },
-                        onRenew = { renewSubscription = it }
-                    )
-                    AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0) { purchasePlan = it }
-                    AppDestination.WALLET -> WalletScreen(state, onTopup = { topupOpen = true })
-                    AppDestination.SUPPORT -> SupportScreen(
-                        state,
-                        onNewTicket = { ticketOpen = true },
-                        onAskAi = actions::askAiSupport,
-                        onOpenTicket = actions::openTicket,
-                        onBiometricChanged = actions::setBiometricEnabled,
-                        onChangeName = { nameOpen = true },
-                        onChangePassword = { passwordOpen = true },
-                        onClearNotifications = { clearNotificationsConfirm = true },
-                        onClearTickets = { clearTicketsConfirm = true },
-                        onLogout = actions::logout,
-                        onNetworkLab = actions::openNetworkLab
-                    )
-                }
-                if (state.actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
-                if (state.ticketLoading) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(.12f)), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
+                Box(Modifier.fillMaxWidth().weight(1f)) {
+                    when (destination) {
+                        AppDestination.HOME -> HomeScreen(
+                            state,
+                            actions,
+                            onPlans = { destination = AppDestination.PLANS },
+                            onWallet = { destination = AppDestination.WALLET },
+                            onNotifications = { destination = AppDestination.SUPPORT; actions.markNotificationsRead() },
+                            onRenew = { renewSubscription = it }
+                        )
+                        AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0) { purchasePlan = it }
+                        AppDestination.WALLET -> WalletScreen(state, onTopup = { topupOpen = true })
+                        AppDestination.SUPPORT -> SupportScreen(
+                            state,
+                            onNewTicket = { ticketOpen = true },
+                            onAskAi = actions::askAiSupport,
+                            onOpenTicket = actions::openTicket,
+                            onBiometricChanged = actions::setBiometricEnabled,
+                            onChangeName = { nameOpen = true },
+                            onChangePassword = { passwordOpen = true },
+                            onClearNotifications = { clearNotificationsConfirm = true },
+                            onClearTickets = { clearTicketsConfirm = true },
+                            onLogout = actions::logout,
+                            onNetworkLab = actions::openNetworkLab
+                        )
+                    }
+                    if (state.actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+                    if (state.ticketLoading) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(.12f)), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
                 }
             }
         }
@@ -900,7 +905,7 @@ private fun TopupRow(topup: WalletTopup) {
             val (label, color) = when (topup.status) {
                 "approved" -> "تأیید شد" to NivoraGreenDark
                 "rejected" -> "رد شد" to NivoraDanger
-                else -> "در بررسی" to NivoraWarning
+                else -> "رسید ارسال شد" to NivoraWarning
             }
             StatusPill(label, color)
         }
