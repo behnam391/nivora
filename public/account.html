@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#050816">
+  <meta name="apple-itunes-app" content="app-id=6596777532">
   <meta name="robots" content="noindex,nofollow,noarchive">
   <meta name="description" content="مدیریت کیف پول، اشتراک‌ها، رسیدها و پشتیبانی حساب مشتری Nivora.">
   <title>حساب مشتری Nivora</title>
@@ -83,7 +84,7 @@
       </section>
 
       <section id="subscriptions" class="panel section-panel">
-        <div class="panel-head"><div><span class="eyebrow">سرویس‌های من</span><h2>اشتراک‌ها</h2><p>وضعیت و اعتبار سرویس را ببینید؛ اتصال امن از داخل اپ انجام می‌شود.</p></div><button class="soft-button" data-action="buy">＋ خرید اشتراک</button></div>
+        <div class="panel-head"><div><span class="eyebrow">سرویس‌های من</span><h2>اشتراک‌ها</h2><p>در اندروید از اپ Nivora و در آیفون از اتصال امن Hiddify استفاده کنید.</p></div><button class="soft-button" data-action="buy">＋ خرید اشتراک</button></div>
         <div id="orders" class="orders"></div>
       </section>
 
@@ -114,6 +115,8 @@
   <dialog id="conversation-dialog" class="conversation-dialog"><div class="dialog-body"><button type="button" class="close icon-close" aria-label="بستن">×</button><span class="eyebrow">پشتیبانی Nivora</span><h2 id="conversation-title">گفت‌وگو</h2><div id="conversation-messages" class="conversation-messages"></div><form id="reply-form"><label>پاسخ شما<textarea id="reply-body" rows="3" minlength="2" maxlength="2000" required></textarea></label><button class="primary" type="submit">ارسال پاسخ</button></form></div></dialog>
 
   <dialog id="password-reset-dialog"><form id="password-reset-form"><button type="button" class="close icon-close" aria-label="بستن">×</button><span class="eyebrow">بازیابی حساب</span><h2>بازیابی رمز عبور</h2><p>شماره موبایل حساب را وارد کنید؛ ادامه فرایند در ربات رسمی Nivora انجام می‌شود.</p><label>شماره موبایل<input id="reset-phone" inputmode="numeric" pattern="09[0-9]{9}" maxlength="11" required></label><button class="primary" type="submit">ادامه بازیابی</button><p id="reset-result"></p></form></dialog>
+
+  <dialog id="ios-dialog" class="ios-dialog"><div class="dialog-body"><button type="button" class="close icon-close" aria-label="بستن">×</button><span class="eyebrow">اتصال آیفون</span><h2>افزودن امن به Hiddify</h2><p class="ios-intro">ابتدا Hiddify را نصب کنید. سپس لینک موقت Nivora را بسازید و با لمس دکمه، اشتراک را داخل Hiddify تأیید کنید.</p><div class="ios-steps"><span><b>۱</b> نصب Hiddify روی iOS 15 یا جدیدتر</span><span><b>۲</b> ساخت لینک کوتاه‌عمر مخصوص همین دستگاه</span><span><b>۳</b> تأیید افزودن پروفایل در Hiddify</span></div><p id="ios-status" class="ios-status" role="status">در حال آماده‌سازی اتصال امن…</p><div class="ios-actions"><a class="soft-button ios-install" href="https://app.hiddify.com/ios" target="_blank" rel="noopener noreferrer">نصب Hiddify برای آیفون</a><a id="ios-open" class="primary disabled" href="#" aria-disabled="true">بازکردن و افزودن در Hiddify</a><button id="ios-regenerate" class="text-button" type="button">ساخت لینک تازه</button></div><small class="ios-note">لینک پس از ۲ دقیقه منقضی می‌شود و در صفحه نمایش داده یا کپی نمی‌شود.</small></div></dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/web-notifications.js" defer></script>

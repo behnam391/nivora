@@ -293,6 +293,20 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     }
     return raw;
   };
+  const renderSubscriptionBundle=async subscription=>{
+    const upstream=subscription.upstream_subscription_url||subscription.subscription_url;
+    if(!upstream){const error=new Error('SUBSCRIPTION_NOT_READY');error.status=404;throw error;}
+    const endpoints=subscription.location_id?db.prepare(`SELECT label,host,port,mode,server_name,priority,active FROM location_endpoints WHERE location_id=? AND active=1 ORDER BY priority,created_at`).all(subscription.location_id):[];
+    // A separately registered x-ui node can legitimately use a self-signed
+    // listener. The public Nivora endpoint remains TLS-protected.
+    const rejectUnauthorized=subscription.panel_node_id?false:process.env.PANEL_TLS_REJECT_UNAUTHORIZED!=='false';
+    const raw=await cachedUpstream(upstream,{rejectUnauthorized});
+    // Experimental transports stay out of customer profiles. Only routes that
+    // passed the production Reality+Vision policy are offered to clients.
+    const productionRaw=keepStableRealityRoutes(raw);
+    const rendered=buildMultiEndpointSubscription(productionRaw,endpoints.map(endpoint=>({...endpoint,active:Boolean(endpoint.active)})));
+    return {rendered,endpoints};
+  };
   const adminSessionHours=Math.min(72,Math.max(1,Number(process.env.ADMIN_SESSION_HOURS)||12));
   const savedAdmin=Object.fromEntries(db.prepare("SELECT key,value FROM app_settings WHERE key IN ('admin_username','admin_password_salt','admin_password_hash','admin_session_version')").all().map(row=>[row.key,row.value]));
   let activeAdminUsername=savedAdmin.admin_username||adminUsername;
@@ -657,6 +671,47 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       if (req.method === 'GET' && path === '/health') {db.prepare('SELECT 1 ok').get();return json(res, 200, { ok:true,service:'nivora',uptimeSeconds:Math.floor(process.uptime()),database:'ok',time:new Date().toISOString() });}
 
+      const iosImportMatch=path.match(/^\/ios\/import\/([A-Za-z0-9_-]{40,100})$/);
+      if(req.method==='GET'&&iosImportMatch){
+        const now=new Date().toISOString(),tokenHash=createHash('sha256').update(iosImportMatch[1]).digest('hex');
+        let subscription;
+        db.exec('BEGIN IMMEDIATE');
+        try{
+          subscription=db.prepare(`SELECT t.id,t.fetch_count,t.max_fetches,t.expires_at,t.revoked_at,
+              s.upstream_subscription_url,s.subscription_url,s.status subscription_status,
+              COALESCE(s.control_status,'active') control_status,s.deleted_at,
+              o.status order_status,o.location_id,o.account_id,l.panel_node_id,
+              a.status account_status,d.status device_status
+            FROM subscription_import_tokens t
+            JOIN subscriptions s ON s.id=t.subscription_id
+            JOIN orders o ON o.id=s.order_id
+            JOIN accounts a ON a.id=t.account_id AND a.id=o.account_id
+            JOIN account_devices d ON d.id=t.device_id AND d.account_id=t.account_id
+            LEFT JOIN service_locations l ON l.id=o.location_id
+            WHERE t.token_hash=?`).get(tokenHash);
+          const usable=subscription&&!subscription.revoked_at&&subscription.expires_at>now&&Number(subscription.fetch_count)<Number(subscription.max_fetches)&&subscription.account_status==='active'&&subscription.device_status==='active'&&subscription.order_status==='approved'&&subscription.subscription_status==='active'&&subscription.control_status==='active'&&!subscription.deleted_at;
+          if(!usable){db.exec('ROLLBACK');res.setHeader('cache-control','no-store');res.setHeader('referrer-policy','no-referrer');res.setHeader('x-content-type-options','nosniff');return json(res,410,{error:'IMPORT_LINK_EXPIRED'});}
+          db.prepare('UPDATE subscription_import_tokens SET fetch_count=fetch_count+1,last_fetched_at=? WHERE id=?').run(now,subscription.id);
+          db.exec('COMMIT');
+        }catch(error){db.exec('ROLLBACK');throw error;}
+        try{
+          const {rendered,endpoints}=await renderSubscriptionBundle(subscription);
+          res.writeHead(200,{
+            'content-type':'text/plain; charset=utf-8',
+            'content-disposition':'inline; filename="nivora.txt"',
+            'cache-control':'no-store',
+            'referrer-policy':'no-referrer',
+            'x-content-type-options':'nosniff',
+            'x-robots-tag':'noindex, nofollow, noarchive',
+            'x-nivora-routes':String(endpoints.length)
+          });
+          return res.end(rendered);
+        }catch(error){
+          res.writeHead(error.status||502,{'content-type':'text/plain; charset=utf-8','cache-control':'no-store','referrer-policy':'no-referrer'});
+          return res.end(error.message==='SUBSCRIPTION_NOT_READY'?'SUBSCRIPTION_NOT_READY':'SUBSCRIPTION_UPSTREAM_UNAVAILABLE');
+        }
+      }
+
       const publicSubscriptionMatch = path.match(/^\/sub\/([a-f0-9]{32})$/i);
       if (req.method === 'GET' && publicSubscriptionMatch) {
         const subscription = db.prepare(`SELECT s.upstream_subscription_url,s.subscription_url,o.location_id,o.account_id,l.panel_node_id
@@ -667,23 +722,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const account = accountFromRequest(db, req, { requireDevice:enforceDeviceGateway });
         const subscriptionAccount = subscription.account_id && db.prepare('SELECT role FROM accounts WHERE id=?').get(subscription.account_id);
         if (enforceDeviceGateway && subscriptionAccount?.role === 'customer' && (!account || account.role !== 'customer' || account.id !== subscription.account_id)) { res.writeHead(401, {'content-type':'text/plain; charset=utf-8'}); return res.end('AUTH_REQUIRED'); }
-        const upstream = subscription.upstream_subscription_url || subscription.subscription_url;
-        if (!upstream) { res.writeHead(404, {'content-type':'text/plain; charset=utf-8'}); return res.end('SUBSCRIPTION_NOT_READY'); }
-        const endpoints = subscription.location_id ? db.prepare(`SELECT label,host,port,mode,server_name,priority,active FROM location_endpoints WHERE location_id=? AND active=1 ORDER BY priority,created_at`).all(subscription.location_id) : [];
         try {
-          // A separately registered x-ui node can legitimately use its own
-          // self-signed subscription listener.  The public Nivora link stays
-          // TLS-protected; only the server-to-node hop is relaxed for that node.
-          const rejectUnauthorized = subscription.panel_node_id
-            ? false
-            : process.env.PANEL_TLS_REJECT_UNAUTHORIZED !== 'false';
-          const raw = await cachedUpstream(upstream, { rejectUnauthorized });
-          // The customer-facing profile is intentionally limited to proven
-          // Reality+Vision TCP routes. Experimental XHTTP/gRPC/WS rows remain
-          // available in the panel for lab work, but never reach the automatic
-          // selector where a closed port could look "fast" and then fail.
-          const productionRaw = keepStableRealityRoutes(raw);
-          const rendered = buildMultiEndpointSubscription(productionRaw, endpoints.map(endpoint => ({...endpoint,active:Boolean(endpoint.active)})));
+          const {rendered,endpoints}=await renderSubscriptionBundle(subscription);
           const etag=`"${createHash('sha256').update(rendered).digest('base64url')}"`;
           if(req.headers['if-none-match']===etag){res.writeHead(304,{etag,'cache-control':'private, max-age=60'});return res.end();}
           res.writeHead(200, {
@@ -862,6 +902,45 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             const code=error instanceof EmergencyPoolError?error.code:'EMERGENCY_POOL_UNAVAILABLE';
             return json(res,error.status||503,{error:code});
           }
+        }
+        const iosImportRequest=path.match(/^\/api\/customer\/orders\/([^/]+)\/ios-import$/);
+        if(req.method==='POST'&&iosImportRequest){
+          const subscription=db.prepare(`SELECT s.id subscription_id,s.status subscription_status,
+              COALESCE(s.control_status,'active') control_status,s.deleted_at,
+              s.upstream_subscription_url,s.subscription_url,
+              o.id order_id,o.status order_status,o.order_kind,o.location_id,
+              p.name plan_name,l.name location_name
+            FROM orders o
+            JOIN plans p ON p.id=o.plan_id
+            LEFT JOIN subscriptions s ON s.order_id=o.id
+            LEFT JOIN service_locations l ON l.id=o.location_id
+            WHERE o.id=? AND o.account_id=? AND o.order_kind='purchase'`).get(iosImportRequest[1],account.id);
+          if(!subscription)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
+          if(subscription.order_status!=='approved'||subscription.subscription_status!=='active'||subscription.control_status!=='active'||subscription.deleted_at)return json(res,409,{error:'SUBSCRIPTION_NOT_ACTIVE'});
+          if(!subscription.upstream_subscription_url&&!subscription.subscription_url)return json(res,409,{error:'SUBSCRIPTION_NOT_READY'});
+          let claimed;
+          try{claimed=claimCustomerDevice(account,req,{required:true});}
+          catch(error){return json(res,error.status||403,deviceErrorBody(error));}
+          const now=new Date(),nowIso=now.toISOString(),windowStart=new Date(now.getTime()-10*60_000).toISOString();
+          const issued=Number(db.prepare('SELECT COUNT(*) count FROM subscription_import_tokens WHERE account_id=? AND created_at>?').get(account.id,windowStart).count);
+          if(issued>=5){res.setHeader('retry-after','600');return json(res,429,{error:'IMPORT_RATE_LIMITED'});}
+          const rawToken=randomBytes(32).toString('base64url'),tokenHash=createHash('sha256').update(rawToken).digest('hex'),expiresAt=new Date(now.getTime()+120_000).toISOString(),id=randomUUID();
+          db.exec('BEGIN IMMEDIATE');
+          try{
+            db.prepare('UPDATE subscription_import_tokens SET revoked_at=? WHERE account_id=? AND subscription_id=? AND platform=? AND revoked_at IS NULL').run(nowIso,account.id,subscription.subscription_id,'ios');
+            db.prepare(`INSERT INTO subscription_import_tokens(id,token_hash,account_id,subscription_id,device_id,platform,expires_at,max_fetches,fetch_count,created_at)
+              VALUES(?,?,?,?,?,'ios',?,3,0,?)`).run(id,tokenHash,account.id,subscription.subscription_id,claimed.id,expiresAt,nowIso);
+            db.prepare("DELETE FROM subscription_import_tokens WHERE expires_at<? AND created_at<?").run(nowIso,new Date(now.getTime()-24*60*60_000).toISOString());
+            db.prepare("UPDATE account_devices SET label='آیفون / مرورگر',platform='iOS',last_seen_at=? WHERE id=?").run(nowIso,claimed.id);
+            db.exec('COMMIT');
+          }catch(error){db.exec('ROLLBACK');throw error;}
+          audit(account.id,'issue','ios_subscription_import',subscription.subscription_id,{orderId:subscription.order_id,expiresAt,maxFetches:3});
+          res.setHeader('cache-control','no-store');res.setHeader('referrer-policy','no-referrer');
+          return json(res,201,{
+            subscriptionUrl:`${publicOrigin(req)}/ios/import/${rawToken}`,
+            profileName:`Nivora · ${subscription.plan_name}${subscription.location_name?` · ${subscription.location_name}`:''}`,
+            expiresAt,expiresInSeconds:120,maxFetches:3
+          });
         }
         const hysteriaTicket=path.match(/^\/api\/customer\/subscriptions\/([^/]+)\/connect-ticket$/);
         if(req.method==='POST'&&hysteriaTicket){

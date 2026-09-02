@@ -185,6 +185,24 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       revoked_by TEXT,
       UNIQUE(account_id,device_hash)
     );
+    CREATE TABLE IF NOT EXISTS subscription_import_tokens (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+      device_id TEXT NOT NULL REFERENCES account_devices(id) ON DELETE CASCADE,
+      platform TEXT NOT NULL DEFAULT 'ios',
+      expires_at TEXT NOT NULL,
+      max_fetches INTEGER NOT NULL DEFAULT 3 CHECK(max_fetches BETWEEN 1 AND 10),
+      fetch_count INTEGER NOT NULL DEFAULT 0 CHECK(fetch_count >= 0),
+      created_at TEXT NOT NULL,
+      last_fetched_at TEXT,
+      revoked_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_subscription_import_tokens_lookup
+      ON subscription_import_tokens(token_hash,expires_at);
+    CREATE INDEX IF NOT EXISTS idx_subscription_import_tokens_account
+      ON subscription_import_tokens(account_id,created_at);
     CREATE TABLE IF NOT EXISTS hysteria_nodes (
       id TEXT PRIMARY KEY,
       location_id TEXT NOT NULL REFERENCES service_locations(id) ON DELETE CASCADE,

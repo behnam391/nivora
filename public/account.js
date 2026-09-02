@@ -4,11 +4,12 @@ const fa=value=>new Intl.NumberFormat('fa-IR').format(Number(value)||0);
 const date=value=>value?new Date(value).toLocaleString('fa-IR',{dateStyle:'medium',timeStyle:'short'}):'—';
 const esc=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 const safeUrl=value=>{try{const url=new URL(value,location.origin);return ['http:','https:'].includes(url.protocol)?url.href:'#'}catch{return '#'}};
-const errorText=code=>({INSUFFICIENT_BALANCE:'موجودی کیف پول کافی نیست.',PHONE_ALREADY_EXISTS:'این شماره قبلاً ثبت شده است.',INVALID_CREDENTIALS:'شماره یا رمز عبور صحیح نیست.',DEVICE_ALREADY_BOUND:'این حساب روی دستگاه دیگری فعال است؛ از داخل اپ Nivora درخواست آزادسازی بفرستید.',DEVICE_LIMIT_REACHED:'ظرفیت دستگاه‌های این حساب تکمیل است؛ از داخل اپ Nivora درخواست آزادسازی بفرستید.',RATE_LIMITED:'تعداد تلاش‌ها زیاد بود؛ یک دقیقه صبر کنید و دوباره وارد شوید.',WEAK_PASSWORD:'رمز باید حداقل ۸ کاراکتر باشد.',NO_CAPACITY:'ظرفیت این پلن تکمیل است.',DISCOUNT_NOT_AVAILABLE:'کد تخفیف معتبر یا قابل استفاده نیست.',PROVISION_FAILED:'ساخت اشتراک ناموفق بود و مبلغ به کیف پول برگشت.',RENEW_FAILED:'تمدید ناموفق بود و مبلغ به کیف پول برگشت.',INVALID_TOPUP:'مبلغ یا اطلاعات رسید کامل نیست.',INVALID_PAYMENT_AMOUNT:'مبلغ واریز معتبر نیست.',RECEIPT_REQUIRED:'شماره پیگیری و تصویر رسید را کامل وارد کنید.',INVALID_RECEIPT:'تصویر رسید معتبر نیست.',INVALID_RECEIPT_TYPE:'فرمت رسید باید JPG، PNG یا WebP باشد.',RECEIPT_TOO_LARGE:'حجم تصویر باید کمتر از ۴ مگابایت باشد.',RECEIPT_NOT_AVAILABLE:'این رسید در دسترس نیست؛ دوباره آپلود کنید.',RECEIPT_ALREADY_USED:'این تصویر رسید قبلاً استفاده شده است.',TOO_MANY_PENDING_TOPUPS:'پنج درخواست شارژ شما در حال بررسی است.',RECEIPT_RATE_LIMITED:'تعداد آپلودها زیاد بود؛ کمی بعد دوباره تلاش کنید.',RECEIPT_STORAGE_BUSY:'فضای دریافت رسید موقتاً در دسترس نیست.',INVALID_TICKET:'موضوع و پیام را کامل بنویسید.',DEBT_NOT_FOUND:'این بدهی دیگر قابل اعلام پرداخت نیست.',UNAUTHORIZED:'نشست شما منقضی شده است.'}[code]||(/[\u0600-\u06ff]/.test(String(code))?String(code):'عملیات انجام نشد؛ دوباره تلاش کنید.'));
+const errorText=code=>({INSUFFICIENT_BALANCE:'موجودی کیف پول کافی نیست.',PHONE_ALREADY_EXISTS:'این شماره قبلاً ثبت شده است.',INVALID_CREDENTIALS:'شماره یا رمز عبور صحیح نیست.',DEVICE_ALREADY_BOUND:'این حساب روی دستگاه دیگری فعال است؛ از پشتیبانی بخواهید دستگاه قبلی را آزاد کند.',DEVICE_LIMIT_REACHED:'ظرفیت دستگاه‌های این حساب تکمیل است؛ از پشتیبانی بخواهید یکی را آزاد کند.',DEVICE_REQUIRED:'این آیفون شناسایی نشد؛ صفحه را تازه کنید و دوباره بزنید.',RATE_LIMITED:'تعداد تلاش‌ها زیاد بود؛ یک دقیقه صبر کنید و دوباره وارد شوید.',IMPORT_RATE_LIMITED:'تعداد لینک‌های ساخته‌شده زیاد است؛ ده دقیقه دیگر دوباره امتحان کنید.',SUBSCRIPTION_NOT_FOUND:'اشتراک مورد نظر پیدا نشد.',SUBSCRIPTION_NOT_ACTIVE:'این اشتراک فعال نیست و قابل افزودن به آیفون نیست.',SUBSCRIPTION_NOT_READY:'اشتراک هنوز برای اتصال آماده نشده است.',IMPORT_LINK_EXPIRED:'این لینک منقضی شده؛ یک لینک تازه بسازید.',WEAK_PASSWORD:'رمز باید حداقل ۸ کاراکتر باشد.',NO_CAPACITY:'ظرفیت این پلن تکمیل است.',DISCOUNT_NOT_AVAILABLE:'کد تخفیف معتبر یا قابل استفاده نیست.',PROVISION_FAILED:'ساخت اشتراک ناموفق بود و مبلغ به کیف پول برگشت.',RENEW_FAILED:'تمدید ناموفق بود و مبلغ به کیف پول برگشت.',INVALID_TOPUP:'مبلغ یا اطلاعات رسید کامل نیست.',INVALID_PAYMENT_AMOUNT:'مبلغ واریز معتبر نیست.',RECEIPT_REQUIRED:'شماره پیگیری و تصویر رسید را کامل وارد کنید.',INVALID_RECEIPT:'تصویر رسید معتبر نیست.',INVALID_RECEIPT_TYPE:'فرمت رسید باید JPG، PNG یا WebP باشد.',RECEIPT_TOO_LARGE:'حجم تصویر باید کمتر از ۴ مگابایت باشد.',RECEIPT_NOT_AVAILABLE:'این رسید در دسترس نیست؛ دوباره آپلود کنید.',RECEIPT_ALREADY_USED:'این تصویر رسید قبلاً استفاده شده است.',TOO_MANY_PENDING_TOPUPS:'پنج درخواست شارژ شما در حال بررسی است.',RECEIPT_RATE_LIMITED:'تعداد آپلودها زیاد بود؛ کمی بعد دوباره تلاش کنید.',RECEIPT_STORAGE_BUSY:'فضای دریافت رسید موقتاً در دسترس نیست.',INVALID_TICKET:'موضوع و پیام را کامل بنویسید.',DEBT_NOT_FOUND:'این بدهی دیگر قابل اعلام پرداخت نیست.',UNAUTHORIZED:'نشست شما منقضی شده است.'}[code]||(/[\u0600-\u06ff]/.test(String(code))?String(code):'عملیات انجام نشد؛ دوباره تلاش کنید.'));
 
 let mode='login';
 let token=localStorage.getItem('nivora_customer_token')||'';
-let plans=[],config={},ticketRows=[],activeTicket=null,currentAccount=null,loading=false,polling=false;
+let plans=[],config={},ticketRows=[],activeTicket=null,activeIosOrder=null,currentAccount=null,loading=false,polling=false;
+let volatileIosDevice='',iosExpiryTimer=null;
 
 async function api(url,options={}){
   const response=await fetch(url,{...options,headers:{...(options.headers||{}),...(token?{authorization:`Bearer ${token}`}:{})}});
@@ -45,8 +46,9 @@ function render(account){
   $('#debts').innerHTML=account.debts?.length?account.debts.map(item=>`<article class="debt-row"><span><b>${esc(item.reseller_name)}</b><small>${esc(item.note)} · ${date(item.created_at)}</small></span><div><b class="debt-amount">${fa(item.amount_toman)} تومان</b><div class="debt-actions">${item.status==='open'?`<button data-debt-payment="${esc(item.id)}">پرداخت کردم</button>`:'<span class="status-pill pending">در انتظار تأیید</span>'}</div></div></article>`).join(''):empty('بدهی بازی ندارید.','تسویه‌های شما اینجا نمایش داده می‌شود.');
   $$('[data-debt-payment]').forEach(button=>button.onclick=()=>reportDebtPayment(button.dataset.debtPayment,button));
 
-  $('#orders').innerHTML=account.orders.length?account.orders.map(order=>{const [label,state]=statusInfo(order);const remaining=Number.isFinite(Number(order.remainingDays))?` · ${fa(order.remainingDays)} روز مانده`:'';return `<article><div><h3>${esc(order.plan_name)}</h3><small>${order.order_kind==='renewal'?'تمدید':'خرید'} · ${fa(order.traffic_gb)} گیگ · ${fa(order.duration_days)} روز · ${fa(order.device_limit)} دستگاه${remaining}</small><span class="status-pill ${state}">${esc(label)}</span></div><div class="actions">${order.subscription_status==='active'&&order.control_status!=='deleted'?'<span class="app-guidance">برای اتصال، اشتراک را در اپ Nivora باز کنید.</span>':''}${order.order_kind==='purchase'&&order.subscription_status==='active'&&order.control_status!=='deleted'?`<button data-renew="${esc(order.id)}">تمدید</button>`:''}</div></article>`}).join(''):empty('هنوز اشتراکی ندارید.','برای شروع یک پلن انتخاب کنید.');
+  $('#orders').innerHTML=account.orders.length?account.orders.map(order=>{const [label,state]=statusInfo(order);const remaining=Number.isFinite(Number(order.remainingDays))?` · ${fa(order.remainingDays)} روز مانده`:'';const canConnect=order.subscription_status==='active'&&order.control_status==='active';return `<article><div><h3>${esc(order.plan_name)}</h3><small>${order.order_kind==='renewal'?'تمدید':'خرید'} · ${fa(order.traffic_gb)} گیگ · ${fa(order.duration_days)} روز · ${fa(order.device_limit)} دستگاه${remaining}</small><span class="status-pill ${state}">${esc(label)}</span></div><div class="actions">${canConnect?'<span class="app-guidance">اندروید: اپ Nivora · آیفون: Hiddify</span>':''}${canConnect?`<button class="ios-connect-button" data-ios="${esc(order.id)}">اتصال آیفون</button>`:''}${order.order_kind==='purchase'&&canConnect?`<button data-renew="${esc(order.id)}">تمدید</button>`:''}</div></article>`}).join(''):empty('هنوز اشتراکی ندارید.','برای شروع یک پلن انتخاب کنید.');
   $$('[data-renew]').forEach(button=>button.onclick=()=>renew(button.dataset.renew,button));
+  $$('[data-ios]').forEach(button=>button.onclick=()=>openIosImport(button.dataset.ios,button));
 
   const topupStatus={under_review:'در انتظار بررسی',approved:'تأیید و شارژ شد',rejected:'رد شد'};
   $('#topups').innerHTML=account.topups.length?account.topups.map(item=>`<article><span><b>${fa(item.amount_toman)} تومان</b><small>${date(item.created_at)}${item.receipt_reference?` · پیگیری ${esc(item.receipt_reference)}`:''}${item.review_note?` · ${esc(item.review_note)}`:''}</small>${item.receipt_image_url?`<a class="receipt-link" href="${safeUrl(item.receipt_image_url)}" target="_blank" rel="noopener">مشاهده رسید</a>`:''}</span><b class="${item.status==='under_review'?'pending':item.status}">${esc(topupStatus[item.status]||item.status)}</b></article>`).join(''):empty('درخواستی ثبت نشده است.');
@@ -72,6 +74,39 @@ async function renew(id,button){
   setBusy(button,true,'در حال تمدید…');
   try{await api(`/api/customer/orders/${encodeURIComponent(id)}/renew`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});toast('اشتراک با موفقیت تمدید شد.');await load()}
   catch(error){toast(errorText(error.message),true)}finally{setBusy(button,false)}
+}
+
+function iosDeviceId(){
+  let value='';
+  try{value=localStorage.getItem('nivora_ios_device')||'';}catch{}
+  if(!/^[A-Za-z0-9_-]{20,160}$/.test(value)){
+    const bytes=new Uint8Array(24);crypto.getRandomValues(bytes);
+    value=`ios_${[...bytes].map(byte=>byte.toString(16).padStart(2,'0')).join('')}`;
+    try{localStorage.setItem('nivora_ios_device',value);}catch{volatileIosDevice=value;}
+  }
+  return value||volatileIosDevice;
+}
+
+function resetIosLink(message='در حال آماده‌سازی اتصال امن…'){
+  clearTimeout(iosExpiryTimer);const open=$('#ios-open');open.href='#';open.classList.add('disabled');open.setAttribute('aria-disabled','true');$('#ios-status').textContent=message;
+}
+
+async function prepareIosImport(button){
+  if(!activeIosOrder)return;
+  resetIosLink();setBusy(button,true,'در حال ساخت…');
+  try{
+    const result=await api(`/api/customer/orders/${encodeURIComponent(activeIosOrder)}/ios-import`,{method:'POST',headers:{'content-type':'application/json','x-nivora-device':iosDeviceId()},body:'{}'});
+    const subscription=new URL(result.subscriptionUrl,location.origin);
+    if(!['http:','https:'].includes(subscription.protocol)||!/^\/ios\/import\/[A-Za-z0-9_-]+$/.test(subscription.pathname))throw new Error('SUBSCRIPTION_NOT_READY');
+    const deepLink=`hiddify://import/?url=${encodeURIComponent(subscription.href)}&name=${encodeURIComponent(result.profileName||'Nivora')}`;
+    const open=$('#ios-open');open.href=deepLink;open.classList.remove('disabled');open.setAttribute('aria-disabled','false');
+    $('#ios-status').textContent='اتصال آماده است؛ اکنون دکمه آبی را لمس و افزودن پروفایل را در Hiddify تأیید کنید.';
+    iosExpiryTimer=setTimeout(()=>resetIosLink('زمان این لینک تمام شد؛ «ساخت لینک تازه» را بزنید.'),Math.max(1,Number(result.expiresInSeconds)||120)*1000);
+  }catch(error){resetIosLink(errorText(error.message));toast(errorText(error.message),true)}finally{setBusy(button,false)}
+}
+
+function openIosImport(orderId,button){
+  activeIosOrder=orderId;const dialog=$('#ios-dialog');if(!dialog.open)dialog.showModal();void prepareIosImport(button);
 }
 
 function fillPlans(){
@@ -132,6 +167,8 @@ $('#profile-form').onsubmit=async event=>{event.preventDefault();const button=ev
 $('#new-ticket').onclick=()=>{$('#ticket-form').reset();$('#ticket-dialog').showModal()};
 $('#ticket-form').onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true,'در حال ارسال…');try{await api('/api/customer/tickets',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({subject:$('#ticket-subject').value.trim(),body:$('#ticket-body').value.trim()})});event.target.reset();$('#ticket-dialog').close();toast('تیکت ارسال شد.');await load()}catch(error){toast(errorText(error.message),true)}finally{setBusy(button,false)}};
 $('#reply-form').onsubmit=async event=>{event.preventDefault();const button=event.submitter;setBusy(button,true,'در حال ارسال…');try{await api(`/api/customer/tickets/${encodeURIComponent(activeTicket)}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({body:$('#reply-body').value.trim()})});$('#reply-body').value='';await openConversation(activeTicket);const next=await api('/api/customer/tickets');ticketRows=next;renderTickets();toast('پاسخ ارسال شد.')}catch(error){toast(errorText(error.message),true)}finally{setBusy(button,false)}};
+$('#ios-open').onclick=event=>{if(event.currentTarget.getAttribute('aria-disabled')==='true')event.preventDefault()};
+$('#ios-regenerate').onclick=event=>void prepareIosImport(event.currentTarget);
 $$('dialog .close').forEach(button=>button.onclick=()=>button.closest('dialog').close());
 $('#logout').onclick=()=>{localStorage.removeItem('nivora_customer_token');location.reload()};
 if(token)load();setInterval(poll,60000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)void poll()});
