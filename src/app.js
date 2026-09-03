@@ -518,6 +518,13 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if(item.account_id)notify(item.account_id,'پرداخت تأیید نشد','در مهلت بررسی، پیامک واریز معتبر و مطابق با مبلغ واردشده دریافت نشد. در صورت کسر وجه با پشتیبانی تماس بگیرید.');
         audit('httpsms-agent','reject',item.amount_toman!=null?'wallet_topup':'order',item.id,{reason:'BANK_MATCH_TIMEOUT'});
         telegramAdminAlert(`⏱ پرداخت پس از پایان مهلت رد شد\nشناسه: ${item.id}`);
+      },
+      onManual:item=>{
+        if(item.account_id)notify(item.account_id,'پرداخت در صف بررسی مدیر است','تطبیق خودکار کامل نشد؛ نتیجه پس از بررسی مدیر اعلام می‌شود.');
+        const isTopup=item.entityType==='wallet_topup';
+        const title=isTopup?'شارژ کیف پول':'خرید اشتراک';
+        const buttons=isTopup?{inline_keyboard:[[{text:'✅ تأیید و شارژ',callback_data:`topup:approve:${item.id}`},{text:'❌ رد',callback_data:`topup:reject:${item.id}`}]]}:undefined;
+        telegramAdminAlert(`⚠️ ${title} نیازمند بررسی دستی\nشناسه: ${item.id}\nدلیل: ${item.reason}`,buttons);
       }
     };
   };

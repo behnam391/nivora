@@ -286,18 +286,15 @@ export async function sweepPendingTopups(db, deps = {}) {
     const result = await evaluateWalletTopup(db, id, { ...deps, config });
     if (result.decision === 'approved') approved++; else if (result.decision === 'rejected') rejected++;
   }
-  // Do not reject immediately: bank delivery can lag behind the customer's
-  // request. Once the configured review window is over, requests with no
-  // unique bank match are expired automatically instead of staying pending.
+  // Missing or ambiguous bank evidence must never cause an automatic financial
+  // rejection. Keep the request reviewable and escalate it to a human once.
   const expired = db.prepare("SELECT id,account_id,amount_toman FROM wallet_topups WHERE status='under_review' AND created_at<? ORDER BY created_at").all(cutoff);
   for (const topup of expired) {
-    const reason = 'در مهلت بررسی، واریز بانکی معتبر و یکتایی با این مبلغ دریافت نشد';
-    const changed = db.prepare("UPDATE wallet_topups SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='under_review'")
-      .run(reason, deps.actor || 'httpsms-agent', new Date().toISOString(), topup.id);
-    if (!changed.changes) continue;
-    recordTopupReview(db, { topupId: topup.id, decision: 'rejected', confidence: 90, reason });
-    rejected++;
-    try { await deps.onRejected?.(topup); } catch { /* notification must not change the decision */ }
+    const reason = 'تطبیق خودکار کامل نشد؛ نیازمند بررسی دستی مدیر';
+    const previous=lastTopupReview(db,topup.id);
+    if(previous?.decision==='manual'&&previous?.reason===reason)continue;
+    recordTopupReview(db, { topupId: topup.id, decision: 'manual', confidence: 0, reason });
+    try { await deps.onManual?.({...topup,entityType:'wallet_topup',reason}); } catch { /* notification must not change money */ }
   }
   return { evaluated: rows.length + expired.length, approved, rejected };
 }
@@ -314,13 +311,11 @@ export async function sweepPendingOrders(db, deps = {}) {
   }
   const expired = db.prepare("SELECT id,account_id,customer_name FROM orders WHERE status='under_review' AND created_at<? ORDER BY created_at").all(cutoff);
   for (const order of expired) {
-    const reason = 'در مهلت بررسی، واریز بانکی معتبر و یکتایی با این مبلغ دریافت نشد';
-    const changed = db.prepare("UPDATE orders SET status='rejected',review_note=?,reviewed_by=?,reviewed_at=? WHERE id=? AND status='under_review'")
-      .run(reason, deps.actor || 'httpsms-agent', new Date().toISOString(), order.id);
-    if (!changed.changes) continue;
-    recordOrderReview(db, { orderId: order.id, decision: 'rejected', confidence: 90, reason });
-    rejected++;
-    try { await deps.onRejected?.(order); } catch { /* notification must not change the decision */ }
+    const reason = 'تطبیق خودکار کامل نشد؛ نیازمند بررسی دستی مدیر';
+    const previous=lastOrderReview(db,order.id);
+    if(previous?.decision==='manual'&&previous?.reason===reason)continue;
+    recordOrderReview(db, { orderId: order.id, decision: 'manual', confidence: 0, reason });
+    try { await deps.onManual?.({...order,entityType:'order',reason}); } catch { /* notification must not change money */ }
   }
   return { evaluated: rows.length + expired.length, approved, rejected };
 }
