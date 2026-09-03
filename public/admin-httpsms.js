@@ -2,6 +2,20 @@
   const q=selector=>document.querySelector(selector);
   let loaded=false;
 
+  const heading=q('#httpsms .panel-head div');
+  if(heading)heading.innerHTML='<h2>عامل بانکی اختصاصی Nivora</h2><p>پیام واریز مستقیماً و رمزنگاری‌شده از گوشی بانکی دریافت می‌شود؛ httpSMS فقط برای سازگاری قدیمی باقی مانده است.</p>';
+  q('#httpsms-form')?.insertAdjacentHTML('beforebegin',`<form id="bank-agent-form" class="panel telegram-settings httpsms-settings">
+    <h3>اتصال گوشی بانکی</h3><label class="check"><input id="bank-agent-enabled" type="checkbox"> عامل اختصاصی فعال باشد</label>
+    <label>نشانی سرور<div class="copy-field"><input id="bank-agent-url" dir="ltr" readonly><button id="bank-agent-copy-url" class="ghost" type="button">کپی</button></div></label>
+    <label>شناسه دستگاه<div class="copy-field"><input id="bank-agent-id" dir="ltr" readonly><button id="bank-agent-copy-id" class="ghost" type="button">کپی</button></div></label>
+    <label>فرستنده‌های مجاز بانک<textarea id="bank-agent-senders" dir="ltr" rows="3" placeholder="Day Bank\nDAYBANK"></textarea><small>دقیقاً همان نام فرستنده‌ای که بالای پیامک بانک دیده می‌شود؛ هر مورد در یک خط.</small></label>
+    <label class="check"><input id="bank-agent-auto" type="checkbox" checked> تطبیق یکتای مبلغ بدون تصویر رسید خودکار تأیید شود</label>
+    <div class="safety-note">تأیید بدون عکس فقط برای پیام امضاشده همین برنامه، مبلغ دقیق، کارت مقصد معتبر و یک درخواست یکتا انجام می‌شود. موارد مبهم برای مدیر می‌مانند و AI حق تصمیم مالی ندارد.</div>
+    <div class="modal-actions"><button class="primary" type="submit">ذخیره</button><button id="bank-agent-pair" class="ghost" type="button">ساخت / تعویض اتصال</button></div>
+    <p id="bank-agent-hint" class="muted"></p><div id="bank-agent-generated" class="generated-secret hidden"><b>کلید اتصال؛ فقط همین یک‌بار نمایش داده می‌شود</b><div class="copy-field"><input id="bank-agent-secret" dir="ltr" readonly><button id="bank-agent-copy-secret" class="ghost" type="button">کپی کلید</button></div></div><p id="bank-agent-result" class="muted"></p>
+  </form><details class="panel httpsms-settings"><summary>اتصال قدیمی httpSMS</summary><p class="muted">اگر دیگر استفاده نمی‌کنید، غیرفعال نگه دارید.</p></details>`);
+  const legacyDetails=q('#bank-agent-form')?.nextElementSibling;if(legacyDetails&&q('#httpsms-form'))legacyDetails.append(q('#httpsms-form'));
+
   async function copyText(value,label){
     try{
       if(navigator.clipboard?.writeText)await navigator.clipboard.writeText(value);
@@ -9,6 +23,8 @@
       toast(label);
     }catch{toast('کپی خودکار انجام نشد')}
   }
+
+  async function loadBankAgent(){const data=await api('/api/admin/bank-agent-settings');q('#bank-agent-enabled').checked=Boolean(data.enabled);q('#bank-agent-url').value=data.webhookUrl||'';q('#bank-agent-id').value=data.agentId||'';q('#bank-agent-senders').value=(data.allowedSenders||[]).join('\n');q('#bank-agent-auto').checked=Boolean(data.autoReviewEnabled);q('#bank-agent-hint').textContent=data.secretConfigured?`اتصال آماده است (${data.secretHint})؛ آخرین پیام: ${data.lastEventAt?date(data.lastEventAt):'هنوز پیامی نرسیده'}`:'ابتدا اتصال جدید بسازید.';}
 
   const formBody=()=>({
     enabled:q('#httpsms-enabled').checked,
@@ -55,6 +71,9 @@
   }
 
   q('#httpsms-form').onsubmit=save;
+  q('#bank-agent-form').onsubmit=async event=>{event.preventDefault();const button=event.submitter;button.disabled=true;try{await api('/api/admin/bank-agent-settings',{method:'PATCH',body:JSON.stringify({enabled:q('#bank-agent-enabled').checked,allowedSenders:q('#bank-agent-senders').value.split(/\r?\n|,/).map(x=>x.trim()).filter(Boolean),autoReviewEnabled:q('#bank-agent-auto').checked})});toast('تنظیمات عامل بانکی ذخیره شد');q('#bank-agent-result').textContent='آماده دریافت پیامک بانکی است.';await loadBankAgent()}catch(error){q('#bank-agent-result').textContent=error.code==='BANK_AGENT_SETUP_REQUIRED'?'ابتدا اتصال بسازید و فرستنده بانک را وارد کنید.':'ذخیره انجام نشد.'}finally{button.disabled=false}};
+  q('#bank-agent-pair').onclick=async()=>{const ok=await adminConfirm({title:'ساخت اتصال اختصاصی',message:'کلید قبلی روی گوشی از کار می‌افتد. کلید جدید فقط یک‌بار نمایش داده می‌شود.',confirmText:'ساخت اتصال',danger:Boolean(q('#bank-agent-id').value)});if(!ok)return;const result=await api('/api/admin/bank-agent-settings',{method:'PATCH',body:JSON.stringify({rotateSecret:true})});q('#bank-agent-id').value=result.agentId;q('#bank-agent-url').value=result.webhookUrl;q('#bank-agent-secret').value=result.generatedSecret||'';q('#bank-agent-generated').classList.remove('hidden');await loadBankAgent();toast('اتصال جدید ساخته شد')};
+  q('#bank-agent-copy-url').onclick=()=>copyText(q('#bank-agent-url').value,'نشانی کپی شد');q('#bank-agent-copy-id').onclick=()=>copyText(q('#bank-agent-id').value,'شناسه کپی شد');q('#bank-agent-copy-secret').onclick=()=>copyText(q('#bank-agent-secret').value,'کلید کپی شد');
   q('#httpsms-copy-webhook').onclick=()=>copyText(q('#httpsms-webhook-url').value,'نشانی وبهوک کپی شد');
   q('#httpsms-copy-key').onclick=()=>copyText(q('#httpsms-generated-key').value,'کلید امضا کپی شد');
   q('#httpsms-rotate-key').onclick=async()=>{
@@ -70,5 +89,5 @@
   };
 
   const original=window.showView;
-  window.showView=id=>{original(id);if(id==='httpsms'&&!loaded)load().catch(()=>{q('#httpsms-result').textContent='دریافت وضعیت انجام نشد.'})};
+  window.showView=id=>{original(id);if(id==='httpsms'&&!loaded)Promise.all([load(),loadBankAgent()]).catch(()=>{q('#httpsms-result').textContent='دریافت وضعیت انجام نشد.'})};
 })();

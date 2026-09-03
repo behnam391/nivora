@@ -21,6 +21,7 @@ export function loadAutoReviewConfig(env = process.env) {
     enabled: env.AUTO_REVIEW_ENABLED === 'true',
     ocrEnabled: env.RECEIPT_OCR_ENABLED === 'true',
     allowAmountOnly: env.AUTO_REVIEW_ALLOW_AMOUNT_ONLY === 'true',
+    trustedAgentOnly: env.AUTO_REVIEW_TRUSTED_AGENT_ONLY !== 'false',
     amountToleranceRial: Math.round(boundedNumber(env.AUTO_REVIEW_AMOUNT_TOLERANCE_RIAL, 0, 0, 10_000_000)),
     lookbackHours: Math.round(boundedNumber(env.AUTO_REVIEW_LOOKBACK_HOURS, 2, 1, 24)),
     defaultSmsUnit: env.BANK_SMS_DEFAULT_UNIT === 'toman' ? 'toman' : 'rial'
@@ -134,7 +135,7 @@ function hasOneUseReceiptBinding(db, imageUrl, entityType, entityId) {
     WHERE filename=? AND linked_entity_type=? AND linked_entity_id=?`).get(filename, entityType, entityId));
 }
 
-function selectBankMatch(db, { submittedRef, expectedRial, tolerance, windowStart, windowEnd, allowAmountOnly, uniqueEntityCount = 1 }) {
+function selectBankMatch(db, { submittedRef, expectedRial, tolerance, windowStart, windowEnd, allowAmountOnly, trustedAgentOnly = true, uniqueEntityCount = 1 }) {
   const low = expectedRial - tolerance, high = expectedRial + tolerance;
   if (submittedRef) {
     const exact = db.prepare(`SELECT * FROM bank_transactions
@@ -147,7 +148,7 @@ function selectBankMatch(db, { submittedRef, expectedRial, tolerance, windowStar
   if (!allowAmountOnly) return { transaction: null, confidence: 0, reason: 'تأیید خودکار بدون کد پیگیری غیرفعال است' };
   const matches = db.prepare(`SELECT * FROM bank_transactions
     WHERE status='unmatched' AND direction='credit' AND amount_rial BETWEEN ? AND ?
-      AND received_at>=? AND received_at<=? ORDER BY received_at`).all(low, high, windowStart, windowEnd);
+      AND received_at>=? AND received_at<=? AND (?=0 OR source='nivora-agent') ORDER BY received_at`).all(low, high, windowStart, windowEnd,trustedAgentOnly?1:0);
   if (matches.length === 1 && uniqueEntityCount === 1) return { transaction: matches[0], confidence: 80, reason: 'واریز هم‌مبلغ یکتا با سیاست مبلغ‌محور صریح مطابقت دارد' };
   return { transaction: null, confidence: matches.length ? 35 : 0, reason: matches.length ? 'تطبیق مبلغ مبهم است؛ نیاز به بررسی دستی' : 'واریز هم‌مبلغی یافت نشد' };
 }
@@ -187,7 +188,8 @@ export async function evaluateWalletTopup(db, topupId, { config = loadAutoReview
   const topup = db.prepare('SELECT * FROM wallet_topups WHERE id=?').get(topupId);
   if (!topup) return { decision: 'skip', reason: 'TOPUP_NOT_FOUND' };
   if (topup.status !== 'under_review') return { decision: 'skip', reason: 'TOPUP_NOT_REVIEWABLE' };
-  if (!hasOneUseReceiptBinding(db, topup.receipt_image_url, 'wallet_topup', topup.id)) {
+  const receiptBound=hasOneUseReceiptBinding(db, topup.receipt_image_url, 'wallet_topup', topup.id);
+  if (!receiptBound && !config.allowAmountOnly) {
     const reason = 'تصویر رسید امن و یک‌بارمصرف به این درخواست متصل نیست؛ نیاز به بررسی دستی';
     recordTopupReview(db, { topupId: topup.id, decision: 'manual', confidence: 0, reason });
     return { decision: 'manual', confidence: 0, reason: 'RECEIPT_BINDING_REQUIRED' };
@@ -208,7 +210,7 @@ export async function evaluateWalletTopup(db, topupId, { config = loadAutoReview
   const windowStart = new Date(new Date(topup.created_at).getTime() - SAFE_PRE_REQUEST_WINDOW_MS).toISOString(), windowEnd = new Date().toISOString();
   const similarTopups = db.prepare(`SELECT COUNT(*) count FROM wallet_topups
     WHERE status='under_review' AND amount_toman*10 BETWEEN ? AND ? AND created_at>=? AND created_at<=?`).get(expectedRial - tolerance, expectedRial + tolerance, windowStart, windowEnd).count;
-  let selected = selectBankMatch(db, { submittedRef, expectedRial, tolerance, windowStart, windowEnd, allowAmountOnly: config.allowAmountOnly, uniqueEntityCount: Number(similarTopups) });
+  let selected = selectBankMatch(db, { submittedRef, expectedRial, tolerance, windowStart, windowEnd, allowAmountOnly: config.allowAmountOnly, trustedAgentOnly:config.trustedAgentOnly, uniqueEntityCount: Number(similarTopups) });
   if (selected.transaction && !destinationCardMatches(db, selected.transaction)) selected = { transaction: null, confidence: 10, reason: 'کارت مقصد پیامک با کارت فعال سامانه مطابقت ندارد' };
   if (!selected.transaction) {
     recordTopupReview(db, { topupId: topup.id, decision: 'manual', confidence: selected.confidence, reason: selected.reason });
@@ -228,7 +230,8 @@ export async function evaluateOrder(db, orderId, { config = loadAutoReviewConfig
   const order = db.prepare(`SELECT o.*, p.price_irr AS expected_rial FROM orders o JOIN plans p ON p.id=o.plan_id WHERE o.id=?`).get(orderId);
   if (!order) return { decision: 'skip', reason: 'ORDER_NOT_FOUND' };
   if (order.status !== 'under_review') return { decision: 'skip', reason: 'NOT_UNDER_REVIEW' };
-  if (!hasOneUseReceiptBinding(db, order.receipt_image_url, 'order', order.id)) {
+  const receiptBound=hasOneUseReceiptBinding(db, order.receipt_image_url, 'order', order.id);
+  if (!receiptBound && !config.allowAmountOnly) {
     const reason = 'تصویر رسید امن و یک‌بارمصرف به این سفارش متصل نیست؛ نیاز به بررسی دستی';
     const previous = lastOrderReview(db, order.id);
     if (!previous || previous.decision !== 'manual' || previous.reason !== reason) {
@@ -250,7 +253,7 @@ export async function evaluateOrder(db, orderId, { config = loadAutoReviewConfig
   const windowStart = new Date(new Date(order.created_at).getTime() - SAFE_PRE_REQUEST_WINDOW_MS).toISOString(), windowEnd = new Date().toISOString();
   const similarOrders = db.prepare(`SELECT COUNT(*) count FROM orders o JOIN plans p ON p.id=o.plan_id
     WHERE o.status='under_review' AND p.price_irr BETWEEN ? AND ? AND o.created_at>=? AND o.created_at<=?`).get(expected - tolerance, expected + tolerance, windowStart, windowEnd).count;
-  let selected = selectBankMatch(db, { submittedRef, expectedRial: expected, tolerance, windowStart, windowEnd, allowAmountOnly: config.allowAmountOnly, uniqueEntityCount: Number(similarOrders) });
+  let selected = selectBankMatch(db, { submittedRef, expectedRial: expected, tolerance, windowStart, windowEnd, allowAmountOnly: config.allowAmountOnly, trustedAgentOnly:config.trustedAgentOnly, uniqueEntityCount: Number(similarOrders) });
   if (selected.transaction && !destinationCardMatches(db, selected.transaction)) selected = { transaction: null, confidence: 10, reason: 'کارت مقصد پیامک با کارت فعال سامانه مطابقت ندارد' };
   if (!selected.transaction) {
     const previous = lastOrderReview(db, order.id);

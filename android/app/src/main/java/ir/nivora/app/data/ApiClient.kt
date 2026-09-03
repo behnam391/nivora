@@ -328,11 +328,14 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         readTimeoutMs = 60_000
     ).getString("url")
     fun topup(token: String, amount: Int, reference: String, receiptUrl:String) {
+        val body=JSONObject().put("amountToman", amount)
+        if(reference.isNotBlank())body.put("receiptReference",reference.trim())
+        if(receiptUrl.isNotBlank())body.put("receiptImageUrl",receiptUrl)
         request(
             "/api/customer/wallet/topups",
             "POST",
             token,
-            JSONObject().put("amountToman", amount).put("receiptReference", reference.trim()).put("receiptImageUrl",receiptUrl)
+            body
         )
     }
 

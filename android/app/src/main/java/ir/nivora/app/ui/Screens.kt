@@ -1252,7 +1252,7 @@ private fun TopupDialog(
     }
     LaunchedEffect(Unit) { onLoadCards() }
     AppDialog(::dismissTopup) {
-        DialogTitle(Icons.Rounded.AccountBalanceWallet, "شارژ کیف پول", "مبلغ را کارت‌به‌کارت کنید و تصویر رسید را بفرستید؛ شماره پیگیری اختیاری است.")
+        DialogTitle(Icons.Rounded.AccountBalanceWallet, "شارژ کیف پول", "مبلغ را دقیق کارت‌به‌کارت کنید؛ پیامک بانک خودکار بررسی می‌شود. تصویر رسید اختیاری است.")
         if (cards.isEmpty()) {
             Box(Modifier.fillMaxWidth().height(130.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else cards.forEach { card -> BankCard(card, onCopy) }
@@ -1268,7 +1268,7 @@ private fun TopupDialog(
             shape = RoundedCornerShape(16.dp)
         )
         NivoraField(reference, { reference = it.take(40) }, "شماره پیگیری (اختیاری)", Icons.AutoMirrored.Rounded.ReceiptLong)
-        Text("تصویر رسید", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("تصویر رسید (اختیاری)", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick = ::openCamera, modifier = Modifier.weight(1f).height(50.dp)) {
                 Icon(Icons.Rounded.PhotoCamera, null)
@@ -1299,7 +1299,6 @@ private fun TopupDialog(
                     value == null || value < 1000 -> "مبلغ معتبر وارد کنید"
                     else -> null
                 }
-                if(error==null&&receiptUri.isBlank())error="تصویر رسید را انتخاب کنید"
                 if (error == null) onSubmit(value!!, reference.trim(),receiptUri)
             },
             enabled = !busy && cards.isNotEmpty(),

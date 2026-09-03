@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "NivoraAndroid"
 include(":app")
+include(":bankagent")

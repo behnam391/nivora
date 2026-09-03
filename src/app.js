@@ -10,6 +10,7 @@ import { enrichSubscription, readPanelStats } from './subscription-stats.js';
 import { buildMultiEndpointSubscription, fetchCleanIpSource, fetchSubscriptionText, keepStableRealityRoutes, measureCloudflareEndpoint, measureTcpEndpoint, parseCleanIpList } from './multi-endpoint.js';
 import { approveWalletTopup, evaluateOrder, sweepPendingPayments, ingestBankMessage, loadAutoReviewConfig } from './auto-review.js';
 import { HTTPSMS_EVENT_TYPE, HttpSmsWebhookError, normalizeHttpSmsOwner, parseHttpSmsEvent, verifyHttpSmsJwt } from './httpsms-webhook.js';
+import { BankAgentError, verifyBankAgentRequest } from './nivora-bank-agent.js';
 import { extractReceiptFields } from './receipt-ocr.js';
 import net from 'node:net';
 import { createHash, randomInt, randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto';
@@ -394,6 +395,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     ...process.env,
     AUTO_REVIEW_ENABLED:settingOrEnv('auto_review_enabled','AUTO_REVIEW_ENABLED','false'),
     AUTO_REVIEW_ALLOW_AMOUNT_ONLY:settingOrEnv('auto_review_allow_amount_only','AUTO_REVIEW_ALLOW_AMOUNT_ONLY','false'),
+    AUTO_REVIEW_TRUSTED_AGENT_ONLY:settingOrEnv('auto_review_trusted_agent_only','AUTO_REVIEW_TRUSTED_AGENT_ONLY','true'),
     AUTO_REVIEW_AMOUNT_TOLERANCE_RIAL:settingOrEnv('auto_review_amount_tolerance_rial','AUTO_REVIEW_AMOUNT_TOLERANCE_RIAL','0'),
     AUTO_REVIEW_LOOKBACK_HOURS:settingOrEnv('auto_review_lookback_hours','AUTO_REVIEW_LOOKBACK_HOURS','2'),
     BANK_SMS_DEFAULT_UNIT:settingOrEnv('bank_sms_default_unit','BANK_SMS_DEFAULT_UNIT','rial'),
@@ -412,6 +414,10 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       allowedSenders:Array.isArray(allowedSenders)?allowedSenders.map(x=>String(x).trim().toLowerCase()).filter(Boolean):[],
       webhookUrl:`${publicOrigin(req)}/api/webhooks/httpsms`
     };
+  };
+  const bankAgentConfig=req=>{
+    let allowedSenders=[];try{allowedSenders=JSON.parse(settingGet('bank_agent_allowed_senders')||'[]')}catch{}
+    return {enabled:settingGet('bank_agent_enabled')==='true',agentId:settingGet('bank_agent_id')||'',secret:decrypt(settingGet('bank_agent_secret')||''),allowedSenders:Array.isArray(allowedSenders)?allowedSenders.map(x=>String(x).trim().toLowerCase()).filter(Boolean):[],webhookUrl:`${publicOrigin(req)}/api/webhooks/nivora-bank-agent`};
   };
   const nodeProvisioners = new Map();
   const provisionerForLocation = location => {
@@ -1014,7 +1020,6 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             if(amount===null)throw new PaymentRequestError('INVALID_PAYMENT_AMOUNT');
             receiptReference=optionalReceiptReference(b.receiptReference);
             receiptCapability=receiptCapabilityFromUrl(b.receiptImageUrl,req);
-            if(!receiptCapability)throw new PaymentRequestError('RECEIPT_REQUIRED');
           }catch(error){return paymentRequestError(res,error,'INVALID_TOPUP');}
           const id=randomUUID(),now=new Date().toISOString();
           try{
@@ -1025,7 +1030,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             db.prepare(`INSERT INTO wallet_topups(id,account_id,amount_toman,receipt_reference,receipt_image_url,status,created_at) VALUES(?,?,?,?,?,'under_review',?)`).run(id,account.id,amount,receiptReference,receiptImageUrl,now);
             db.exec('COMMIT');
           }catch(error){try{db.exec('ROLLBACK')}catch{}if(error instanceof PaymentRequestError){if(error.status===429)res.setHeader('retry-after','3600');return paymentRequestError(res,error);}throw error;}
-          audit(account.id,'create','wallet_topup',id,{amountToman:amount});schedulePaymentSweep();setTimeout(()=>{const pending=db.prepare("SELECT t.id,t.amount_toman,a.name,a.phone FROM wallet_topups t JOIN accounts a ON a.id=t.account_id WHERE t.id=? AND t.status='under_review'").get(id);if(pending)telegramAdminAlert(`🧾 پرداخت نیازمند بررسی\n${pending.name} — ${pending.phone}\n${Number(pending.amount_toman).toLocaleString('fa-IR')} تومان`,{inline_keyboard:[[{text:'✅ تأیید و شارژ',callback_data:`topup:approve:${pending.id}`},{text:'❌ رد',callback_data:`topup:reject:${pending.id}`}]]});},2000).unref();return json(res,201,{id,status:'under_review',amountToman:amount});
+          audit(account.id,'create','wallet_topup',id,{amountToman:amount,receiptProvided:Boolean(receiptCapability)});schedulePaymentSweep();setTimeout(()=>{const pending=db.prepare("SELECT t.id,t.amount_toman,a.name,a.phone FROM wallet_topups t JOIN accounts a ON a.id=t.account_id WHERE t.id=? AND t.status='under_review'").get(id);if(pending)telegramAdminAlert(`🧾 پرداخت نیازمند بررسی\n${pending.name} — ${pending.phone}\n${Number(pending.amount_toman).toLocaleString('fa-IR')} تومان`,{inline_keyboard:[[{text:'✅ تأیید و شارژ',callback_data:`topup:approve:${pending.id}`},{text:'❌ رد',callback_data:`topup:reject:${pending.id}`}]]});},2000).unref();return json(res,201,{id,status:'under_review',amountToman:amount,receiptRequired:false});
         }
         if(req.method==='POST'&&path==='/api/customer/wallet/purchase'){
           const b=await readJson(req),plan=db.prepare('SELECT * FROM plans WHERE id=? AND active=1').get(b.planId);if(!plan)return json(res,404,{error:'PLAN_NOT_FOUND'});const location=selectLocationForPlan(db,plan.id);if(!location)return json(res,409,{error:'NO_CAPACITY'});
@@ -1268,6 +1273,29 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         return json(res, 201, { url:`/receipts/${name}?access=${encodeURIComponent(accessToken)}` });
       }
 
+      // Private Nivora Bank Agent. Each event is authenticated independently,
+      // time-bound and replay protected. Raw SMS text is never stored.
+      if (req.method === 'POST' && path === '/api/webhooks/nivora-bank-agent') {
+        const config=bankAgentConfig(req);
+        if(!config.enabled||!config.agentId||!config.secret||!config.allowedSenders.length)return json(res,503,{error:'BANK_AGENT_DISABLED'});
+        let body,event;
+        try{body=await readJson(req,64_000);event=verifyBankAgentRequest({headers:req.headers,body,secret:config.secret,expectedAgentId:config.agentId});}
+        catch(error){if(error instanceof BankAgentError)return json(res,error.status,{error:error.code});throw error;}
+        const sender=event.sender.toLowerCase();
+        if(!config.allowedSenders.includes(sender))return json(res,200,{accepted:true,ignored:true,reason:'SENDER'});
+        try{
+          db.exec('BEGIN IMMEDIATE');
+          db.prepare("DELETE FROM bank_agent_nonces WHERE created_at<datetime('now','-1 day')").run();
+          db.prepare('INSERT INTO bank_agent_nonces(agent_id,nonce,created_at) VALUES(?,?,?)').run(event.agentId,event.nonce,new Date().toISOString());
+          db.exec('COMMIT');
+        }catch(error){try{db.exec('ROLLBACK')}catch{}if(String(error.message).includes('UNIQUE'))return json(res,409,{error:'BANK_AGENT_REPLAY'});throw error;}
+        const result=ingestBankMessage(db,{message:event.message,receivedAt:event.receivedAt,sender:event.sender,source:'nivora-agent',defaultUnit:autoReviewConfig().defaultSmsUnit,providerEventId:event.eventId,requireExplicitUnit:true});
+        settingSet('bank_agent_last_event_at',new Date().toISOString());
+        if(!result.duplicate)audit('nivora-bank-agent','ingest','bank_transaction',result.id,{eventId:event.eventId,usable:result.usable,direction:result.parsed.direction,amountRial:result.parsed.amountRial||0});
+        if(result.usable)schedulePaymentSweep();
+        return json(res,200,{accepted:true,duplicate:result.duplicate,usable:result.usable});
+      }
+
       // Official httpSMS webhook. httpSMS signs a short-lived HS256 JWT whose
       // audience is the exact callback URL. Processing is queued after the 200
       // response so provider retries never wait on provisioning work.
@@ -1352,6 +1380,28 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const latest=db.prepare("SELECT provider_event_id,source,status,direction,amount_rial,received_at,created_at FROM bank_transactions WHERE source='httpsms' ORDER BY created_at DESC LIMIT 1").get()||null;
         const counters=db.prepare("SELECT COUNT(*) total,SUM(CASE WHEN status='matched' THEN 1 ELSE 0 END) matched,SUM(CASE WHEN status='unmatched' THEN 1 ELSE 0 END) unmatched,SUM(CASE WHEN status='ignored' THEN 1 ELSE 0 END) ignored FROM bank_transactions WHERE source='httpsms'").get();
         return json(res,200,{enabled:c.enabled,webhookUrl:c.webhookUrl,eventType:HTTPSMS_EVENT_TYPE,issuer:c.issuer,expectedSubject:c.expectedSubject,expectedOwner:c.expectedOwner,expectedSim:c.expectedSim,allowedSenders:c.allowedSenders,signingKeyConfigured:Boolean(c.signingKey),signingKeyHint:c.signingKey?`…${c.signingKey.slice(-4)}`:'',autoReviewEnabled:review.enabled,allowAmountOnly:review.allowAmountOnly,amountToleranceRial:review.amountToleranceRial,lookbackHours:review.lookbackHours,defaultSmsUnit:review.defaultSmsUnit,lastEventAt:settingGet('httpsms_last_event_at')||null,latest,counters:{total:Number(counters.total||0),matched:Number(counters.matched||0),unmatched:Number(counters.unmatched||0),ignored:Number(counters.ignored||0)}});
+      }
+      if(req.method==='GET'&&path==='/api/admin/bank-agent-settings'){
+        const c=bankAgentConfig(req),review=autoReviewConfig();
+        const latest=db.prepare("SELECT provider_event_id,source,status,direction,amount_rial,received_at,created_at FROM bank_transactions WHERE source='nivora-agent' ORDER BY created_at DESC LIMIT 1").get()||null;
+        const counters=db.prepare("SELECT COUNT(*) total,SUM(CASE WHEN status='matched' THEN 1 ELSE 0 END) matched,SUM(CASE WHEN status='unmatched' THEN 1 ELSE 0 END) unmatched,SUM(CASE WHEN status='ignored' THEN 1 ELSE 0 END) ignored FROM bank_transactions WHERE source='nivora-agent'").get();
+        return json(res,200,{enabled:c.enabled,agentId:c.agentId,webhookUrl:c.webhookUrl,allowedSenders:c.allowedSenders,secretConfigured:Boolean(c.secret),secretHint:c.secret?`…${c.secret.slice(-4)}`:'',autoReviewEnabled:review.enabled,lastEventAt:settingGet('bank_agent_last_event_at')||null,latest,counters:{total:Number(counters.total||0),matched:Number(counters.matched||0),unmatched:Number(counters.unmatched||0),ignored:Number(counters.ignored||0)}});
+      }
+      if(req.method==='PATCH'&&path==='/api/admin/bank-agent-settings'){
+        const body=await readJson(req),current=bankAgentConfig(req),enabled=typeof body.enabled==='boolean'?body.enabled:current.enabled;
+        let senders=body.allowedSenders===undefined?current.allowedSenders:(Array.isArray(body.allowedSenders)?body.allowedSenders:String(body.allowedSenders).split(/[\n,]/));
+        senders=[...new Set(senders.map(x=>String(x).trim().toLowerCase()).filter(Boolean))];
+        if(senders.length>50||senders.some(x=>x.length>100))return json(res,400,{error:'INVALID_BANK_AGENT_SENDERS'});
+        let agentId=current.agentId,secret=current.secret,generatedSecret='';
+        if(body.rotateSecret===true||!agentId){agentId=`nba_${randomBytes(8).toString('hex')}`;generatedSecret=randomBytes(48).toString('base64url');secret=generatedSecret;}
+        if(enabled&&(!agentId||!secret||!senders.length))return json(res,400,{error:'BANK_AGENT_SETUP_REQUIRED'});
+        settingSet('bank_agent_enabled',enabled);settingSet('bank_agent_id',agentId);settingSet('bank_agent_allowed_senders',JSON.stringify(senders));if(secret)settingSet('bank_agent_secret',encrypt(secret));
+        // Auto review remains exact and fail-closed. Receiptless matching is
+        // allowed only for the signed first-party source and a unique amount.
+        settingSet('auto_review_enabled',Boolean(enabled&&secret&&senders.length&&(body.autoReviewEnabled!==false)));
+        settingSet('auto_review_allow_amount_only','true');settingSet('auto_review_trusted_agent_only','true');settingSet('auto_review_amount_tolerance_rial','0');
+        audit('admin','update','bank_agent_settings',agentId,{enabled,allowedSenderCount:senders.length,secretChanged:Boolean(generatedSecret)});
+        return json(res,200,{saved:true,agentId,webhookUrl:bankAgentConfig(req).webhookUrl,...(generatedSecret?{generatedSecret}: {})});
       }
       if(req.method==='PATCH'&&path==='/api/admin/httpsms-settings'){
         const body=await readJson(req),current=httpsmsConfig(req),currentReview=autoReviewConfig();

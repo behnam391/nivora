@@ -580,8 +580,11 @@ class MainActivity : FragmentActivity(), NivoraActions {
     override fun submitTopup(amountToman: Int, reference: String, receiptUri:String) = withToken { token ->
         runAction(
             work = {
-                val uri = android.net.Uri.parse(receiptUri)
-                try {
+                if (receiptUri.isBlank()) {
+                    api.topup(token, amountToman, reference, "")
+                } else {
+                    val uri = android.net.Uri.parse(receiptUri)
+                    try {
                     val prepared = try {
                         ReceiptUploadPolicy.prepare(contentResolver, uri)
                     } catch (_: ReceiptTooLargeException) {
@@ -591,11 +594,12 @@ class MainActivity : FragmentActivity(), NivoraActions {
                     }
                     val uploaded = api.uploadReceipt(token, prepared.bytes, prepared.mimeType)
                     api.topup(token, amountToman, reference, uploaded)
-                } finally {
-                    cleanupOwnedReceipt(uri)
+                    } finally {
+                        cleanupOwnedReceipt(uri)
+                    }
                 }
             },
-            success = { showNotice("رسید ارسال شد؛ نتیجه با اعلان اطلاع داده می‌شود"); loadDashboard(initial = false) }
+            success = { showNotice("درخواست ثبت شد؛ پیامک بانکی به‌صورت خودکار بررسی می‌شود"); loadDashboard(initial = false) }
         )
     }
 

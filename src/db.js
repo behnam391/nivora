@@ -551,6 +551,13 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_tx_dedupe ON bank_transactions(dedupe_key);
     CREATE INDEX IF NOT EXISTS idx_bank_tx_match ON bank_transactions(status,direction,amount_rial,received_at);
+    CREATE TABLE IF NOT EXISTS bank_agent_nonces (
+      agent_id TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(agent_id,nonce)
+    );
+    CREATE INDEX IF NOT EXISTS idx_bank_agent_nonces_time ON bank_agent_nonces(created_at);
     CREATE TABLE IF NOT EXISTS order_reviews (
       id TEXT PRIMARY KEY,
       order_id TEXT NOT NULL REFERENCES orders(id),
