@@ -814,7 +814,10 @@ class NivoraVpnService : VpnService(), DialerController {
             "observatory",
             JSONObject()
                 .put("subjectSelector", JSONArray().put("proxy-route-"))
-                .put("probeUrl", "https://www.youtube.com/generate_204")
+                // Probe our tiny no-cache endpoint instead of a filtered third-party
+                // domain. YouTube latency can look excellent while ordinary payloads
+                // are stalled by the carrier and made route selection misleading.
+                .put("probeUrl", BuildConfig.API_BASE_URL.trimEnd('/') + "/api/connectivity/204")
                 .put("probeInterval", "15s")
                 .put("enableConcurrency", true)
         )

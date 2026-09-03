@@ -9,13 +9,14 @@ data class RememberedRoute(val winner: String, val backup: String?, val updatedA
 class SmartRouteMemory(context: Context) {
     private val preferences = context.getSharedPreferences("smart_routes_v1", Context.MODE_PRIVATE)
 
-    fun read(networkKey: String): RememberedRoute? {
+    fun read(networkKey: String, maxAgeMs: Long = 60 * 60 * 1000L): RememberedRoute? {
         val winner = preferences.getString("${networkKey}_winner", null) ?: return null
-        return RememberedRoute(
+        val route = RememberedRoute(
             winner,
             preferences.getString("${networkKey}_backup", null),
             preferences.getLong("${networkKey}_updated", 0L)
         )
+        return route.takeIf { it.updatedAt > 0L && System.currentTimeMillis() - it.updatedAt <= maxAgeMs }
     }
 
     fun promote(networkKey: String, winner: String, previousWinner: String?) {

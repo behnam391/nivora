@@ -141,6 +141,24 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS transit_tunnels (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      entry_node_id TEXT NOT NULL REFERENCES panel_nodes(id),
+      exit_node_id TEXT NOT NULL REFERENCES panel_nodes(id),
+      transport TEXT NOT NULL CHECK(transport IN ('amneziawg','wireguard','reverse_tcp')),
+      public_host TEXT NOT NULL,
+      public_port INTEGER NOT NULL CHECK(public_port BETWEEN 1 AND 65535),
+      mtu INTEGER NOT NULL DEFAULT 1280 CHECK(mtu BETWEEN 1100 AND 1420),
+      health_status TEXT NOT NULL DEFAULT 'unknown' CHECK(health_status IN ('unknown','online','offline')),
+      last_latency_ms INTEGER,
+      last_checked_at TEXT,
+      note TEXT NOT NULL DEFAULT '',
+      active INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK(entry_node_id <> exit_node_id)
+    );
     CREATE TABLE IF NOT EXISTS plan_locations (
       plan_id TEXT NOT NULL REFERENCES plans(id),
       location_id TEXT NOT NULL REFERENCES service_locations(id),
@@ -505,6 +523,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   db.exec('CREATE INDEX IF NOT EXISTS idx_reseller_customers_owner ON reseller_customers(reseller_id,status,updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_location_endpoints_location ON location_endpoints(location_id,active,priority)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_service_locations_node ON service_locations(panel_node_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_transit_tunnels_nodes ON transit_tunnels(entry_node_id,exit_node_id,active)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_access_token ON subscriptions(access_token) WHERE access_token IS NOT NULL');
   db.exec('CREATE INDEX IF NOT EXISTS idx_hysteria_nodes_location ON hysteria_nodes(location_id,active)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_hysteria_tickets_subscription ON hysteria_tickets(subscription_id,node_id,expires_at)');

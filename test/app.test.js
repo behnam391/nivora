@@ -353,6 +353,26 @@ test('admin manages locations, plan routing and safe deletion', async t => {
   r=await fetch(`${base}/api/admin/locations/${location.id}`,{method:'DELETE',headers:admin});assert.equal(r.status,200);
 });
 
+test('admin defines and manages an Iran transit tunnel without exposing host automation', async t => {
+  const {server,base}=await start();t.after(()=>server.close());
+  const admin={authorization:'Bearer test-token','content-type':'application/json'};
+  const createNode=async name=>{const response=await fetch(`${base}/api/admin/panel-nodes`,{method:'POST',headers:admin,body:JSON.stringify({name,provider:'test',subscriptionBaseUrl:'https://sub.test/sub'})});assert.equal(response.status,201);return (await response.json()).id};
+  const entryNodeId=await createNode('Iran entry'),exitNodeId=await createNode('Finland exit');
+  let response=await fetch(`${base}/api/admin/transit-tunnels`,{method:'POST',headers:admin,body:JSON.stringify({name:'Iran to Finland',entryNodeId,exitNodeId,transport:'amneziawg',publicHost:'127.0.0.1',publicPort:server.address().port,mtu:1280})});
+  assert.equal(response.status,201);const tunnel=await response.json();
+  response=await fetch(`${base}/api/admin/transit-tunnels`,{headers:admin});assert.equal(response.status,200);const rows=await response.json();assert.equal(rows.length,1);assert.equal(rows[0].entry_node_name,'Iran entry');assert.equal(rows[0].active,false);
+  response=await fetch(`${base}/api/admin/transit-tunnels/${tunnel.id}/test`,{method:'POST',headers:admin,body:'{}'});assert.equal(response.status,200);assert.equal((await response.json()).status,'online');
+  response=await fetch(`${base}/api/admin/transit-tunnels/${tunnel.id}`,{method:'PATCH',headers:admin,body:JSON.stringify({active:true,note:'carrier canary'})});assert.equal(response.status,200);
+  response=await fetch(`${base}/api/admin/transit-tunnels/${tunnel.id}`,{method:'DELETE',headers:admin});assert.equal(response.status,200);
+});
+
+test('connectivity probes are small, uncached and deterministic', async t => {
+  const {server,base}=await start();t.after(()=>server.close());
+  let response=await fetch(`${base}/api/connectivity/204`);assert.equal(response.status,204);assert.equal(response.headers.get('cache-control'),'no-store');
+  response=await fetch(`${base}/api/connectivity/payload?bytes=65536`);assert.equal(response.status,200);assert.equal(Number(response.headers.get('content-length')),65536);assert.equal((await response.arrayBuffer()).byteLength,65536);
+  response=await fetch(`${base}/api/connectivity/payload?bytes=9999999`);assert.equal(Number(response.headers.get('content-length')),262144);
+});
+
 test('capacity selector overflows to the next location and then stops sales', () => {
   const db=openDatabase(':memory:'),now=new Date().toISOString(),plan='p1',l1='l1',l2='l2';
   db.prepare(`INSERT INTO plans(id,name,price_irr,traffic_gb,duration_days,device_limit,created_at,updated_at) VALUES(?,? ,1000,10,30,1,?,?)`).run(plan,'ظرفیت',now,now);
