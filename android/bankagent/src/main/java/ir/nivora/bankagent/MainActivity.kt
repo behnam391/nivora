@@ -25,7 +25,10 @@ class MainActivity : Activity() {
             if(url.text.isBlank()||id.text.isBlank()||(AgentStore.secret(this@MainActivity).isBlank()&&secret.text.isBlank())||senders.text.isBlank()){status.text="همه اطلاعات اتصال و حداقل یک فرستنده را وارد کنید";return@setOnClickListener}
             AgentStore.save(this@MainActivity,url.text.toString(),id.text.toString(),secret.text.toString(),senders.text.toString(),enabled.isChecked)
             if(checkSelfPermission(Manifest.permission.RECEIVE_SMS)!=PackageManager.PERMISSION_GRANTED)requestPermissions(arrayOf(Manifest.permission.RECEIVE_SMS),20)else status.text="فعال است؛ منتظر پیامک بانکی"
-        }},LinearLayout.LayoutParams(-1,-2));setContentView(ScrollView(this).apply{addView(root)})
+        }},LinearLayout.LayoutParams(-1,-2))
+        root.addView(Button(this).apply{text="تست اتصال به سرور";setOnClickListener{status.text="در حال تست اتصال…";Thread{val ok=AgentSender.test(this@MainActivity);runOnUiThread{status.text=if(ok)"اتصال امن به سرور برقرار است" else "ارسال ناموفق بود؛ اینترنت یا اطلاعات اتصال را بررسی کنید"}}.start()}},LinearLayout.LayoutParams(-1,-2))
+        Thread{AgentSender.flush(this)}.start()
+        setContentView(ScrollView(this).apply{addView(root)})
     }
     override fun onRequestPermissionsResult(r:Int,p:Array<out String>,g:IntArray){super.onRequestPermissionsResult(r,p,g);if(r==20)status.text=if(g.firstOrNull()==PackageManager.PERMISSION_GRANTED)"فعال است؛ منتظر پیامک بانکی" else "اجازه پیامک داده نشد؛ از تنظیمات گوشی فعال کنید"}
 }
