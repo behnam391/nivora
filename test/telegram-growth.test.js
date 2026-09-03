@@ -27,6 +27,11 @@ test('group AI fails closed until that group is explicitly allowed',async()=>{
   assert.equal(result.status,200);assert.equal(result.sent.length,0);
 });
 
+test('approved groups can answer relevant questions without a mention when auto reply is enabled',async()=>{
+  const result=await run({config:{groupAutoReply:true},message:{chat:{id:-1001234567,type:'supergroup'},from:{id:42},text:'قیمت اشتراک‌ها چقدر است؟'},aiPublicAnswer:async()=> 'برای مشاهده قیمت‌های فعلی وارد برنامه شوید.'});
+  assert.equal(result.sent.length,1);assert.match(result.sent[0].text,/قیمت/);
+});
+
 test('private campaign deep links are recorded and continue normal onboarding',async()=>{
   const first=await run({message:{chat:{id:42,type:'private'},from:{id:42},text:'/start camp_irancell-sep'}});
   assert.equal(first.status,200);assert.equal(first.sent.length,1);assert.match(first.sent[0].text,/شماره/);

@@ -11,6 +11,7 @@ const log=(db,actor,action,type,id,details=null)=>db.prepare('INSERT INTO audit_
 
 export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperationsSummary,aiPublicAnswer}={}){
   const states=new Map();
+  const groupReplyCooldowns=new Map();
   return async(req,res,readJson,json)=>{
     const c=getConfig();
     if(!c.enabled||!c.token||!c.secret)return json(res,503,{error:'TELEGRAM_RECOVERY_DISABLED'});
@@ -26,8 +27,12 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
       if(admin&&/^\/chatid(?:@\w+)?$/i.test(text)){await send(chat,`شناسه امن این گروه:\n${chat}`);return json(res,200,{ok:true});}
       const allowed=Boolean(c.groupIds?.includes(chat));
       const mentioned=c.username&&new RegExp(`@${c.username}\\b`,'i').test(text);
-      const invoked=/^\/(?:start|help)(?:@\w+)?\b/i.test(text)||mentioned||Boolean(m.reply_to_message?.from?.is_bot);
+      const relevant=/(?:چطور|چگونه|راهنما|خرید|اشتراک|قیمت|پلن|پرداخت|کارت|رسید|نصب|دانلود|برنامه|وصل|اتصال|قطع|پشتیبان|تمدید|حجم|اعتبار|ویندوز|اندروید|آیفون|iphone|ios)/i.test(text);
+      const invoked=/^\/(?:start|help)(?:@\w+)?\b/i.test(text)||mentioned||Boolean(m.reply_to_message?.from?.is_bot)||(c.groupAutoReply&&relevant);
       if(!allowed||!c.groupAiEnabled||!invoked)return json(res,200,{ok:true});
+      const cooldownKey=`${chat}:${user}`,lastReply=groupReplyCooldowns.get(cooldownKey)||0;
+      if(Date.now()-lastReply<12000)return json(res,200,{ok:true});
+      groupReplyCooldowns.set(cooldownKey,Date.now());
       const question=text.replace(/^\/(?:start|help)(?:@\w+)?\s*/i,'').replace(c.username?new RegExp(`@${c.username}\\b`,'ig'):/$^/g,'').trim();
       const privateUrl=c.username?`https://t.me/${c.username}`:'https://t.me/nivorali_bot';
       if(question.length<3){await send(chat,'من دستیار عمومی Nivora هستم. سؤال عمومی درباره خرید، نصب، اتصال یا پشتیبانی را با منشن ربات بپرسید. اطلاعات حساب فقط در گفت‌وگوی خصوصی نمایش داده می‌شود.',{reply_markup:{inline_keyboard:[[{text:'گفت‌وگوی خصوصی',url:privateUrl}]]}});return json(res,200,{ok:true});}
