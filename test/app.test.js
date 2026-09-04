@@ -156,6 +156,19 @@ test('3X-UI provisioner adds CDN transports with the same identity and empty flo
   assert.equal(calls[1].body.client.limitIp,0);
 });
 
+test('3X-UI provisioner attaches the shared subscription identity to Hysteria2 inbounds', async () => {
+  const calls=[];
+  const transport=async request=>{calls.push(request);return {success:true,obj:request.body?.client||{}}};
+  const provision=createThreeXuiProvisioner({baseUrl:'https://panel.test',apiToken:'token',inboundId:1,hysteriaInboundIds:[9,10,9],subscriptionBaseUrl:'https://sub.test/nivo'},transport);
+  await provision({id:'hysteria2-test',phone:'09121234567',plan_name:'Smart',traffic_gb:20,duration_days:30,device_limit:2});
+  assert.equal(calls.length,2);
+  assert.deepEqual(calls[1].body.inboundIds,[9,10]);
+  assert.equal(calls[1].body.client.subId,calls[0].body.client.subId);
+  assert.equal(calls[1].body.client.email,calls[0].body.client.email);
+  assert.equal(calls[1].body.client.flow,'');
+  assert.equal(calls[1].body.client.limitIp,0);
+});
+
 test('3X-UI provisioner can disable the source-IP limiter for multi-route subscriptions', async () => {
   const calls=[];
   const transport=async request=>{calls.push(request);return {success:true,obj:request.body?.client||{}}};

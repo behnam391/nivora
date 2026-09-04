@@ -141,6 +141,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       subscription_base_url TEXT NOT NULL DEFAULT '',
       vision_inbound_ids TEXT NOT NULL DEFAULT '',
       cdn_inbound_ids TEXT NOT NULL DEFAULT '',
+      hysteria_inbound_ids TEXT NOT NULL DEFAULT '',
       api_token_encrypted TEXT NOT NULL DEFAULT '',
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
@@ -404,6 +405,7 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!nodeColumns.includes('subscription_base_url')) db.exec("ALTER TABLE panel_nodes ADD COLUMN subscription_base_url TEXT NOT NULL DEFAULT ''");
   if (!nodeColumns.includes('vision_inbound_ids')) db.exec("ALTER TABLE panel_nodes ADD COLUMN vision_inbound_ids TEXT NOT NULL DEFAULT ''");
   if (!nodeColumns.includes('cdn_inbound_ids')) db.exec("ALTER TABLE panel_nodes ADD COLUMN cdn_inbound_ids TEXT NOT NULL DEFAULT ''");
+  if (!nodeColumns.includes('hysteria_inbound_ids')) db.exec("ALTER TABLE panel_nodes ADD COLUMN hysteria_inbound_ids TEXT NOT NULL DEFAULT ''");
   const endpointColumns = db.prepare('PRAGMA table_info(location_endpoints)').all().map(c => c.name);
   if (!endpointColumns.includes('mode')) db.exec("ALTER TABLE location_endpoints ADD COLUMN mode TEXT NOT NULL DEFAULT 'direct' CHECK(mode IN ('direct','cloudflare'))");
   if (!endpointColumns.includes('server_name')) db.exec('ALTER TABLE location_endpoints ADD COLUMN server_name TEXT');

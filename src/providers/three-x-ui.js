@@ -82,6 +82,12 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
   // client record with the same UUID and subId, but an empty flow.
   const cdnInboundIds = String(config.cdnInboundIds || process.env.PANEL_CDN_INBOUND_IDS || '')
     .split(',').map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value > 0);
+  // 3X-UI stores one logical client record across protocols. When that
+  // identity is attached to a Hysteria v2 inbound, the panel creates and
+  // persists the protocol-specific `auth` secret while retaining the same
+  // email and subId, so the normal subscription URL includes both routes.
+  const hysteriaInboundIds = String(config.hysteriaInboundIds || process.env.PANEL_HYSTERIA_INBOUND_IDS || '')
+    .split(',').map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value > 0);
   // A single Nivora subscription is intentionally present in more than one
   // inbound. X-UI counts those parallel transports as separate source IPs,
   // including Cloudflare edges, so an IP limiter breaks automatic fallback.
@@ -106,6 +112,9 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
     if (!client?.subId) client = payload.client;
     if (cdnInboundIds.length) {
       await call('POST', 'clients/add', buildCompatibleClientPayload(client, cdnInboundIds, '', 0));
+    }
+    if (hysteriaInboundIds.length) {
+      await call('POST', 'clients/add', buildCompatibleClientPayload(client, hysteriaInboundIds, '', 0));
     }
     if (!client?.subId) {
       try {
