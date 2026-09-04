@@ -61,19 +61,19 @@ async function issue(base, orderId, headers) {
   return fetch(`${base}/api/customer/orders/${orderId}/ios-import`,{method:'POST',headers,body:'{}'});
 }
 
-test('customer account exposes the current Hiddify iOS flow without a copyable permanent URL', async () => {
+test('customer account exposes the current V2Box iOS flow without a copyable permanent URL', async () => {
   const [html,script]=await Promise.all([
     readFile(new URL('../public/account.html',import.meta.url),'utf8'),
     readFile(new URL('../public/account.js',import.meta.url),'utf8')
   ]);
   assert.match(html,/id="ios-dialog"/);
-  assert.match(html,/https:\/\/app\.hiddify\.com\/ios/);
-  assert.match(script,/hiddify:\/\/import\/\?url=/);
+  assert.match(html,/https:\/\/apps\.apple\.com\/app\/id6446814690/);
+  assert.match(script,/v2box:\/\/install-sub\?url=/);
   assert.match(script,/\/api\/customer\/orders\/\$\{encodeURIComponent\(activeIosOrder\)\}\/ios-import/);
   assert.doesNotMatch(html,/id="ios-copy"|کپی لینک آیفون/);
 });
 
-test('iOS import issues a short-lived hashed capability and Hiddify can fetch it without a customer session', async t => {
+test('iOS import issues a short-lived hashed capability and V2Box can fetch it without a customer session', async t => {
   const {db,base,orderId,subscriptionId,accessToken,ownerHeaders}=await fixture(t);
 
   // The permanent subscription URL remains protected by the device gateway.

@@ -1361,7 +1361,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             db.prepare('DELETE FROM reseller_subscription_import_tokens WHERE expires_at<? AND created_at<?').run(nowIso,new Date(now.getTime()-24*60*60_000).toISOString());
             db.exec('COMMIT');
           }catch(error){db.exec('ROLLBACK');throw error;}
-          const importUrl=`${publicOrigin(req)}/ios/partner-import/${rawToken}`,profileName=`Nivora · ${subscription.plan_name}${subscription.location_name?` · ${subscription.location_name}`:''}`,deepLink=`hiddify://import/?url=${encodeURIComponent(importUrl)}&name=${encodeURIComponent(profileName)}`;
+          const importUrl=`${publicOrigin(req)}/ios/partner-import/${rawToken}`,profileName=`Nivora · ${subscription.plan_name}${subscription.location_name?` · ${subscription.location_name}`:''}`,deepLink=`v2box://install-sub?url=${encodeURIComponent(importUrl)}&name=${encodeURIComponent(profileName)}`;
           const qrDataUrl=await QRCode.toDataURL(deepLink,{errorCorrectionLevel:'M',margin:2,width:360,color:{dark:'#07132f',light:'#ffffff'}});
           audit(account.id,'issue','reseller_ios_import',subscription.subscription_id,{orderId:subscription.order_id,expiresAt,maxFetches:3});
           res.setHeader('cache-control','no-store');res.setHeader('referrer-policy','no-referrer');

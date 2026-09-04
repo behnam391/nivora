@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { openDatabase } from '../src/db.js';
 import { createApp } from '../src/app.js';
+import QRCode from 'qrcode';
 
 async function start(t,{provisioner}={}){
   const db=openDatabase(':memory:'),server=createServer(createApp(db,{adminToken:'test-token',provisioner}));
@@ -37,6 +38,9 @@ test('admin customer list is searchable and paginated and direct sale provisions
 });
 
 test('reseller can create a short-lived iPhone QR only for a subscription it sold',async t=>{
+  const originalQr=QRCode.toDataURL;let qrPayload='';
+  QRCode.toDataURL=(payload,options)=>{qrPayload=payload;return originalQr(payload,options)};
+  t.after(()=>{QRCode.toDataURL=originalQr});
   const provisioner=async order=>({panelClientId:`partner-${order.id}`,subscriptionUrl:`https://panel.test/sub/${order.id}`});provisioner.remove=async()=>{};
   const {db,base,admin}=await start(t,{provisioner});const {plan}=await createPlanAndLocation(base,admin);
   const reseller=await createAccount(base,admin,{name:'همکار اول',phone:'09124440001',role:'reseller'}),other=await createAccount(base,admin,{name:'همکار دوم',phone:'09124440002',role:'reseller'});
@@ -47,4 +51,9 @@ test('reseller can create a short-lived iPhone QR only for a subscription it sol
   response=await fetch(`${base}/api/reseller/purchase`,{method:'POST',headers:resellerAuth,body:JSON.stringify({customerId:customer.id,planId:plan.id,salePriceToman:95000})});assert.equal(response.status,201);const sale=await response.json();
   response=await fetch(`${base}/api/reseller/orders/${sale.orderId}/ios-import`,{method:'POST',headers:otherAuth,body:'{}'});assert.equal(response.status,404);
   response=await fetch(`${base}/api/reseller/orders/${sale.orderId}/ios-import`,{method:'POST',headers:resellerAuth,body:'{}'});assert.equal(response.status,201);assert.match(response.headers.get('cache-control')||'',/no-store/i);const qr=await response.json();assert.match(qr.qrDataUrl,/^data:image\/png;base64,/);assert.equal(qr.expiresInSeconds,300);assert.equal(qr.maxFetches,3);assert.equal('subscriptionUrl' in qr,false);assert.equal(db.prepare('SELECT COUNT(*) count FROM reseller_subscription_import_tokens WHERE reseller_id=? AND account_id=?').get(reseller.id,customer.account_id).count,1);
+  const deepLink=new URL(qrPayload);
+  assert.equal(deepLink.protocol,'v2box:');assert.equal(deepLink.hostname,'install-sub');
+  assert.equal(deepLink.searchParams.get('name'),qr.profileName);
+  const importUrl=new URL(deepLink.searchParams.get('url'));
+  assert.equal(importUrl.origin,base);assert.match(importUrl.pathname,/^\/ios\/partner-import\/[A-Za-z0-9_-]+$/);
 });
