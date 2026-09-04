@@ -8,9 +8,12 @@ const args = process.argv.slice(2);
 const selector = String(args[0] || '').trim();
 const publicHost = String(args[1] || '').trim().toLowerCase();
 const remark = String(args[2] || '').trim();
+const suppliedCertificateFile = String(args[3] || '').trim();
+const suppliedKeyFile = String(args[4] || '').trim();
 if (!selector || !publicHost || !remark) {
-  throw new Error('Usage: node scripts/ensure-hysteria2-inbound.mjs <default|node-name-or-host> <public-host> <remark>');
+  throw new Error('Usage: node scripts/ensure-hysteria2-inbound.mjs <default|node-name-or-host> <public-host> <remark> [certificate-file key-file]');
 }
+if (Boolean(suppliedCertificateFile) !== Boolean(suppliedKeyFile)) throw new Error('Certificate and key paths must be supplied together');
 if (!/^(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?|(?:\d{1,3}\.){3}\d{1,3})$/.test(publicHost)) {
   throw new Error('Public host is invalid');
 }
@@ -83,9 +86,9 @@ if (inbounds.some(inbound => inbound.protocol === 'hysteria' && Number(inbound.p
   throw new Error('Another Hysteria inbound already uses UDP/443; reuse or rename it instead of creating a duplicate');
 }
 
-const certFiles = await call('GET', 'server/getWebCertFiles');
-const certificateFile = String(certFiles?.webCertFile || '').trim();
-const keyFile = String(certFiles?.webKeyFile || '').trim();
+const certFiles = suppliedCertificateFile ? null : await call('GET', 'server/getWebCertFiles');
+const certificateFile = suppliedCertificateFile || String(certFiles?.webCertFile || '').trim();
+const keyFile = suppliedKeyFile || String(certFiles?.webKeyFile || '').trim();
 if (!certificateFile || !keyFile) throw new Error('Panel TLS certificate paths are not configured');
 
 const backupRoot = process.env.NIVORA_BACKUP_DIRECTORY || './backups';
@@ -136,8 +139,8 @@ const body = {
   trafficReset: 'never',
   trafficResetDay: 1,
   subSortIndex: 1,
-  shareAddrStrategy: 'node',
-  shareAddr: ''
+  shareAddrStrategy: 'custom',
+  shareAddr: publicHost
 };
 
 const added = await call('POST', 'inbounds/add', body);
