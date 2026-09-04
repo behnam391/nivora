@@ -21,6 +21,7 @@ import { createHysteriaTicketService, HysteriaAuthError } from './hysteria-auth.
 import { claimCustomerDevice as claimDevice, deviceErrorBody, deviceSummary, hashDeviceId, listAccountDevices, readDeviceId, resetAccountDevices, revokeAccountDevice, setDeviceLimitOverride } from './device-bindings.js';
 import { deviceRecoveryErrorBody, deviceRecoveryStatus, listDeviceRecoveryRequests, requestDeviceRecovery, resolveDeviceRecovery } from './device-recovery.js';
 import { createEmergencyPool, EmergencyPoolError, normalizeEmergencyConfig } from './emergency-pool.js';
+import QRCode from 'qrcode';
 
 const json = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -756,6 +757,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&path==='/admin-notifications.js'){const js=await readFile(resolve('public/admin-notifications.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-topups.css'){const css=await readFile(resolve('public/admin-topups.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/admin-customers.js'){const js=await readFile(resolve('public/admin-customers.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
+      if(req.method==='GET'&&path==='/admin-sales.js'){const js=await readFile(resolve('public/admin-sales.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-password-resets.js'){const js=await readFile(resolve('public/admin-password-resets.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-growth.js'){const js=await readFile(resolve('public/admin-growth.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-telegram.js'){const js=await readFile(resolve('public/admin-telegram.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
@@ -807,6 +809,36 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           res.writeHead(error.status||502,{'content-type':'text/plain; charset=utf-8','cache-control':'no-store','referrer-policy':'no-referrer'});
           return res.end(error.message==='SUBSCRIPTION_NOT_READY'?'SUBSCRIPTION_NOT_READY':'SUBSCRIPTION_UPSTREAM_UNAVAILABLE');
         }
+      }
+
+      const resellerIosImportMatch=path.match(/^\/ios\/partner-import\/([A-Za-z0-9_-]{40,100})$/);
+      if(req.method==='GET'&&resellerIosImportMatch){
+        const now=new Date().toISOString(),tokenHash=createHash('sha256').update(resellerIosImportMatch[1]).digest('hex');
+        let subscription;
+        db.exec('BEGIN IMMEDIATE');
+        try{
+          subscription=db.prepare(`SELECT t.id,t.fetch_count,t.max_fetches,t.expires_at,t.revoked_at,
+              s.upstream_subscription_url,s.subscription_url,s.status subscription_status,
+              COALESCE(s.control_status,'active') control_status,s.deleted_at,
+              o.status order_status,o.location_id,o.account_id,l.panel_node_id,
+              a.status account_status,r.status reseller_status
+            FROM reseller_subscription_import_tokens t
+            JOIN subscriptions s ON s.id=t.subscription_id
+            JOIN orders o ON o.id=s.order_id AND o.account_id=t.account_id AND o.reseller_id=t.reseller_id
+            JOIN accounts a ON a.id=t.account_id AND a.role='customer'
+            JOIN accounts r ON r.id=t.reseller_id AND r.role='reseller'
+            LEFT JOIN service_locations l ON l.id=o.location_id
+            WHERE t.token_hash=?`).get(tokenHash);
+          const usable=subscription&&!subscription.revoked_at&&subscription.expires_at>now&&Number(subscription.fetch_count)<Number(subscription.max_fetches)&&subscription.account_status==='active'&&subscription.reseller_status==='active'&&subscription.order_status==='approved'&&subscription.subscription_status==='active'&&subscription.control_status==='active'&&!subscription.deleted_at;
+          if(!usable){db.exec('ROLLBACK');res.setHeader('cache-control','no-store');res.setHeader('referrer-policy','no-referrer');return json(res,410,{error:'IMPORT_LINK_EXPIRED'});}
+          db.prepare('UPDATE reseller_subscription_import_tokens SET fetch_count=fetch_count+1,last_fetched_at=? WHERE id=?').run(now,subscription.id);
+          db.exec('COMMIT');
+        }catch(error){db.exec('ROLLBACK');throw error;}
+        try{
+          const {rendered,endpoints}=await renderSubscriptionBundle(subscription);
+          res.writeHead(200,{'content-type':'text/plain; charset=utf-8','content-disposition':'inline; filename="nivora.txt"','cache-control':'no-store','referrer-policy':'no-referrer','x-content-type-options':'nosniff','x-robots-tag':'noindex, nofollow, noarchive','x-nivora-routes':String(endpoints.length)});
+          return res.end(rendered);
+        }catch(error){res.writeHead(error.status||502,{'content-type':'text/plain; charset=utf-8','cache-control':'no-store','referrer-policy':'no-referrer'});return res.end(error.message==='SUBSCRIPTION_NOT_READY'?'SUBSCRIPTION_NOT_READY':'SUBSCRIPTION_UPSTREAM_UNAVAILABLE');}
       }
 
       const publicSubscriptionMatch = path.match(/^\/sub\/([a-f0-9]{32})$/i);
@@ -1310,6 +1342,31 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const controlLocation=db.prepare('SELECT * FROM service_locations WHERE id=?').get(row.location_id),controlProvisioner=provisionerForLocation(controlLocation);
           try{if(action==='suspend'){if(!controlProvisioner?.suspend)throw new Error('CONTROL_NOT_SUPPORTED');await controlProvisioner.suspend({panelClientId:row.panel_client_id});db.prepare("UPDATE subscriptions SET control_status='suspended',suspension_reason=?,suspended_at=? WHERE id=?").run(reason,new Date().toISOString(),row.subscription_id);}else if(action==='resume'){if(!controlProvisioner?.resume)throw new Error('CONTROL_NOT_SUPPORTED');await controlProvisioner.resume({panelClientId:row.panel_client_id});db.prepare("UPDATE subscriptions SET control_status='active',suspension_reason=NULL,suspended_at=NULL WHERE id=?").run(row.subscription_id);}else{if(!controlProvisioner?.remove)throw new Error('CONTROL_NOT_SUPPORTED');await controlProvisioner.remove({panelClientId:row.panel_client_id});db.prepare("UPDATE subscriptions SET control_status='deleted',deleted_at=?,suspension_reason=? WHERE id=?").run(new Date().toISOString(),reason||'حذف توسط همکار',row.subscription_id);}if(row.account_id)notify(row.account_id,action==='suspend'?'اشتراک تعلیق شد':action==='resume'?'اشتراک فعال شد':'اشتراک حذف شد',reason||'درخواست توسط همکار فروش انجام شد.');audit(account.id,action,'subscription',row.subscription_id,{reason});return json(res,200,{status:action==='resume'?'active':action==='suspend'?'suspended':'deleted'});}catch(e){return json(res,502,{error:'PANEL_CONTROL_FAILED',detail:String(e.message||e)});}
         }
+        const resellerIosImportRequest=path.match(/^\/api\/reseller\/orders\/([^/]+)\/ios-import$/);
+        if(req.method==='POST'&&resellerIosImportRequest){
+          const subscription=db.prepare(`SELECT s.id subscription_id,s.status subscription_status,COALESCE(s.control_status,'active') control_status,s.deleted_at,s.upstream_subscription_url,s.subscription_url,o.id order_id,o.status order_status,o.account_id,p.name plan_name,l.name location_name
+            FROM orders o JOIN subscriptions s ON s.order_id=o.id JOIN plans p ON p.id=o.plan_id LEFT JOIN service_locations l ON l.id=o.location_id
+            WHERE o.id=? AND o.reseller_id=? AND o.order_kind='purchase'`).get(resellerIosImportRequest[1],account.id);
+          if(!subscription||!subscription.account_id)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
+          if(subscription.order_status!=='approved'||subscription.subscription_status!=='active'||subscription.control_status!=='active'||subscription.deleted_at)return json(res,409,{error:'SUBSCRIPTION_NOT_ACTIVE'});
+          if(!subscription.upstream_subscription_url&&!subscription.subscription_url)return json(res,409,{error:'SUBSCRIPTION_NOT_READY'});
+          const now=new Date(),nowIso=now.toISOString(),windowStart=new Date(now.getTime()-10*60_000).toISOString();
+          const issued=Number(db.prepare('SELECT COUNT(*) count FROM reseller_subscription_import_tokens WHERE reseller_id=? AND created_at>?').get(account.id,windowStart).count);
+          if(issued>=30){res.setHeader('retry-after','600');return json(res,429,{error:'IMPORT_RATE_LIMITED'});}
+          const rawToken=randomBytes(32).toString('base64url'),tokenHash=createHash('sha256').update(rawToken).digest('hex'),expiresAt=new Date(now.getTime()+5*60_000).toISOString(),id=randomUUID();
+          db.exec('BEGIN IMMEDIATE');
+          try{
+            db.prepare('UPDATE reseller_subscription_import_tokens SET revoked_at=? WHERE reseller_id=? AND subscription_id=? AND revoked_at IS NULL').run(nowIso,account.id,subscription.subscription_id);
+            db.prepare(`INSERT INTO reseller_subscription_import_tokens(id,token_hash,reseller_id,account_id,subscription_id,expires_at,max_fetches,fetch_count,created_at) VALUES(?,?,?,?,?,?,3,0,?)`).run(id,tokenHash,account.id,subscription.account_id,subscription.subscription_id,expiresAt,nowIso);
+            db.prepare('DELETE FROM reseller_subscription_import_tokens WHERE expires_at<? AND created_at<?').run(nowIso,new Date(now.getTime()-24*60*60_000).toISOString());
+            db.exec('COMMIT');
+          }catch(error){db.exec('ROLLBACK');throw error;}
+          const importUrl=`${publicOrigin(req)}/ios/partner-import/${rawToken}`,profileName=`Nivora · ${subscription.plan_name}${subscription.location_name?` · ${subscription.location_name}`:''}`,deepLink=`hiddify://import/?url=${encodeURIComponent(importUrl)}&name=${encodeURIComponent(profileName)}`;
+          const qrDataUrl=await QRCode.toDataURL(deepLink,{errorCorrectionLevel:'M',margin:2,width:360,color:{dark:'#07132f',light:'#ffffff'}});
+          audit(account.id,'issue','reseller_ios_import',subscription.subscription_id,{orderId:subscription.order_id,expiresAt,maxFetches:3});
+          res.setHeader('cache-control','no-store');res.setHeader('referrer-policy','no-referrer');
+          return json(res,201,{qrDataUrl,profileName,expiresAt,expiresInSeconds:300,maxFetches:3});
+        }
         if(req.method==='POST'&&path==='/api/reseller/purchase'){
           const b=await readJson(req),plan=db.prepare(`SELECT p.*,r.price_toman reseller_price FROM plans p LEFT JOIN reseller_plan_prices r ON r.plan_id=p.id AND r.reseller_id=? AND r.active=1 WHERE p.id=? AND p.active=1`).get(account.id,b.planId);
           if(!plan)return json(res,400,{error:'INVALID_PURCHASE'});let customer;
@@ -1765,11 +1822,36 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='GET'&&locationPlans){const rows=db.prepare(`SELECT p.id,p.name,CASE WHEN pl.plan_id IS NULL THEN 0 ELSE 1 END attached FROM plans p LEFT JOIN plan_locations pl ON pl.plan_id=p.id AND pl.location_id=? ORDER BY p.sort_order`).all(locationPlans[1]);return json(res,200,rows.map(p=>({...p,attached:Boolean(p.attached)})));}
       if(req.method==='POST'&&locationPlans){const b=await readJson(req);if(!Array.isArray(b.planIds))return json(res,400,{error:'INVALID_PLANS'});db.exec('BEGIN IMMEDIATE');try{db.prepare('DELETE FROM plan_locations WHERE location_id=?').run(locationPlans[1]);const add=db.prepare('INSERT INTO plan_locations(plan_id,location_id) VALUES(?,?)');for(const id of b.planIds)add.run(id,locationPlans[1]);db.exec('COMMIT');return json(res,200,{success:true});}catch(e){db.exec('ROLLBACK');return json(res,400,{error:'INVALID_PLANS'});}}
 
+      if(req.method==='POST'&&path==='/api/admin/sales'){
+        const body=await readJson(req),customer=db.prepare("SELECT id,name,phone FROM accounts WHERE id=? AND role='customer' AND status='active'").get(String(body.customerId||'')),plan=db.prepare('SELECT * FROM plans WHERE id=? AND active=1').get(String(body.planId||''));
+        if(!customer||!plan)return json(res,400,{error:'INVALID_ADMIN_SALE'});
+        const salePriceToman=body.salePriceToman===undefined?Math.round(plan.price_irr/10):Number(body.salePriceToman);
+        if(!Number.isInteger(salePriceToman)||salePriceToman<0)return json(res,400,{error:'INVALID_AMOUNT'});
+        const locations=purchaseLocationsForPlan(plan);if(!locations)return json(res,409,{error:'NO_CAPACITY',requiredLocations:plan.location_mode==='multi'?Number(plan.bundle_size)||3:1});
+        const bundleId=locations.length>1?randomUUID():null,now=new Date().toISOString(),entries=locations.map((location,index)=>({id:randomUUID(),subscriptionId:randomUUID(),accessToken:subscriptionToken(),trackingToken:randomUUID().replace(/-/g,''),location,phone:customer.phone,index:index+1})),primary=entries[0];
+        try{
+          db.exec('BEGIN IMMEDIATE');
+          for(const entry of entries){
+            db.prepare(`INSERT INTO orders(id,customer_name,phone,plan_id,status,amount_transferred_irr,created_at,tracking_token,account_id,location_id,order_kind,bundle_id,bundle_index,bundle_size,review_note,reviewed_by,reviewed_at) VALUES(?,?,?,?,'approved',?,?,?,?,?,'purchase',?,?,?,?, 'admin',?)`).run(entry.id,customer.name,customer.phone,plan.id,entry.index===1?salePriceToman*10:0,now,entry.trackingToken,customer.id,entry.location.id,bundleId,entry.index,entries.length,'فروش مستقیم مدیریت',now);
+            db.prepare(`INSERT INTO subscriptions(id,order_id,status,access_token,created_at) VALUES(?,?,'pending_provision',?,?)`).run(entry.subscriptionId,entry.id,entry.accessToken,now);
+          }
+          db.exec('COMMIT');
+        }catch(error){try{db.exec('ROLLBACK')}catch{}throw error;}
+        const provisioned=await provisionPurchaseEntries(plan,entries);
+        if(!provisioned.ok){audit('admin','create_failed','direct_sale',primary.id,{customerId:customer.id,planId:plan.id,error:provisioned.error});return json(res,502,{error:'PROVISION_FAILED',orderIds:entries.map(entry=>entry.id)});}
+        const subscriptions=provisioned.items.map(item=>({orderId:item.id,locationId:item.location.id,locationName:item.location.name}));
+        notify(customer.id,'اشتراک فعال شد',locations.length>1?`${locations.length} اشتراک پلن ${plan.name} توسط مدیریت برای شما فعال شد.`:`پلن ${plan.name} توسط مدیریت برای شما فعال شد.`);
+        audit('admin','create','direct_sale',primary.id,{customerId:customer.id,planId:plan.id,salePriceToman,subscriptionCount:subscriptions.length});
+        return json(res,201,{orderId:primary.id,orderIds:entries.map(entry=>entry.id),bundleId,status:'active',subscriptionCount:subscriptions.length,subscriptions});
+      }
       if (req.method === 'GET' && path === '/api/admin/accounts') {
-        const role=url.searchParams.get('role');
+        const role=url.searchParams.get('role'),query=String(url.searchParams.get('q')||'').trim(),like=`%${query}%`,paginated=url.searchParams.has('page'),page=Math.max(1,Number.parseInt(url.searchParams.get('page')||'1',10)||1),pageSize=Math.min(50,Math.max(5,Number.parseInt(url.searchParams.get('pageSize')||'12',10)||12));
+        const where=[],args=[];if(role){where.push('a.role=?');args.push(role);}if(query){where.push('(a.name LIKE ? OR a.phone LIKE ?)');args.push(like,like);}const clause=where.length?` WHERE ${where.join(' AND ')}`:'';
         const base=`SELECT a.id,a.phone,a.name,a.role,a.status,a.default_discount_percent,a.device_limit_override,a.created_at,a.updated_at,a.device_bound_at,CASE WHEN EXISTS(SELECT 1 FROM account_devices d WHERE d.account_id=a.id AND d.status='active') OR a.device_binding_hash IS NOT NULL THEN 1 ELSE 0 END device_bound,(SELECT COUNT(*) FROM device_recovery_requests r WHERE r.account_id=a.id AND r.status='pending') device_recovery_pending,COALESCE(w.balance_toman,0) balance_toman FROM accounts a LEFT JOIN wallet_accounts w ON w.account_id=a.id`;
-        const rows=role?db.prepare(`${base} WHERE a.role=? ORDER BY a.created_at DESC`).all(role):db.prepare(`${base} ORDER BY a.created_at DESC`).all();
-        return json(res,200,rows.map(row=>row.role==='customer'?{...row,...deviceSummary(db,row.id)}:row));
+        const rows=paginated?db.prepare(`${base}${clause} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`).all(...args,pageSize,(page-1)*pageSize):db.prepare(`${base}${clause} ORDER BY a.created_at DESC`).all(...args),items=rows.map(row=>row.role==='customer'?{...row,...deviceSummary(db,row.id)}:row);
+        if(!paginated)return json(res,200,items);
+        const total=Number(db.prepare(`SELECT COUNT(*) count FROM accounts a${clause}`).get(...args).count),totalPages=Math.max(1,Math.ceil(total/pageSize));
+        return json(res,200,{items,page:Math.min(page,totalPages),pageSize,total,totalPages});
       }
       if(req.method==='GET'&&path==='/api/admin/device-recovery-requests'){
         return json(res,200,listDeviceRecoveryRequests(db,{status:url.searchParams.get('status')||null}));

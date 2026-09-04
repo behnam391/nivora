@@ -1,9 +1,9 @@
 (()=>{
-let customers=[],activeDeviceCustomer=null;
+let customers=[],activeDeviceCustomer=null,customerPage=1,customerPages=1,customerTotal=0,customerSearchTimer=null;
 
 function mount(){
   document.querySelector('nav').insertAdjacentHTML('beforeend','<button class="nav" id="customers-nav">مشتریان</button>');
-  document.querySelector('main').insertAdjacentHTML('beforeend',`<section id="customers" class="view hidden"><div class="panel-head standalone"><div><h2>مدیریت مشتریان</h2><p>حساب، موجودی، رمز و دستگاه‌های مجاز مشتری</p></div><button id="new-customer" class="primary">+ مشتری جدید</button></div><div id="customer-grid" class="reseller-grid"></div></section>`);
+  document.querySelector('main').insertAdjacentHTML('beforeend',`<section id="customers" class="view hidden"><div class="panel-head standalone"><div><h2>مدیریت مشتریان</h2><p>حساب، موجودی، رمز و دستگاه‌های مجاز مشتری</p></div><button id="new-customer" class="primary">+ مشتری جدید</button></div><div class="customer-list-toolbar"><label class="admin-search"><span>⌕</span><input id="admin-customer-search" placeholder="جست‌وجو با نام یا شماره موبایل"></label><span id="admin-customer-count"></span></div><div id="customer-grid" class="admin-customer-list"></div><div id="admin-customer-pagination" class="pagination"></div></section>`);
   document.body.insertAdjacentHTML('beforeend',`
     <dialog id="customer-dialog"><form id="customer-form"><div class="modal-head"><div><p class="eyebrow">CUSTOMER ACCOUNT</p><h2 id="customer-dialog-title">مشتری</h2></div><button type="button" class="icon close-customer">×</button></div><input id="customer-id" type="hidden"><div class="form-grid"><label>نام<input id="manage-customer-name" required></label><label>موبایل<input id="manage-customer-phone" inputmode="numeric" pattern="09[0-9]{9}" required></label><label class="span-2">رمز عبور جدید<input id="manage-customer-password" type="password" minlength="8" autocomplete="new-password"></label><label class="check"><input id="manage-customer-active" type="checkbox" checked> حساب فعال</label></div><div class="modal-actions"><button type="button" class="ghost close-customer">انصراف</button><button class="primary">ذخیره</button></div></form></dialog>
     <dialog id="customer-device-dialog" class="customer-device-dialog"><div class="dialog-body"><div class="modal-head"><div><p class="eyebrow">DEVICE ACCESS</p><h2 id="customer-device-title">دستگاه‌های مشتری</h2><p id="customer-device-caption" class="muted"></p></div><button type="button" class="icon close-customer-device">×</button></div><div id="customer-device-loading" class="device-loading">در حال دریافت دستگاه‌ها…</div><div id="customer-device-content" class="hidden"><section class="device-limit-card"><div><b>سقف دستگاه مجاز</b><small>پس از تکمیل ظرفیت، دستگاه تازه فقط با آزادکردن یکی از دستگاه‌های قبلی وارد می‌شود.</small></div><div class="device-limit-control"><input id="customer-device-limit" type="number" min="1" max="10" inputmode="numeric" aria-label="سقف دستگاه"><button id="save-customer-device-limit" type="button" class="primary">ذخیره سقف</button><button id="inherit-customer-device-limit" type="button" class="ghost">مطابق پلن</button></div></section><section id="customer-device-recovery" class="device-recovery-section hidden"><div class="device-list-head"><div><h3>درخواست دستگاه جدید</h3><p class="muted">مشتری با رمز صحیح از گوشی تازه درخواست داده است.</p></div></div><div id="customer-device-recovery-list" class="device-list"></div></section><div class="device-list-head"><div><h3>دستگاه‌های ثبت‌شده</h3><p id="customer-device-usage" class="muted"></p></div><button id="reset-all-customer-devices" type="button" class="danger">آزادسازی همه</button></div><div id="customer-device-list" class="device-list"></div></div><p id="customer-device-error" class="error" role="alert"></p></div></dialog>`);
@@ -15,6 +15,7 @@ function mount(){
   $('#save-customer-device-limit').onclick=saveDeviceLimit;
   $('#inherit-customer-device-limit').onclick=inheritDeviceLimit;
   $('#reset-all-customer-devices').onclick=resetAllDevices;
+  $('#admin-customer-search').oninput=()=>{clearTimeout(customerSearchTimer);customerSearchTimer=setTimeout(()=>{customerPage=1;void loadCustomers()},280)};
 }
 
 async function open(){
@@ -23,8 +24,12 @@ async function open(){
   $('#customers').classList.remove('hidden');
   $('#customers-nav').classList.add('active');
   $('#page-title').textContent='مدیریت مشتریان';
-  customers=await api('/api/admin/accounts?role=customer');
-  render();
+  await loadCustomers();
+}
+
+async function loadCustomers(){
+  const query=$('#admin-customer-search')?.value.trim()||'',result=await api(`/api/admin/accounts?role=customer&page=${customerPage}&pageSize=10&q=${encodeURIComponent(query)}`);
+  customers=result.items||[];customerPage=result.page||1;customerPages=result.totalPages||1;customerTotal=result.total||0;render();
 }
 
 const deviceCount=customer=>{
@@ -37,14 +42,19 @@ const deviceLimit=customer=>{
 };
 
 function render(){
+  $('#admin-customer-count').textContent=`${fa(customerTotal)} مشتری`;
   $('#customer-grid').innerHTML=customers.length?customers.map(customer=>{
     const count=deviceCount(customer),limit=deviceLimit(customer);
     const pending=Number(customer.device_recovery_pending)||0;
-    return `<article class="reseller-card"><div class="reseller-person"><div><h3>${esc(customer.name)}</h3><p>${esc(customer.phone)}</p></div><span class="status ${customer.status==='active'?'approved':'rejected'}">${customer.status==='active'?'فعال':'مسدود'}</span></div><div class="wallet-balance"><small>موجودی</small><b>${fa(customer.balance_toman)} تومان</b></div><div class="device-summary"><span>دستگاه‌های مجاز</span><b>${fa(count)} از ${fa(limit)}</b></div>${pending?`<div class="device-request-badge">${fa(pending)} درخواست دستگاه در انتظار</div>`:''}<div class="reseller-actions"><button class="ghost customer-wallet" data-id="${esc(customer.id)}">تغییر موجودی</button><button class="ghost customer-edit" data-id="${esc(customer.id)}">ویرایش و رمز</button><button class="${pending?'primary':'ghost'} customer-devices" data-id="${esc(customer.id)}">مدیریت دستگاه‌ها${pending?' · جدید':''}</button></div></article>`;
-  }).join(''):'<div class="empty">مشتری ثبت‌شده‌ای وجود ندارد.</div>';
+    return `<article class="admin-customer-row"><div class="customer-primary"><span class="customer-avatar">${esc(customer.name.slice(0,1))}</span><div><h3>${esc(customer.name)}</h3><p>${esc(customer.phone)}</p></div></div><div class="customer-cell"><small>موجودی</small><b>${fa(customer.balance_toman)} تومان</b></div><div class="customer-cell"><small>دستگاه</small><b>${fa(count)} از ${fa(limit)}</b>${pending?`<em>${fa(pending)} درخواست تازه</em>`:''}</div><span class="status ${customer.status==='active'?'approved':'rejected'}">${customer.status==='active'?'فعال':'مسدود'}</span><div class="admin-customer-actions"><button class="primary customer-sale" data-id="${esc(customer.id)}">فروش اشتراک</button><button class="ghost customer-wallet" data-id="${esc(customer.id)}">موجودی</button><button class="ghost customer-edit" data-id="${esc(customer.id)}">ویرایش</button><button class="${pending?'primary':'ghost'} customer-devices" data-id="${esc(customer.id)}">دستگاه‌ها${pending?' · جدید':''}</button></div></article>`;
+  }).join(''):'<div class="empty">مشتری مطابق جست‌وجو پیدا نشد.</div>';
+  $('#admin-customer-pagination').innerHTML=customerTotal?`<button type="button" id="customer-page-prev" class="ghost" ${customerPage<=1?'disabled':''}>قبلی</button><span>صفحه ${fa(customerPage)} از ${fa(customerPages)}</span><button type="button" id="customer-page-next" class="ghost" ${customerPage>=customerPages?'disabled':''}>بعدی</button>`:'';
   document.querySelectorAll('.customer-edit').forEach(button=>button.onclick=()=>edit(button.dataset.id));
   document.querySelectorAll('.customer-wallet').forEach(button=>button.onclick=()=>wallet(button.dataset.id));
   document.querySelectorAll('.customer-devices').forEach(button=>button.onclick=()=>openDevices(button.dataset.id));
+  document.querySelectorAll('.customer-sale').forEach(button=>button.onclick=()=>window.NivoraAdminSales?.openForCustomer(customers.find(customer=>customer.id===button.dataset.id)));
+  $('#customer-page-prev')?.addEventListener('click',()=>{if(customerPage>1){customerPage--;void loadCustomers()}});
+  $('#customer-page-next')?.addEventListener('click',()=>{if(customerPage<customerPages){customerPage++;void loadCustomers()}});
 }
 
 function edit(id){

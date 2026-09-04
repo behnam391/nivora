@@ -17,5 +17,10 @@
     "hysteria-smoke": "node --env-file-if-exists=.env scripts/smoke-test-hysteria2.mjs",
     "tune-reality": "node --env-file-if-exists=.env scripts/tune-reality-routes.mjs"
   },
-  "engines": { "node": ">=22.5" }
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
 }

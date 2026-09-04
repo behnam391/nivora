@@ -63,6 +63,7 @@
         <div class="section-head"><div><span class="eyebrow">CRM شخصی</span><h2>دفترچه مشتریان</h2><p>پرونده، اشتراک‌ها و تمدید هر مشتری را یکجا ببینید.</p></div><div><button id="global-customer-search" class="soft secondary">⌕ جست‌وجوی مشتری Nivora</button><button id="new-customer" class="primary">＋ مشتری جدید</button></div></div>
         <div class="toolbar"><label class="search"><span>⌕</span><input id="customer-search" placeholder="جست‌وجو با نام یا موبایل"></label><span id="customer-result-count"></span></div>
         <div id="customer-list" class="customer-list"></div>
+        <div id="customer-pagination" class="pagination"></div>
       </section>
 
       <section id="plans" class="view hidden">
@@ -92,6 +93,7 @@
   <dialog id="customer-dialog"><form id="customer-form"><button type="button" class="close" data-close="customer-dialog">×</button><span class="eyebrow">دفترچه مشتریان</span><h2 id="customer-dialog-title">مشتری جدید</h2><input id="customer-id" type="hidden"><label>نام و نام خانوادگی<input id="customer-name" maxlength="80" autocomplete="name" required></label><label>شماره موبایل<input id="customer-phone" inputmode="numeric" autocomplete="tel" pattern="09[0-9]{9}" maxlength="11" required></label><label id="customer-password-label">رمز ورود مشتری<input id="customer-password" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="خالی بگذارید تا خودکار ساخته شود"><small>اگر خالی بماند، رمز موقت فقط یک‌بار نمایش داده می‌شود.</small></label><label>یادداشت داخلی<textarea id="customer-note" rows="3" maxlength="500" placeholder="مثلاً نحوه آشنایی یا توضیح پیگیری"></textarea></label><p id="customer-error" class="form-error"></p><button class="primary wide" type="submit">ذخیره در دفترچه</button></form></dialog>
 
   <dialog id="profile-dialog" class="large-dialog"><div class="dialog-body"><button type="button" class="close" data-close="profile-dialog">×</button><div id="profile-content"></div></div></dialog>
+  <dialog id="ios-qr-dialog" class="ios-qr-dialog"><div class="dialog-body"><button type="button" class="close" data-close="ios-qr-dialog">×</button><span class="eyebrow">اتصال آیفون</span><h2 id="ios-qr-title">QR اشتراک</h2><p>در Hiddify آیفون گزینه اسکن QR را بزنید. این کد فقط ۵ دقیقه معتبر است و لینک دائمی اشتراک را نمایش نمی‌دهد.</p><div id="ios-qr-loading" class="qr-loading">در حال ساخت کد امن…</div><img id="ios-qr-image" class="ios-qr-image hidden" alt="QR اتصال آیفون"><p id="ios-qr-status" class="form-error"></p><button id="ios-qr-refresh" type="button" class="soft wide">ساخت کد تازه</button></div></dialog>
   <dialog id="global-customer-dialog"><div class="dialog-body"><button type="button" class="close" data-close="global-customer-dialog">×</button><span class="eyebrow">مشتریان Nivora</span><h2>جست‌وجوی سراسری</h2><p>با شماره یا نام، مشتری همکار دیگر را پیدا کنید. کنترل سرویس‌های صادرشده توسط آن همکار به شما داده نمی‌شود.</p><label>نام یا شماره موبایل<input id="global-customer-query" placeholder="مثلاً 0912…"></label><button id="global-customer-submit" class="primary wide">جست‌وجو</button><div id="global-customer-results" class="customer-list"></div></div></dialog>
 
   <dialog id="buy-dialog"><form id="buy-form"><button type="button" class="close" data-close="buy-dialog">×</button><span class="eyebrow">ساخت فوری سرویس</span><h2 id="buy-plan">اشتراک جدید</h2><div id="buy-details" class="selected"></div><label>انتخاب مشتری<select id="buy-customer" required></select></label><button type="button" id="buy-new-customer" class="text-button">＋ افزودن مشتری تازه</button><label>مبلغ فروش به مشتری (تومان)<input id="sale-price" type="number" min="0" required></label><div id="profit-preview" class="profit-preview"></div><div class="warning">هزینه همکاری بلافاصله از کیف پول کسر می‌شود؛ در صورت خطای ساخت، مبلغ خودکار بازمی‌گردد.</div><p id="buy-error" class="form-error"></p><button id="buy-submit" class="primary wide">پرداخت و ساخت اشتراک</button><div id="buy-result"></div></form></dialog>
@@ -109,6 +111,6 @@
   <dialog id="suspend-dialog"><form id="suspend-form"><button type="button" class="close" data-close="suspend-dialog">×</button><span class="eyebrow">کنترل اشتراک</span><h2>تعلیق سرویس مشتری</h2><input id="suspend-order-id" type="hidden"><label>دلیل تعلیق<textarea id="suspend-reason" rows="3" minlength="3" maxlength="300" required></textarea></label><p id="suspend-error" class="form-error"></p><button class="danger-button wide" type="submit">تعلیق اشتراک</button></form></dialog>
   <div id="toast" role="status"></div>
   <script src="/web-notifications.js" defer></script>
-  <script src="/reseller.js?v=20260826-devices" defer></script>
+  <script src="/reseller.js?v=20260904-ios-pages" defer></script>
 </body>
 </html>

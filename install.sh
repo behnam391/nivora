@@ -51,6 +51,7 @@ id nivora >/dev/null 2>&1 || useradd --system --home /opt/nivora --shell /usr/sb
 INSTALL_DIR=/opt/nivora
 mkdir -p "$INSTALL_DIR"
 cp -a "$SOURCE_DIR"/. "$INSTALL_DIR"/
+npm --prefix "$INSTALL_DIR" ci --omit=dev
 mkdir -p "$INSTALL_DIR"/{data,receipts,backups}
 if [[ -z "$RECOVERY_FILE" ]]; then cat > "$INSTALL_DIR/.env" <<EOF
 NODE_ENV=production
