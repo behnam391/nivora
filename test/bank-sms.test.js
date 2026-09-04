@@ -42,6 +42,14 @@ test('signed bank notifications use plus and minus as direction signals', () => 
   assert.equal(parseBankMessage('Day Bank\n- 500,000 ریال\nمانده 2,000,000 ریال').direction, 'debit');
 });
 
+test('Day Bank signed account notifications infer Rial without confusing the balance', () => {
+  const parsed = parseBankMessage('6219861915944697\n+500,000\n14/06-23:07\nمانده 1,500,000\nاز 1234');
+  assert.equal(parsed.direction, 'credit');
+  assert.equal(parsed.amountRial, 500000);
+  assert.equal(parsed.unit, 'ریال');
+  assert.equal(parsed.cardLast4, null);
+});
+
 test('masked card number yields the last four digits', () => {
   const fields = extractFinancialFields('کارت ****1234 مبلغ 300,000 ریال واریز شد پیگیری 111222');
   assert.equal(fields.cardLast4, '1234');

@@ -31,3 +31,18 @@ test('first-party webhook ingests once and rejects a replay',async t=>{
   const payload=JSON.stringify({eventId:body.eventId,sender:body.sender,receivedAt:body.receivedAt,message:body.message});response=await fetch(`${base}/api/webhooks/nivora-bank-agent`,{method:'POST',headers,body:payload});const result=await response.json();assert.equal(response.status,200,JSON.stringify(result));assert.equal(db.prepare("SELECT COUNT(*) count FROM bank_transactions WHERE source='nivora-agent'").get().count,1);
   response=await fetch(`${base}/api/webhooks/nivora-bank-agent`,{method:'POST',headers,body:payload});assert.equal(response.status,409);assert.equal((await response.json()).error,'BANK_AGENT_REPLAY');
 });
+
+test('first-party agent auto-approves a unique receiptless Day Bank signed deposit',async t=>{
+  const db=openDatabase(':memory:'),server=createServer(createApp(db,{adminToken:'admin-test'}));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>server.close());const base=`http://127.0.0.1:${server.address().port}`,admin={authorization:'Bearer admin-test','content-type':'application/json'};
+  let response=await fetch(`${base}/api/admin/bank-agent-settings`,{method:'PATCH',headers:admin,body:JSON.stringify({rotateSecret:true})}),pair=await response.json();
+  await fetch(`${base}/api/admin/bank-agent-settings`,{method:'PATCH',headers:admin,body:JSON.stringify({enabled:true,allowedSenders:['Day Bank'],autoReviewEnabled:true})});
+  response=await fetch(`${base}/api/customer/register`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'مشتری دی',phone:'09121112233',password:'bank-agent-pass'})});const customer=await response.json();
+  response=await fetch(`${base}/api/customer/wallet/topups`,{method:'POST',headers:{authorization:`Bearer ${customer.token}`,'content-type':'application/json'},body:JSON.stringify({amountToman:50000})});const topup=await response.json();assert.equal(response.status,201);
+  const now=Date.now(),body={eventId:'evt-day-signed-1',sender:'Day Bank',receivedAt:new Date(now).toISOString(),message:'6219861915944697\n+500,000\n14/06-23:07\nمانده 1,500,000\nاز 1234'},timestamp=String(now),nonce='d'.repeat(32),agentId=pair.agentId;
+  const signature=createHmac('sha256',pair.generatedSecret).update(bankAgentSigningPayload({agentId,timestamp,nonce,...body})).digest('hex');
+  response=await fetch(`${base}/api/webhooks/nivora-bank-agent`,{method:'POST',headers:{'content-type':'application/json','x-nivora-agent-id':agentId,'x-nivora-timestamp':timestamp,'x-nivora-nonce':nonce,'x-nivora-signature':signature},body:JSON.stringify({eventId:body.eventId,sender:body.sender,receivedAt:body.receivedAt,message:body.message})});
+  assert.equal(response.status,200);await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(db.prepare('SELECT status FROM wallet_topups WHERE id=?').get(topup.id).status,'approved');
+  assert.equal(db.prepare("SELECT status,amount_rial FROM bank_transactions WHERE provider_event_id=?").get(body.eventId).status,'matched');
+  assert.equal(db.prepare("SELECT amount_rial FROM bank_transactions WHERE provider_event_id=?").get(body.eventId).amount_rial,500000);
+});

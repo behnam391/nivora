@@ -49,6 +49,15 @@ function extractAmount(text, defaultUnit = 'rial') {
   const nonBalance = usable.find(c => !c.isBalance);
   const picked = credit || nonBalance || usable[0];
   if (picked) return { amountRial: picked.rial, unit: picked.unit };
+  // Day Bank account notifications put a signed amount on its own line and
+  // omit the word "Rial", for example "+500,000". The sign is the explicit
+  // transaction marker; use the configured bank unit while still returning a
+  // concrete unit so authenticated bank-agent events remain reviewable.
+  const signed = norm.match(/(?:^|\n)\s*\+\s*([0-9][0-9,٬،.\s]{0,20}[0-9]|[0-9])\s*(?:\n|$)/m);
+  if (signed) {
+    const unit = defaultUnit === 'toman' ? 'تومان' : 'ریال';
+    return { amountRial: toRial(signed[1], unit), unit };
+  }
   // Fallback: a number after مبلغ without an explicit unit.
   const bare = norm.match(/مبلغ[:\s]*([0-9][0-9,٬،.\s]{0,20}[0-9]|[0-9])/);
   if (bare) return { amountRial: toRial(bare[1], defaultUnit === 'toman' ? 'تومان' : ''), unit: null };
