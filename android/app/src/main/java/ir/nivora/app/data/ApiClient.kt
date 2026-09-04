@@ -7,7 +7,8 @@ import java.net.URL
 import java.net.URLEncoder
 import android.util.Base64
 
-class ApiClient(private val baseUrl: String, private val deviceId: String = "") {
+class ApiClient(private val baseUrl: String, private val deviceId: String = "", context: android.content.Context? = null) {
+    private val purchaseRequests = PurchaseRequestStore(context)
     private data class RawResponse(val status: Int, val body: String)
 
     // JSONObject represents a JSON null as the literal text "null" on some Android versions.
@@ -45,6 +46,8 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
         connectTimeoutMs: Int = 12_000,
         readTimeoutMs: Int = 20_000
     ): RawResponse {
+        val purchaseIdentity=purchaseRequests.identity(path,method,token,body?.toString().orEmpty())
+        val purchaseKey=purchaseIdentity?.let(purchaseRequests::key)
         val connection = (URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = connectTimeoutMs
@@ -54,16 +57,19 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
             setRequestProperty("Accept-Language", "fa-IR")
             if (deviceId.isNotBlank()) setRequestProperty("X-Nivora-Device", deviceId)
             if (token != null) setRequestProperty("Authorization", "Bearer $token")
+            if (purchaseKey != null) setRequestProperty("Idempotency-Key", purchaseKey)
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             }
         }
         return try {
+            if(body!=null)connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            val reply=runCatching { JSONObject(raw) }.getOrNull()
+            if(purchaseIdentity != null && reply != null && (status in 200..299 || reply.optBoolean("refunded") || (status in 400..499 && reply.optString("error") !in setOf("PURCHASE_PENDING","PURCHASE_KEY_CONFLICT")))) purchaseRequests.complete(purchaseIdentity)
             if (status !in 200..299) {
                 val code = runCatching { JSONObject(raw).optString("error") }.getOrNull().orEmpty()
                 throw ApiException(code.ifBlank { "SERVER_ERROR" }, status)
@@ -128,6 +134,7 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "") 
     }
 
     fun bindDevice(token: String) { request("/api/customer/device/bind", "POST", token = token) }
+    fun connectionReady(token:String,orderId:String):Boolean = request("/api/customer/connection-ready","POST",token,JSONObject().put("orderId",orderId),connectTimeoutMs=3_500,readTimeoutMs=4_500).optBoolean("ready")
 
     fun register(name: String, phone: String, password: String) = session(
         request(

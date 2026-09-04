@@ -10,6 +10,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+      - run: npm ci
       - run: npm test
       - run: node --check src/server.js
       - run: bash -n install.sh nivora.sh

@@ -27,16 +27,15 @@ class SubscriptionBundleStore(context: Context) {
             require(payload.size > 28)
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, payload.copyOfRange(0, 12)))
-            String(cipher.doFinal(payload.copyOfRange(12, payload.size)), Charsets.UTF_8)
-                .takeIf { it.length <= MAX_BUNDLE_CHARS && it.contains("://") }
+            SubscriptionBundleFormat.normalize(String(cipher.doFinal(payload.copyOfRange(12, payload.size)), Charsets.UTF_8))
         }.getOrNull()
     }
 
     fun save(url: String, raw: String) {
-        if (raw.isBlank() || raw.length > MAX_BUNDLE_CHARS || !raw.contains("://")) return
+        val normalized=SubscriptionBundleFormat.normalize(raw)?:return
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
-        val payload = cipher.iv + cipher.doFinal(raw.toByteArray(Charsets.UTF_8))
+        val payload = cipher.iv + cipher.doFinal(normalized.toByteArray(Charsets.UTF_8))
         preferences.edit()
             .putString(keyFor(url), Base64.encodeToString(payload, Base64.NO_WRAP))
             .putLong("${keyFor(url)}_updated", System.currentTimeMillis())

@@ -73,6 +73,16 @@ test('customer account exposes the current V2Box iOS flow without a copyable per
   assert.doesNotMatch(html,/id="ios-copy"|کپی لینک آیفون/);
 });
 
+test('fast connection validation requires the current device and an owned active subscription',async t=>{
+  const {db,base,orderId,subscriptionId,ownerHeaders,strangerHeaders}=await fixture(t);
+  const check=headers=>fetch(`${base}/api/customer/connection-ready`,{method:'POST',headers,body:JSON.stringify({orderId})});
+  assert.equal((await check(ownerHeaders)).status,200);
+  assert.equal((await check(strangerHeaders)).status,409);
+  assert.equal((await check({authorization:ownerHeaders.authorization,'content-type':'application/json'})).status,403);
+  db.prepare("UPDATE subscriptions SET control_status='suspended' WHERE id=?").run(subscriptionId);
+  assert.equal((await check(ownerHeaders)).status,409);
+});
+
 test('iOS import issues a short-lived hashed capability and V2Box can fetch it without a customer session', async t => {
   const {db,base,orderId,subscriptionId,accessToken,ownerHeaders}=await fixture(t);
 

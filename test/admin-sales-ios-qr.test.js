@@ -5,6 +5,41 @@ import { openDatabase } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import QRCode from 'qrcode';
 
+test('wallet purchase retries and overlapping requests deliver and debit once',async t=>{
+  let release,started;const wait=new Promise(r=>release=r),entered=new Promise(r=>started=r);let calls=0;
+  const provisioner=async order=>{calls++;started();await wait;return {panelClientId:order.id,subscriptionUrl:'https://panel.test/sub/one'}};
+  const {db,base,admin}=await start(t,{provisioner});
+  const customer=await createAccount(base,admin,{name:'خریدار تست',phone:'09128889999'}),{plan}=await createPlanAndLocation(base,admin);
+  await fetch(`${base}/api/admin/accounts/${customer.id}/wallet`,{method:'POST',headers:admin,body:JSON.stringify({amountToman:200000})});
+  const login=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:customer.phone,password:'password-123'})});
+  const token=(await login.json()).token,headers={authorization:`Bearer ${token}`,'content-type':'application/json','idempotency-key':'checkout-test-123456789'};
+  const buy=()=>fetch(`${base}/api/customer/wallet/purchase`,{method:'POST',headers,body:JSON.stringify({planId:plan.id})});
+  const first=buy();await entered;
+  const pending=await buy();assert.equal(pending.status,409);assert.equal((await pending.json()).error,'PURCHASE_PENDING');
+  release();const original=await first;assert.equal(original.status,201);const originalBody=await original.json();
+  const retry=await buy();assert.equal(retry.status,201);assert.equal(retry.headers.get('idempotency-replayed'),'true');assert.deepEqual(await retry.json(),originalBody);
+  assert.equal(calls,1);assert.equal(db.prepare("SELECT COUNT(*) n FROM wallet_transactions WHERE type='purchase'").get().n,1);
+  const asset=await fetch(`${base}/purchase-safe.js`);assert.equal(asset.status,200);assert.match(await asset.text(),/Idempotency-Key/);
+});
+
+test('failed admin sale is not counted as an approved order',async t=>{
+  const {db,base,admin}=await start(t,{provisioner:async()=>{throw new Error('PANEL_UNAVAILABLE')}});
+  const customer=await createAccount(base,admin,{name:'خریدار تست',phone:'09128889998'}),{plan}=await createPlanAndLocation(base,admin);
+  const response=await fetch(`${base}/api/admin/sales`,{method:'POST',headers:{...admin,'idempotency-key':'checkout-test-987654321'},body:JSON.stringify({customerId:customer.id,planId:plan.id})});
+  assert.equal(response.status,502);const result=await response.json();
+  assert.equal(db.prepare('SELECT status FROM orders WHERE id=?').get(result.orderIds[0]).status,'rejected');
+});
+
+test('unknown panel outcome stays pending and is never executed twice',async t=>{
+  let calls=0;
+  const {db,base,admin}=await start(t,{provisioner:async()=>{calls++;throw Object.assign(new Error('RESPONSE_LOST'),{uncertain:true})}});
+  const customer=await createAccount(base,admin,{name:'خریدار تست',phone:'09128889997'}),{plan}=await createPlanAndLocation(base,admin);
+  const buy=()=>fetch(`${base}/api/admin/sales`,{method:'POST',headers:{...admin,'idempotency-key':'checkout-unknown-123456789'},body:JSON.stringify({customerId:customer.id,planId:plan.id})});
+  const response=await buy();assert.equal(response.status,503);const body=await response.json();assert.equal(body.error,'PURCHASE_PENDING');assert.equal(body.refunded,false);
+  assert.equal(db.prepare('SELECT status FROM orders WHERE id=?').get(body.orderIds[0]).status,'under_review');
+  assert.equal((await buy()).status,409);assert.equal(calls,1);
+});
+
 async function start(t,{provisioner}={}){
   const db=openDatabase(':memory:'),server=createServer(createApp(db,{adminToken:'test-token',provisioner}));
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));

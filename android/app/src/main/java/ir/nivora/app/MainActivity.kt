@@ -60,7 +60,8 @@ class MainActivity : FragmentActivity(), NivoraActions {
         getSharedPreferences("nivora_device", MODE_PRIVATE).getString("id", null)
             ?: UUID.randomUUID().toString().replace("-", "").also { getSharedPreferences("nivora_device", MODE_PRIVATE).edit().putString("id", it).apply() }
     }
-    private val api by lazy { ApiClient(BuildConfig.API_BASE_URL, deviceId) }
+    private val api by lazy { ApiClient(BuildConfig.API_BASE_URL, deviceId, this) }
+    private var connectionValidationInFlight=false
     private val handler = Handler(Looper.getMainLooper())
     private val noticeIds = AtomicLong()
     private lateinit var session: SecureSessionStore
@@ -456,6 +457,22 @@ class MainActivity : FragmentActivity(), NivoraActions {
         if (state.vpnState == "disconnecting") return
         if (!SessionValidationPolicy.canStartVpn(state.signedIn, liveSessionValidated)) {
             pendingVpnMode = mode
+            val session=activeSessionToken
+            val cachedOrder=state.selectedSubscription
+            if(session!=null && cachedOrder?.url!=null && !connectionValidationInFlight){
+                connectionValidationInFlight=true
+                showNotice("در حال تأیید سریع حساب…")
+                background(work={api.connectionReady(session,cachedOrder.id)},success={ready->
+                    connectionValidationInFlight=false
+                    if(isCurrentSession(session) && ready && state.selectedSubscription?.id==cachedOrder.id){
+                        liveSessionValidated=true;resumePendingVpnRequest()
+                    }
+                },failure={error->
+                    connectionValidationInFlight=false
+                    if(isCurrentSession(session))showNotice(friendly(error),true)
+                })
+                return
+            }
             showNotice(sessionValidationNotice())
             if (!state.loading && !state.refreshing && !dashboardValidationInFlight) {
                 loadDashboard(initial = state.account == null && state.reseller == null)
@@ -511,23 +528,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
         state = state.copy(pingBusy = true)
         background(
             work = {
-                val values = listOf(
-                    "https://www.gstatic.com/generate_204" to true,
-                    "https://www.youtube.com/generate_204" to true,
-                    "https://www.instagram.com/" to false
-                ).mapNotNull { (target, expected204) -> runCatching {
-                    val started = android.os.SystemClock.elapsedRealtime()
-                    val connection = (URL(target).openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 7_000; readTimeout = 7_000; useCaches = false; instanceFollowRedirects = false
-                    }
-                    try {
-                        val code = connection.responseCode
-                        if ((expected204 && code != 204) || (!expected204 && code !in 200..499)) throw java.io.IOException()
-                        android.os.SystemClock.elapsedRealtime() - started
-                    } finally { connection.disconnect() }
-                }.getOrNull() }
-                if (values.size < 2) throw ApiException("INVALID_SUBSCRIPTION", 422)
-                values.sorted()[values.size / 2]
+                NivoraVpnService.measureActiveTunnel() ?: throw ApiException("TUNNEL_UNHEALTHY", 422)
             },
             success = { ping -> state = state.copy(pingBusy = false, pingMs = ping); showNotice("تأخیر واقعی اینترنت: $ping میلی‌ثانیه") },
             failure = { state = state.copy(pingBusy = false); showNotice("اندازه‌گیری پینگ انجام نشد", true) }
@@ -1319,6 +1320,9 @@ class MainActivity : FragmentActivity(), NivoraActions {
             "PHONE_ALREADY_EXISTS" -> "این شماره موبایل قبلاً ثبت شده است"
             "INVALID_ACCOUNT", "INVALID_PHONE" -> "اطلاعات واردشده معتبر نیست"
             "INSUFFICIENT_BALANCE" -> "موجودی کیف پول کافی نیست"
+            "PURCHASE_PENDING" -> "خرید قبلی در حال پیگیری است؛ دوباره پرداخت نکنید. چند لحظه بعد همان درخواست را بررسی کنید"
+            "PURCHASE_KEY_CONFLICT" -> "اطلاعات درخواست قبلی تغییر کرده است؛ برای پیگیری با پشتیبانی تماس بگیرید"
+            "PURCHASE_STORAGE_UNAVAILABLE" -> "ثبت امن درخواست روی گوشی ممکن نشد؛ فضای ذخیره‌سازی را بررسی کنید"
             "NO_CAPACITY" -> "ظرفیت این پلن فعلاً تکمیل است"
             "DISCOUNT_NOT_AVAILABLE" -> "کد تخفیف معتبر یا قابل استفاده نیست"
             "PROVISION_FAILED" -> "ساخت اشتراک ناموفق بود؛ مبلغ خودکار به کیف پول برگشت"

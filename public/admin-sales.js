@@ -8,10 +8,13 @@ function mount(){
   $('#sale-customer-search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{customerPage=1;void loadCustomers()},260)};
   $('#admin-sale-plan').onchange=syncPlan;
   $('#admin-sale-form').onsubmit=createSale;
+  $('#admin-sales').insertAdjacentHTML('beforeend','<section class="panel"><h3>خریدهای نیازمند پیگیری</h3><p>درخواست‌هایی که نتیجه‌شان بیش از یک دقیقه نامعلوم مانده است. پیش از فروش دوباره، سفارش‌ها، کیف پول و پنل مقصد را بررسی کنید.</p><div id="purchase-pending-list"></div></section>');
 }
 
 async function open(){
   showSalesView();
+  const pending=await api('/api/admin/purchase-requests');
+  $('#purchase-pending-list').innerHTML=pending.length?pending.map(row=>`<p>پیگیری ${fa(row.id)} · ${esc(row.actor_name)} · ${esc(row.path.includes('/renew')?'تمدید':'خرید')} · ${esc(new Date(row.created_at).toLocaleString('fa-IR'))}</p>`).join(''):'<p>درخواست معطل‌شده‌ای وجود ندارد.</p>';
   const result=await api('/api/admin/plans');salePlans=result.filter(plan=>plan.active);fillPlans();await loadCustomers();
 }
 
@@ -49,7 +52,7 @@ async function createSale(event){
   try{
     const result=await api('/api/admin/sales',{method:'POST',body:JSON.stringify({customerId:selectedCustomer.id,planId:$('#admin-sale-plan').value,salePriceToman:Number($('#admin-sale-price').value)})});
     $('#admin-sale-result').innerHTML=`<div class="sale-success"><b>اشتراک با موفقیت ساخته شد</b><span>${fa(result.subscriptionCount)} سرویس فعال: ${(result.subscriptions||[]).map(item=>esc(item.locationName)).join('، ')}</span><small>اشتراک در حساب مشتری قرار گرفت و اعلان فعال‌سازی ارسال شد.</small></div>`;toast('فروش مدیر ثبت و کانفیگ ساخته شد');if(typeof load==='function')await load();
-  }catch(error){const messages={INVALID_ADMIN_SALE:'مشتری یا پلن معتبر نیست.',INVALID_AMOUNT:'مبلغ فروش معتبر نیست.',NO_CAPACITY:'برای این پلن سرور فعال و دارای ظرفیت پیدا نشد.',PROVISION_FAILED:'ساخت کانفیگ روی سرور ناموفق بود؛ گزارش خطا در سفارش‌ها ثبت شد.'};$('#admin-sale-error').textContent=messages[error.message]||'ساخت اشتراک انجام نشد؛ دوباره تلاش کنید.'}
+  }catch(error){const messages={PURCHASE_PENDING:'درخواست قبلی در حال پیگیری است؛ دوباره پرداخت نکنید. اگر ادامه داشت با پشتیبانی تماس بگیرید.',PURCHASE_KEY_CONFLICT:'اطلاعات درخواست تغییر کرده است؛ با پشتیبانی تماس بگیرید.',INVALID_ADMIN_SALE:'مشتری یا پلن معتبر نیست.',INVALID_AMOUNT:'مبلغ فروش معتبر نیست.',NO_CAPACITY:'برای این پلن سرور فعال و دارای ظرفیت پیدا نشد.',PROVISION_FAILED:'ساخت کانفیگ روی سرور ناموفق بود؛ گزارش خطا در سفارش‌ها ثبت شد.'};$('#admin-sale-error').textContent=messages[error.message]||'ساخت اشتراک انجام نشد؛ دوباره تلاش کنید.'}
   finally{button.disabled=false;button.textContent=label}
 }
 

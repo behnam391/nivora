@@ -67,6 +67,13 @@ class NivoraVpnService : VpnService(), DialerController {
 
         private val coreRunning = AtomicBoolean(false)
         private val connectionAttempts = AtomicInteger()
+        @Volatile private var healthProxy: HealthProxy? = null
+        private val healthTargets get() = listOf("https://www.gstatic.com/generate_204", "https://www.youtube.com/generate_204")
+        fun measureActiveTunnel(): Long? {
+            val proxy=healthProxy?:return null
+            val result=TunnelHealthProbe.measure(proxy,healthTargets)
+            return result.takeIf { healthProxy===proxy && coreRunning.get() }
+        }
 
         // Never load the 90+ MB native core on MainActivity's UI thread just
         // to render the first frame. The service owns the authoritative state.
@@ -151,13 +158,14 @@ class NivoraVpnService : VpnService(), DialerController {
         label: String,
         runId: Int,
         serviceStartId: Int,
-        connectionMode: VpnConnectionMode
+        connectionMode: VpnConnectionMode,
+        failedRoutes: Set<String> = emptySet()
     ) {
         prepareCoreForRun(runId)
         if (connectionMode == VpnConnectionMode.EMERGENCY &&
             (url.isNullOrBlank() || !EmergencyConnectPolicy.isEmergencyEndpoint(BuildConfig.API_BASE_URL, url))
         ) throw IllegalStateException("EMERGENCY_UNAVAILABLE")
-        val preferTicketRoute = connectionMode == VpnConnectionMode.PRIMARY &&
+        val preferTicketRoute = failedRoutes.isEmpty() && connectionMode == VpnConnectionMode.PRIMARY &&
             shareLink.isNullOrBlank() &&
             !url.isNullOrBlank() &&
             !subscriptionId.isNullOrBlank() &&
@@ -251,7 +259,8 @@ class NivoraVpnService : VpnService(), DialerController {
             remember = connectionMode == VpnConnectionMode.PRIMARY && shareLink.isNullOrBlank() && !ticketAttached,
             preferredHysteriaIndex = preferredHysteriaIndex,
             forceReality = forceRealityFallback,
-            connectionMode = connectionMode
+            connectionMode = connectionMode,
+            failedRoutes = failedRoutes
         )
         // Bootstrap DNS is used only by libXray before the tunnel is ready.
         // Application DNS must never be sent to the Iranian access provider:
@@ -280,6 +289,8 @@ class NivoraVpnService : VpnService(), DialerController {
         }
         config.put("log", JSONObject().put("loglevel", "warning"))
         config.put("env", JSONObject().put("xray.tun.fd", "0"))
+        val probePort=java.net.ServerSocket(0,1,java.net.InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        val probe=HealthProxy(probePort,java.util.UUID.randomUUID().toString(),java.util.UUID.randomUUID().toString())
         config.put(
             "inbounds",
             JSONArray().put(
@@ -290,6 +301,8 @@ class NivoraVpnService : VpnService(), DialerController {
                     .put("sniffing", JSONObject().put("enabled", true).put("destOverride", JSONArray(listOf("http", "tls", "quic"))))
             )
         )
+        config.getJSONArray("inbounds").put(JSONObject().put("tag","health-in").put("listen","127.0.0.1").put("port",probe.port).put("protocol","socks")
+            .put("settings",JSONObject().put("auth","password").put("udp",false).put("accounts",JSONArray().put(JSONObject().put("user",probe.user).put("pass",probe.password)))))
         val dnsRule = JSONObject()
             .put("type", "field")
             .put("inboundTag", JSONArray().put("tun-in"))
@@ -311,7 +324,10 @@ class NivoraVpnService : VpnService(), DialerController {
                 if (smartRoute.balancers != null) put("balancerTag", "smart-route")
                 else put("outboundTag", "proxy")
             }
-        val routeRules = JSONArray().put(dnsRule)
+        val healthRule=JSONObject().put("type","field").put("inboundTag",JSONArray().put("health-in")).apply {
+            if(smartRoute.balancers!=null)put("balancerTag","smart-route") else put("outboundTag","proxy")
+        }
+        val routeRules = JSONArray().put(healthRule).put(dnsRule)
         quicRule?.let(routeRules::put)
         routeRules.put(tunneledDnsRule).put(smartRoute.rule)
         val routing = JSONObject().put("domainStrategy", "AsIs")
@@ -358,6 +374,7 @@ class NivoraVpnService : VpnService(), DialerController {
                 throw IllegalStateException("XRAY_START_FAILED")
             }
             coreRunning.set(true)
+            healthProxy=probe
         }
         // Network Lab performs its own end-to-end probes and scoring. Report
         // the core as ready immediately so its shorter connection deadline is
@@ -370,14 +387,21 @@ class NivoraVpnService : VpnService(), DialerController {
             }
             return
         }
-        // Mark the tunnel ready as soon as Xray accepts its configuration.
-        // The VPN application's own sockets are excluded from its tunnel by
-        // Android, therefore blocking this state on in-process web probes can
-        // report a false failure on filtered networks.
+        // Use the authenticated loopback SOCKS ingress to prove HTTPS traverses
+        // this exact outbound, independently of Android per-app VPN routing.
+        val latency=TunnelHealthProbe.measure(probe,healthTargets)
+        ensureCurrent(runId)
+        if(latency==null){
+            val excluded=failedRoutes+smartRoute.signature
+            if(excluded.size>=TunnelHealthPolicy.MAX_ROUTES)throw IllegalStateException("TUNNEL_UNHEALTHY")
+            startTunnel(url,subscriptionId,shareLink,sessionToken,deviceId,label,runId,serviceStartId,connectionMode,excluded)
+            return
+        }
+        smartRoute.rememberNetwork?.let { SmartRouteMemory(this).promote(it,smartRoute.signature,null) }
         synchronized(coreLock) {
             ensureCurrent(runId)
             getSharedPreferences("vpn", MODE_PRIVATE).edit().apply {
-                remove("real_latency_ms")
+                putLong("real_latency_ms",latency)
                 remove("real_mbps")
             }.apply()
             state("connected", null, smartRoute.label, connectionMode)
@@ -390,6 +414,30 @@ class NivoraVpnService : VpnService(), DialerController {
         }
         if (connectionMode == VpnConnectionMode.EMERGENCY) {
             startEmergencyLeaseMonitor(sessionToken, deviceId, runId, serviceStartId, smartRoute.label)
+        }
+        if(connectionMode == VpnConnectionMode.PRIMARY) thread(name="nivora-link-monitor",isDaemon=true){
+            var failures=0
+            val stableSince=SystemClock.elapsedRealtime()
+            try{
+                while(generation.get()==runId && healthProxy===probe){
+                    Thread.sleep(TunnelHealthPolicy.CHECK_INTERVAL_MS)
+                    ensureCurrent(runId)
+                    val measured=TunnelHealthProbe.measure(probe,healthTargets)
+                    ensureCurrent(runId)
+                    if(healthProxy!==probe)return@thread
+                    failures=if(measured==null)failures+1 else 0
+                    if(measured!=null)getSharedPreferences("vpn",MODE_PRIVATE).edit().putLong("real_latency_ms",measured).apply()
+                    if(TunnelHealthPolicy.shouldSwitch(failures,SystemClock.elapsedRealtime()-stableSince)){
+                        val excluded=failedRoutes+smartRoute.signature
+                        if(excluded.size>=TunnelHealthPolicy.MAX_ROUTES)throw IllegalStateException("TUNNEL_UNHEALTHY")
+                        state("connecting",null,connectionMode=connectionMode)
+                        showNotification("در حال بازیابی اتصال…",label,false)
+                        connectionAttempts.incrementAndGet()
+                        try{startTunnel(url,subscriptionId,shareLink,sessionToken,deviceId,label,runId,serviceStartId,connectionMode,excluded)}finally{connectionAttempts.decrementAndGet()}
+                        return@thread
+                    }
+                }
+            }catch(error:Throwable){failRunIfOwned(runId,serviceStartId,safeError(error),connectionMode)}
         }
     }
 
@@ -722,7 +770,9 @@ class NivoraVpnService : VpnService(), DialerController {
         val rule: JSONObject,
         val balancers: JSONArray? = null,
         val label: String? = null,
-        val policy: VpnRoutingPolicy
+        val policy: VpnRoutingPolicy,
+        val signature: String = "",
+        val rememberNetwork: String? = null
     )
 
     private fun configureSmartRouting(
@@ -731,7 +781,8 @@ class NivoraVpnService : VpnService(), DialerController {
         remember: Boolean,
         preferredHysteriaIndex: Int? = null,
         forceReality: Boolean = false,
-        connectionMode: VpnConnectionMode = VpnConnectionMode.PRIMARY
+        connectionMode: VpnConnectionMode = VpnConnectionMode.PRIMARY,
+        failedRoutes: Set<String> = emptySet()
     ): SmartRoute {
         val identities = routeIdentities(outbounds)
         val eligibleIndexes = CustomerConnectPolicy.eligibleRouteIndexes(identities, forceReality)
@@ -746,12 +797,12 @@ class NivoraVpnService : VpnService(), DialerController {
             for (index in 0 until outbounds.length()) {
                 val outbound = outbounds.getJSONObject(index)
                 val protocol = outbound.optString("protocol").lowercase()
-                if (protocol !in setOf("freedom", "dns", "blackhole") && index in eligibleIndexes) {
+                if (protocol !in setOf("freedom", "dns", "blackhole") && index in eligibleIndexes && SmartRouteMemory.signature(outbound) !in failedRoutes) {
                     add(index to endpointFromOutbound(outbound))
                 }
             }
         }
-        if (candidates.isEmpty()) throw IllegalStateException("SUBSCRIPTION_INVALID")
+        if (candidates.isEmpty()) throw IllegalStateException(if(failedRoutes.isEmpty()) "SUBSCRIPTION_INVALID" else "TUNNEL_UNHEALTHY")
         val networkKey = currentNetworkKey()
         val memory = SmartRouteMemory(this)
         val remembered = if (remember) memory.read(networkKey) else null
@@ -763,7 +814,7 @@ class NivoraVpnService : VpnService(), DialerController {
         // Reuse the winner learned for this exact network immediately. Xray's
         // observatory keeps checking alternatives after startup, so a full
         // pre-flight race on every connection only makes the customer wait.
-        val fastest = if (preferredIndex == null && rememberedIndex == null) {
+        val fastest = if (activeRunId != null && preferredIndex == null && rememberedIndex == null) {
             NetworkTools.fastest(candidates.mapNotNull { it.second }, timeoutMs = 1_200)
         } else null
         val selectedIndex = preferredIndex
@@ -778,7 +829,7 @@ class NivoraVpnService : VpnService(), DialerController {
         } else {
             VpnRoutingPolicy.forSession(selectedIsHysteria)
         }
-        if (remember) {
+        if (remember && activeRunId != null) {
             val selectedSignature = signatures[selectedIndex]
             if (selectedSignature != null) {
                 val backup = signatures.entries.firstOrNull { it.key != selectedIndex }?.value
@@ -790,14 +841,17 @@ class NivoraVpnService : VpnService(), DialerController {
         // exclusive for the current session: mixing it into a least-ping
         // balancer can move traffic back to a deceptively low-latency Reality
         // route and also makes UDP/QUIC behaviour unpredictable.
-        if (policy.usesExclusiveProxy) {
-            candidates.forEach { (index, _) ->
-                outbounds.getJSONObject(index).put("tag", if (index == selectedIndex) "proxy" else "standby-route-$index")
+        if (policy.usesExclusiveProxy || activeRunId == null) {
+            for(index in 0 until outbounds.length()) {
+                if(outbounds.getJSONObject(index).optString("protocol") !in setOf("freedom","dns","blackhole"))
+                    outbounds.getJSONObject(index).put("tag", if (index == selectedIndex) "proxy" else "standby-route-$index")
             }
             return SmartRoute(
                 JSONObject().put("type", "field").put("inboundTag", JSONArray().put("tun-in")).put("outboundTag", "proxy"),
                 label = selectedLabel,
-                policy = policy
+                policy = policy,
+                signature = signatures.getValue(selectedIndex),
+                rememberNetwork = if(remember)networkKey else null
             )
         }
         if (candidates.size < 2) {
@@ -1030,6 +1084,7 @@ class NivoraVpnService : VpnService(), DialerController {
     }
 
     private fun stopCoreLocked() {
+        healthProxy=null
         runCatching {
             LibXray.invoke(JSONObject().put("apiVersion", 1).put("method", "stopXray").put("payload", JSONObject()).toString())
         }

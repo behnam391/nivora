@@ -40,6 +40,8 @@ export function buildCompatibleClientPayload(client, inboundIds, flow = '', limi
 
 function nodeRequest({ url, method, token, body, rejectUnauthorized }) {
   return new Promise((resolve, reject) => {
+    let sent=false;
+    const transportFailure=error=>{if(sent && method!=='GET')error.uncertain=true;reject(error)};
     const transport = url.protocol === 'https:' ? https : http;
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = transport.request(url, {
@@ -58,13 +60,16 @@ function nodeRequest({ url, method, token, body, rejectUnauthorized }) {
       res.on('end', () => {
         try {
           const data = raw ? JSON.parse(raw) : {};
-          if (res.statusCode < 200 || res.statusCode >= 300) return reject(new Error(`3X-UI HTTP ${res.statusCode}`));
+          if (res.statusCode < 200 || res.statusCode >= 300) {const error=new Error(`3X-UI HTTP ${res.statusCode}`);return res.statusCode>=500?transportFailure(error):reject(error);}
           resolve(data);
-        } catch { reject(new Error('3X-UI returned invalid JSON')); }
+        } catch { transportFailure(new Error('3X-UI returned invalid JSON')); }
       });
+      res.on('aborted',()=>transportFailure(new Error('3X-UI response interrupted')));
+      res.on('error',transportFailure);
     });
     req.on('timeout', () => req.destroy(new Error('3X-UI request timed out')));
-    req.on('error', reject);
+    req.on('finish',()=>{sent=true});
+    req.on('error', transportFailure);
     if (payload) req.write(payload);
     req.end();
   });
