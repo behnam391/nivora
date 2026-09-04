@@ -98,6 +98,7 @@ const targetSummary = verified.filter(inbound => targetIds.includes(Number(inbou
   id: Number(inbound.id),
   remark: inbound.remark,
   protocol: inbound.protocol,
-  clients: (parse(inbound.settings).clients || []).length
+  clients: (parse(inbound.settings).clients || []).length,
+  authReady: (parse(inbound.settings).clients || []).filter(client => Boolean(client?.auth)).length
 }));
 console.log(JSON.stringify({ backupPath, activeSourceClients: sourceClients.size, added, targets: targetSummary }, null, 2));
