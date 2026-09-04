@@ -14,6 +14,7 @@
     "hysteria-config": "node --env-file-if-exists=.env scripts/configure-hysteria-inbounds.mjs",
     "hysteria-sync": "node --env-file-if-exists=.env scripts/sync-node-hysteria-clients.mjs",
     "hysteria-verify": "node --env-file-if-exists=.env scripts/verify-hysteria2-subscription.mjs",
+    "hysteria-smoke": "node --env-file-if-exists=.env scripts/smoke-test-hysteria2.mjs",
     "tune-reality": "node --env-file-if-exists=.env scripts/tune-reality-routes.mjs"
   },
   "engines": { "node": ">=22.5" }
