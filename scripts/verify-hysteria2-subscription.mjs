@@ -67,8 +67,10 @@ if (!rawLink) throw new Error('The client subscription does not contain a Hyster
 const link = new URL(rawLink);
 const actualHost = link.hostname.toLowerCase();
 const serverName = String(link.searchParams.get('sni') || '').toLowerCase();
+const obfuscation = String(link.searchParams.get('obfs') || '').toLowerCase();
+const obfuscationPasswordPresent = Boolean(link.searchParams.get('obfs-password'));
 const result = {
-  ready: actualHost === expectedHost && serverName === expectedHost && Boolean(link.username),
+  ready: actualHost === expectedHost && serverName === expectedHost && Boolean(link.username) && obfuscation === 'salamander' && obfuscationPasswordPresent,
   inboundId: Number(inbound.id),
   remark: inbound.remark,
   scheme: link.protocol.replace(':', ''),
@@ -76,6 +78,8 @@ const result = {
   port: Number(link.port || 443),
   serverName,
   alpn: link.searchParams.get('alpn') || '',
+  obfuscation,
+  obfuscationPasswordPresent,
   authenticationPresent: Boolean(link.username),
   clients: (parse(inbound.settings).clients || []).length
 };
