@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 
 const [nodeSelector, inboundIdsInput] = process.argv.slice(2);
@@ -16,6 +16,31 @@ const databasePath = process.env.DATABASE_PATH || './data/nivora.db';
 const backupRoot = process.env.NIVORA_BACKUP_DIRECTORY || './backups';
 mkdirSync(backupRoot, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+if (nodeSelector === 'default') {
+  if (!process.env.PANEL_BASE_URL || !process.env.PANEL_API_TOKEN) {
+    throw new Error('Default panel environment is not configured');
+  }
+  const envPath = process.env.NIVORA_ENV_PATH || './.env';
+  if (!existsSync(envPath)) throw new Error(`Environment file not found: ${envPath}`);
+  const backupPath = `${backupRoot}/before-hysteria-inbounds-${stamp}.env`;
+  copyFileSync(envPath, backupPath);
+  const key = 'PANEL_HYSTERIA_INBOUND_IDS';
+  const value = inboundIds.join(',');
+  const lines = readFileSync(envPath, 'utf8').replace(/\r\n/g, '\n').split('\n');
+  let replaced = false;
+  const next = lines.map(line => {
+    if (!line.startsWith(`${key}=`)) return line;
+    replaced = true;
+    return `${key}=${value}`;
+  });
+  if (!replaced) next.push(`${key}=${value}`);
+  writeFileSync(envPath, `${next.join('\n').replace(/\n+$/, '')}\n`, { mode: 0o600 });
+  chmodSync(envPath, 0o600);
+  console.log(JSON.stringify({ backupPath, updated: { id: 'default', hysteria_inbound_ids: value }, restartRequired: true }, null, 2));
+  process.exit(0);
+}
+
 const backupPath = `${backupRoot}/before-hysteria-inbounds-${stamp}.db`;
 copyFileSync(databasePath, backupPath);
 

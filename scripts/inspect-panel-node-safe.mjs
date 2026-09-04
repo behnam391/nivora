@@ -5,10 +5,11 @@ import https from 'node:https';
 
 const selector = process.argv.slice(2).join(' ').trim();
 const db = new DatabaseSync(process.env.DATABASE_PATH || './data/nivora.db', { readOnly: true });
-const safeNodes = db.prepare(`
+const hasPanelNodes = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='panel_nodes'").get());
+const safeNodes = hasPanelNodes ? db.prepare(`
   SELECT id,name,provider,base_url,subscription_base_url,vision_inbound_ids,cdn_inbound_ids,hysteria_inbound_ids,active
   FROM panel_nodes ORDER BY name
-`).all();
+`).all() : [];
 const defaultNode = process.env.PANEL_BASE_URL ? {
   id: 'default',
   name: 'default',
@@ -27,7 +28,9 @@ if (!selector) {
 }
 const matches = selector === 'default'
   ? []
-  : db.prepare('SELECT * FROM panel_nodes WHERE name=? OR base_url LIKE ?').all(selector, `%${selector}%`);
+  : hasPanelNodes
+    ? db.prepare('SELECT * FROM panel_nodes WHERE name=? OR base_url LIKE ?').all(selector, `%${selector}%`)
+    : [];
 db.close();
 if (selector === 'default' && !defaultNode) throw new Error('Default panel environment is not configured');
 if (selector !== 'default' && matches.length !== 1) throw new Error(matches.length ? 'Node selector is ambiguous' : `Panel node not found: ${selector}`);

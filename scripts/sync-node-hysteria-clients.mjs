@@ -7,22 +7,36 @@ import https from 'node:https';
 const [nodeSelector] = process.argv.slice(2);
 if (!nodeSelector) throw new Error('Usage: node scripts/sync-node-hysteria-clients.mjs <node-name-or-host>');
 
-const db = new DatabaseSync(process.env.DATABASE_PATH || './data/nivora.db', { readOnly: true });
-const nodes = db.prepare('SELECT * FROM panel_nodes WHERE active=1 AND (name=? OR base_url LIKE ?)')
-  .all(nodeSelector, `%${nodeSelector}%`);
-db.close();
-if (nodes.length !== 1) throw new Error(nodes.length ? 'Node selector is ambiguous' : `Panel node not found: ${nodeSelector}`);
-const node = nodes[0];
+let node;
+let token = process.env.PANEL_API_TOKEN || '';
+if (nodeSelector === 'default') {
+  if (!process.env.PANEL_BASE_URL || !token) throw new Error('Default panel environment is not configured');
+  node = {
+    name: 'default',
+    base_url: process.env.PANEL_BASE_URL,
+    vision_inbound_ids: [process.env.PANEL_INBOUND_ID, process.env.PANEL_VISION_INBOUND_IDS].filter(Boolean).join(','),
+    hysteria_inbound_ids: process.env.PANEL_HYSTERIA_INBOUND_IDS || ''
+  };
+} else {
+  const db = new DatabaseSync(process.env.DATABASE_PATH || './data/nivora.db', { readOnly: true });
+  const nodes = db.prepare('SELECT * FROM panel_nodes WHERE active=1 AND (name=? OR base_url LIKE ?)')
+    .all(nodeSelector, `%${nodeSelector}%`);
+  db.close();
+  if (nodes.length !== 1) throw new Error(nodes.length ? 'Node selector is ambiguous' : `Panel node not found: ${nodeSelector}`);
+  node = nodes[0];
+
+  const key = createHash('sha256').update(process.env.SETTINGS_ENCRYPTION_KEY || process.env.ADMIN_TOKEN || '').digest();
+  const [iv, tag, cipher] = String(node.api_token_encrypted || '').split('.');
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64url'));
+  decipher.setAuthTag(Buffer.from(tag, 'base64url'));
+  token = Buffer.concat([decipher.update(Buffer.from(cipher, 'base64url')), decipher.final()]).toString('utf8');
+}
 
 const sourceIds = String(node.vision_inbound_ids || '').split(',').map(Number).filter(Number.isInteger);
 const targetIds = String(node.hysteria_inbound_ids || '').split(',').map(Number).filter(Number.isInteger);
 if (!sourceIds.length || !targetIds.length) throw new Error('Vision and Hysteria2 inbound IDs must be configured first');
 
-const key = createHash('sha256').update(process.env.SETTINGS_ENCRYPTION_KEY || process.env.ADMIN_TOKEN || '').digest();
-const [iv, tag, cipher] = String(node.api_token_encrypted || '').split('.');
-const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(iv, 'base64url'));
-decipher.setAuthTag(Buffer.from(tag, 'base64url'));
-const token = Buffer.concat([decipher.update(Buffer.from(cipher, 'base64url')), decipher.final()]).toString('utf8');
+if (!token) throw new Error('Panel API token is not configured');
 
 function call(method, path, body) {
   const url = new URL(`${node.base_url.replace(/\/$/, '')}/panel/api/${path}`);
