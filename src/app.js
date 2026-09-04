@@ -1174,7 +1174,14 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
             db.prepare(`INSERT INTO wallet_topups(id,account_id,amount_toman,receipt_reference,receipt_image_url,status,created_at) VALUES(?,?,?,?,?,'under_review',?)`).run(id,account.id,amount,receiptReference,receiptImageUrl,now);
             db.exec('COMMIT');
           }catch(error){try{db.exec('ROLLBACK')}catch{}if(error instanceof PaymentRequestError){if(error.status===429)res.setHeader('retry-after','3600');return paymentRequestError(res,error);}throw error;}
-          audit(account.id,'create','wallet_topup',id,{amountToman:amount,receiptProvided:Boolean(receiptCapability)});schedulePaymentSweep();setTimeout(()=>{const pending=db.prepare("SELECT t.id,t.amount_toman,a.name,a.phone FROM wallet_topups t JOIN accounts a ON a.id=t.account_id WHERE t.id=? AND t.status='under_review'").get(id);if(pending)telegramAdminAlert(`🧾 پرداخت نیازمند بررسی\n${pending.name} — ${pending.phone}\n${Number(pending.amount_toman).toLocaleString('fa-IR')} تومان`,{inline_keyboard:[[{text:'✅ تأیید و شارژ',callback_data:`topup:approve:${pending.id}`},{text:'❌ رد',callback_data:`topup:reject:${pending.id}`}]]});},2000).unref();return json(res,201,{id,status:'under_review',amountToman:amount,receiptRequired:false});
+          audit(account.id,'create','wallet_topup',id,{amountToman:amount,receiptProvided:Boolean(receiptCapability)});schedulePaymentSweep();
+          // Bank delivery commonly arrives a few seconds after the customer
+          // submits. Escalating immediately creates a false manual-review alert
+          // even though the signed SMS then auto-approves the same top-up.
+          // Re-check after a short grace period and alert only if it is still
+          // genuinely waiting for a human decision.
+          setTimeout(()=>{const pending=db.prepare("SELECT t.id,t.amount_toman,a.name,a.phone FROM wallet_topups t JOIN accounts a ON a.id=t.account_id WHERE t.id=? AND t.status='under_review'").get(id);if(pending)telegramAdminAlert(`🧾 پرداخت نیازمند بررسی\n${pending.name} — ${pending.phone}\n${Number(pending.amount_toman).toLocaleString('fa-IR')} تومان`,{inline_keyboard:[[{text:'✅ تأیید و شارژ',callback_data:`topup:approve:${pending.id}`},{text:'❌ رد',callback_data:`topup:reject:${pending.id}`}]]});},45_000).unref();
+          return json(res,201,{id,status:'under_review',amountToman:amount,receiptRequired:false});
         }
         if(req.method==='POST'&&path==='/api/customer/connection-ready'){
           const body=await readJson(req);if(!readDeviceId(req))return json(res,403,{error:'DEVICE_REQUIRED'});try{claimCustomerDevice(account,req)}catch(error){return json(res,error.status||403,deviceErrorBody(error));}
