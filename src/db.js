@@ -17,6 +17,8 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       traffic_gb INTEGER NOT NULL CHECK(traffic_gb > 0),
       duration_days INTEGER NOT NULL CHECK(duration_days > 0),
       device_limit INTEGER NOT NULL DEFAULT 1 CHECK(device_limit > 0),
+      location_mode TEXT NOT NULL DEFAULT 'single' CHECK(location_mode IN ('single','multi')),
+      bundle_size INTEGER NOT NULL DEFAULT 1 CHECK(bundle_size BETWEEN 1 AND 10),
       sort_order INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
@@ -33,6 +35,9 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       receipt_image_url TEXT,
       review_note TEXT,
       reviewed_by TEXT,
+      bundle_id TEXT,
+      bundle_index INTEGER,
+      bundle_size INTEGER,
       created_at TEXT NOT NULL,
       reviewed_at TEXT
     );
@@ -359,6 +364,9 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
     );
     CREATE TABLE IF NOT EXISTS telegram_account_links (telegram_user_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,account_id TEXT NOT NULL REFERENCES accounts(id),phone TEXT NOT NULL,linked_at TEXT NOT NULL,last_seen_at TEXT NOT NULL);
   `);
+  const planColumns = db.prepare('PRAGMA table_info(plans)').all().map(c => c.name);
+  if (!planColumns.includes('location_mode')) db.exec("ALTER TABLE plans ADD COLUMN location_mode TEXT NOT NULL DEFAULT 'single' CHECK(location_mode IN ('single','multi'))");
+  if (!planColumns.includes('bundle_size')) db.exec('ALTER TABLE plans ADD COLUMN bundle_size INTEGER NOT NULL DEFAULT 1 CHECK(bundle_size BETWEEN 1 AND 10)');
   const orderColumns = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
   if (!orderColumns.includes('tracking_token')) db.exec('ALTER TABLE orders ADD COLUMN tracking_token TEXT');
   if (!orderColumns.includes('account_id')) db.exec('ALTER TABLE orders ADD COLUMN account_id TEXT REFERENCES accounts(id)');
@@ -368,6 +376,9 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!orderColumns.includes('parent_order_id')) db.exec('ALTER TABLE orders ADD COLUMN parent_order_id TEXT REFERENCES orders(id)');
   if (!orderColumns.includes('reseller_customer_id')) db.exec('ALTER TABLE orders ADD COLUMN reseller_customer_id TEXT REFERENCES reseller_customers(id)');
   if (!orderColumns.includes('reseller_sale_price_toman')) db.exec('ALTER TABLE orders ADD COLUMN reseller_sale_price_toman INTEGER');
+  if (!orderColumns.includes('bundle_id')) db.exec('ALTER TABLE orders ADD COLUMN bundle_id TEXT');
+  if (!orderColumns.includes('bundle_index')) db.exec('ALTER TABLE orders ADD COLUMN bundle_index INTEGER');
+  if (!orderColumns.includes('bundle_size')) db.exec('ALTER TABLE orders ADD COLUMN bundle_size INTEGER');
   const subscriptionColumns = db.prepare('PRAGMA table_info(subscriptions)').all().map(c => c.name);
   if (!subscriptionColumns.includes('upstream_subscription_url')) db.exec('ALTER TABLE subscriptions ADD COLUMN upstream_subscription_url TEXT');
   if (!subscriptionColumns.includes('access_token')) db.exec('ALTER TABLE subscriptions ADD COLUMN access_token TEXT');

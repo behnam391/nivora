@@ -39,6 +39,21 @@ test('plan creation, order and manual approval flow', async t => {
   assert.equal(r.status, 200); const sub = await r.json(); assert.equal(sub.status, 'pending_provision');
 });
 
+test('manual receipt approval provisions every location in a multi-location plan', async t => {
+  const calls=[];const provisioner=async order=>{calls.push(order);return {panelClientId:`manual-${order.id}`,subscriptionUrl:`https://sub.test/${order.id}`}};provisioner.remove=async()=>{};
+  const {server,base}=await start({provisioner});t.after(()=>server.close());const admin={authorization:'Bearer test-token','content-type':'application/json'};
+  let response=await fetch(`${base}/api/admin/plans`,{method:'POST',headers:admin,body:JSON.stringify({name:'بسته سه‌سرور',priceIrr:90000,trafficGb:25,durationDays:30,deviceLimit:1,locationMode:'multi',bundleSize:3})});const plan=await response.json();assert.equal(plan.locationMode,'multi');
+  for(const [index,code] of ['TR','DE','FI'].entries()){
+    response=await fetch(`${base}/api/admin/locations`,{method:'POST',headers:admin,body:JSON.stringify({name:`سرور ${index+1}`,countryCode:code,panelInboundId:index+1})});const location=await response.json();
+    const attach=await fetch(`${base}/api/admin/locations/${location.id}/plans`,{method:'POST',headers:admin,body:JSON.stringify({planIds:[plan.id]})});assert.equal(attach.status,200);
+  }
+  const publicPlan=(await fetch(`${base}/api/plans`).then(result=>result.json()))[0];assert.equal(publicPlan.locations.length,3);
+  const receipt=await uploadReceipt(base);t.after(receipt.cleanup);
+  response=await fetch(`${base}/api/orders`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({customerName:'خریدار بسته',phone:'09127778888',planId:plan.id,receiptImageUrl:receipt.url,receiptReference:'bundle',amountTransferredIrr:90000})});const order=await response.json();assert.equal(response.status,201);
+  response=await fetch(`${base}/api/admin/orders/${order.id}/approve`,{method:'POST',headers:admin,body:'{}'});const approval=await response.json();assert.equal(response.status,200,JSON.stringify(approval));assert.equal(calls.length,3);
+  const rows=await fetch(`${base}/api/admin/orders`,{headers:admin}).then(result=>result.json()),bundle=rows.find(row=>row.id===order.id).bundle_id;assert.ok(bundle);assert.equal(rows.filter(row=>row.bundle_id===bundle&&row.subscription_status==='active').length,3);
+});
+
 test('admin dashboard is served and protected API rejects invalid token', async t => {
   const { server, base } = await start();
   t.after(() => server.close());
@@ -415,6 +430,28 @@ test('customer account uses wallet for instant purchase and renewal', async t =>
   r=await fetch(`${base}/api/customer/orders/${purchase.id}/renew`,{method:'POST',headers:auth,body:'{}'});assert.equal(r.status,201);const renewal=await r.json();assert.equal(renewal.balanceToman,10000);assert.equal(renewCalls.length,1);
   r=await fetch(`${base}/api/customer/wallet/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:plan.id})});assert.equal(r.status,400);assert.equal((await r.json()).error,'INSUFFICIENT_BALANCE');
   r=await fetch(`${base}/api/customer/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:'09121112222',password:'customer-pass-1'})});assert.equal(r.status,200);
+});
+
+test('server labels repeated locations and one multi-location purchase creates three subscriptions with one debit', async t => {
+  const provisioned=[];const provisioner=async order=>{provisioned.push(order);return {panelClientId:`bundle-${order.id}`,subscriptionUrl:`https://sub.test/${order.id}`}};
+  provisioner.remove=async()=>{};
+  const {server,base}=await start({provisioner});t.after(()=>server.close());
+  const admin={authorization:'Bearer test-token','content-type':'application/json'};
+  const createPlan=async body=>{const response=await fetch(`${base}/api/admin/plans`,{method:'POST',headers:admin,body:JSON.stringify(body)});assert.equal(response.status,201);return response.json()};
+  const createLocation=async(name,code)=>{const response=await fetch(`${base}/api/admin/locations`,{method:'POST',headers:admin,body:JSON.stringify({name,countryCode:code,panelInboundId:1,capacity:0})});assert.equal(response.status,201);return response.json()};
+  const turkey=await createLocation('ترکیه','TR'),germany=await createLocation('آلمان','DE'),finland=await createLocation('فنلاند','FI');
+  const single=await createPlan({name:'تک‌لوکیشن',priceIrr:10000,trafficGb:10,durationDays:30,deviceLimit:1});
+  const multi=await createPlan({name:'سه‌لوکیشن',priceIrr:30000,trafficGb:20,durationDays:30,deviceLimit:1,locationMode:'multi',bundleSize:3});
+  await fetch(`${base}/api/admin/locations/${turkey.id}/plans`,{method:'POST',headers:admin,body:JSON.stringify({planIds:[single.id,multi.id]})});
+  await fetch(`${base}/api/admin/locations/${germany.id}/plans`,{method:'POST',headers:admin,body:JSON.stringify({planIds:[multi.id]})});
+  await fetch(`${base}/api/admin/locations/${finland.id}/plans`,{method:'POST',headers:admin,body:JSON.stringify({planIds:[multi.id]})});
+  let response=await fetch(`${base}/api/customer/register`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'مشتری چندلوکیشن',phone:'09124445555',password:'bundle-pass-123'})});const registration=await response.json(),auth={authorization:`Bearer ${registration.token}`,'content-type':'application/json'};
+  await fetch(`${base}/api/admin/accounts/${registration.account.id}/wallet`,{method:'POST',headers:admin,body:JSON.stringify({amountToman:100000,note:'اعتبار تست'})});
+  for(let index=0;index<2;index++){response=await fetch(`${base}/api/customer/wallet/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:single.id})});assert.equal(response.status,201)}
+  response=await fetch(`${base}/api/customer/me`,{headers:auth});let dashboard=await response.json();assert.deepEqual(dashboard.orders.map(order=>order.location_name),['ترکیه ۲','ترکیه ۱']);
+  response=await fetch(`${base}/api/customer/wallet/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:multi.id})});assert.equal(response.status,201);const purchase=await response.json();
+  assert.equal(purchase.subscriptionCount,3);assert.equal(purchase.subscriptions.length,3);assert.equal(purchase.balanceToman,50000);assert.ok(purchase.bundleId);assert.equal(provisioned.length,5);
+  const bundleOrders=await fetch(`${base}/api/admin/orders`,{headers:admin}).then(result=>result.json());assert.equal(bundleOrders.filter(order=>order.bundle_id===purchase.bundleId).length,3);assert.equal(bundleOrders.filter(order=>order.bundle_id===purchase.bundleId).reduce((sum,order)=>sum+order.amount_transferred_irr,0),30000);
 });
 
 test('wallet top-up receipt is reviewed once and credits the customer ledger', async t => {
