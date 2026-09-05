@@ -494,6 +494,8 @@ test('discount limits, support tickets and customer notifications work end to en
   r=await fetch(`${base}/api/admin/tickets/${ticket.id}`,{method:'POST',headers:admin,body:JSON.stringify({body:'بررسی شد؛ دوباره امتحان کنید.'})});assert.equal(r.status,201);
   r=await fetch(`${base}/api/customer/tickets/${ticket.id}`,{headers:auth});const detail=await r.json();assert.equal(detail.messages.length,2);assert.equal(detail.status,'answered');
   r=await fetch(`${base}/api/customer/me`,{headers:auth});me=await r.json();assert.ok(me.notifications.some(n=>n.title==='پاسخ پشتیبانی'));
+  r=await fetch(`${base}/api/admin/announcements`,{method:'POST',headers:admin,body:JSON.stringify({title:'نسخه جدید',body:'نسخه آزمایشی منتشر شد',audience:'all'})});assert.equal(r.status,201);assert.equal((await r.json()).sent,1);
+  r=await fetch(`${base}/api/customer/me`,{headers:auth});me=await r.json();assert.ok(me.notifications.some(n=>n.title==='نسخه جدید'));
   r=await fetch(`${base}/api/admin/discounts`,{headers:admin});const codes=await r.json();assert.equal(codes[0].used_count,1);assert.equal(codes[0].total_discount_toman,20000);
 });
 

@@ -1761,9 +1761,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if(req.method==='POST'&&path==='/api/admin/announcements'){
         const b=await readJson(req),title=String(b.title||'').trim(),body=String(b.body||'').trim(),audience=['customer','reseller','all'].includes(b.audience)?b.audience:'all';
         if(title.length<2||title.length>100||body.length<2||body.length>1000)return json(res,400,{error:'INVALID_ANNOUNCEMENT'});
-        const roles=audience==='all'?['customer','reseller']:[audience],accounts=db.prepare(`SELECT id FROM accounts WHERE role IN (${roles.map(()=>'?').join(',')}) AND active=1`).all(...roles),now=new Date().toISOString();
+        const roles=audience==='all'?['customer','reseller']:[audience],accounts=db.prepare(`SELECT id FROM accounts WHERE role IN (${roles.map(()=>'?').join(',')}) AND status='active'`).all(...roles),now=new Date().toISOString();
         const insert=db.prepare('INSERT INTO notifications(id,account_id,title,body,created_at) VALUES(?,?,?,?,?)');
-        db.transaction(()=>accounts.forEach(account=>insert.run(randomUUID(),account.id,title,body,now)))();
+        db.exec('BEGIN IMMEDIATE');try{accounts.forEach(account=>insert.run(randomUUID(),account.id,title,body,now));db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');throw error;}
         audit('admin','broadcast','notification',audience,{title,recipients:accounts.length});return json(res,201,{sent:accounts.length});
       }
       if(req.method==='GET'&&path==='/api/admin/app-release'){
