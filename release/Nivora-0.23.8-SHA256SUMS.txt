@@ -1,0 +1,4 @@
+471245a05fdccbeeb9d405ec206d3351f8af5fdf1f8741668446e80acf9bbc3e  Nivora-Customer-v0.23.8-arm64.apk
+5008dcc3be35b847c92fc40532ffc21eb3fc8217b8ea1ae4385ac6b86b7876de  Nivora-Customer-v0.23.8-armeabi-v7a.apk
+15fc42ec60a4fec5ba1507f9c99916650ba8544ce9079d5c955a3d6684fc70fa  Nivora-Customer-v0.23.8-universal.apk
+a4f7829409e83422f848c79b8ea835b9b1d1bbba252a9c0f38580301142bc6f3  Nivora-Partner-v0.23.8-universal.apk
