@@ -46,11 +46,11 @@ function render(){
   $('#customer-grid').innerHTML=customers.length?customers.map(customer=>{
     const count=deviceCount(customer),limit=deviceLimit(customer);
     const pending=Number(customer.device_recovery_pending)||0;
-    return `<article class="admin-customer-row"><div class="customer-primary"><span class="customer-avatar">${esc(customer.name.slice(0,1))}</span><div><h3>${esc(customer.name)}</h3><p>${esc(customer.phone)}</p></div></div><div class="customer-cell"><small>موجودی</small><b>${fa(customer.balance_toman)} تومان</b></div><div class="customer-cell"><small>دستگاه</small><b>${fa(count)} از ${fa(limit)}</b>${pending?`<em>${fa(pending)} درخواست تازه</em>`:''}</div><span class="status ${customer.status==='active'?'approved':'rejected'}">${customer.status==='active'?'فعال':'مسدود'}</span><div class="admin-customer-actions"><button class="primary customer-sale" data-id="${esc(customer.id)}">فروش اشتراک</button><button class="ghost customer-wallet" data-id="${esc(customer.id)}">موجودی</button><button class="ghost customer-edit" data-id="${esc(customer.id)}">ویرایش</button><button class="${pending?'primary':'ghost'} customer-devices" data-id="${esc(customer.id)}">دستگاه‌ها${pending?' · جدید':''}</button></div></article>`;
+    return `<article class="admin-customer-row"><div class="customer-primary"><span class="customer-avatar">${esc(customer.name.slice(0,1))}</span><div><h3>${esc(customer.name)}</h3><p>${esc(customer.phone)}</p></div></div><div class="customer-cell"><small>موجودی</small><b>${fa(customer.balance_toman)} تومان</b></div><div class="customer-cell"><small>دستگاه</small><b>${fa(count)} از ${fa(limit)}</b>${pending?`<em>${fa(pending)} درخواست تازه</em>`:''}</div><span class="status ${customer.status==='active'?'approved':'rejected'}">${customer.status==='active'?'فعال':'مسدود'}</span><div class="admin-customer-actions"><button class="primary customer-sale" data-id="${esc(customer.id)}">فروش اشتراک</button><button class="ghost customer-wallet" data-action="credit" data-id="${esc(customer.id)}" data-balance="${Number(customer.balance_toman)||0}">＋ افزایش</button><button class="ghost customer-wallet" data-action="debit" data-id="${esc(customer.id)}" data-balance="${Number(customer.balance_toman)||0}">− کاهش</button><button class="danger customer-wallet" data-action="zero" data-id="${esc(customer.id)}" data-balance="${Number(customer.balance_toman)||0}">صفر کردن</button><button class="ghost customer-edit" data-id="${esc(customer.id)}">ویرایش</button><button class="${pending?'primary':'ghost'} customer-devices" data-id="${esc(customer.id)}">دستگاه‌ها${pending?' · جدید':''}</button></div></article>`;
   }).join(''):'<div class="empty">مشتری مطابق جست‌وجو پیدا نشد.</div>';
   $('#admin-customer-pagination').innerHTML=customerTotal?`<button type="button" id="customer-page-prev" class="ghost" ${customerPage<=1?'disabled':''}>قبلی</button><span>صفحه ${fa(customerPage)} از ${fa(customerPages)}</span><button type="button" id="customer-page-next" class="ghost" ${customerPage>=customerPages?'disabled':''}>بعدی</button>`:'';
   document.querySelectorAll('.customer-edit').forEach(button=>button.onclick=()=>edit(button.dataset.id));
-  document.querySelectorAll('.customer-wallet').forEach(button=>button.onclick=()=>wallet(button.dataset.id));
+  document.querySelectorAll('.customer-wallet').forEach(button=>button.onclick=()=>wallet(button.dataset.id,button.dataset.action,Number(button.dataset.balance)||0));
   document.querySelectorAll('.customer-devices').forEach(button=>button.onclick=()=>openDevices(button.dataset.id));
   document.querySelectorAll('.customer-sale').forEach(button=>button.onclick=()=>window.NivoraAdminSales?.openForCustomer(customers.find(customer=>customer.id===button.dataset.id)));
   $('#customer-page-prev')?.addEventListener('click',()=>{if(customerPage>1){customerPage--;void loadCustomers()}});
@@ -158,11 +158,20 @@ async function resolveRecovery(requestId,action){
   catch(error){$('#customer-device-error').textContent=deviceErrorText(error.message)}
 }
 
-async function wallet(id){
-  const rawAmount=await adminPrompt({title:'تغییر موجودی مشتری',message:'برای شارژ عدد مثبت و برای برداشت عدد منفی وارد کنید.',label:'مبلغ (تومان)',type:'number',required:true,confirmText:'ادامه'});if(rawAmount===null)return;
-  const amount=Number(rawAmount);if(!Number.isFinite(amount)||amount===0){toast('مبلغ معتبر و غیرصفر وارد کنید');return}
-  const note=await adminPrompt({title:'توضیح تراکنش',label:'توضیح',value:'تغییر موجودی توسط مدیر',required:true,confirmText:'ثبت تراکنش'});if(note===null)return;
-  await api(`/api/admin/accounts/${id}/wallet`,{method:'POST',body:JSON.stringify({amountToman:amount,note})});toast('موجودی تغییر کرد');await open();
+async function wallet(id,action,currentBalance){
+  let amount;
+  if(action==='zero'){
+    if(currentBalance<=0){toast('موجودی این مشتری از قبل صفر است');return}
+    if(!await adminConfirm({title:'صفر کردن موجودی',message:`تمام موجودی ${fa(currentBalance)} تومانی این مشتری کسر شود؟`,confirmText:'صفر کردن',danger:true}))return;
+    amount=-currentBalance;
+  }else{
+    const rawAmount=await adminPrompt({title:action==='debit'?'کاهش موجودی مشتری':'افزایش موجودی مشتری',message:`موجودی فعلی: ${fa(currentBalance)} تومان`,label:'مبلغ (تومان)',type:'number',required:true,confirmText:'ادامه'});if(rawAmount===null)return;
+    const unsigned=Number(rawAmount);if(!Number.isInteger(unsigned)||unsigned<=0){toast('یک مبلغ صحیح و بیشتر از صفر وارد کنید');return}
+    if(action==='debit'&&unsigned>currentBalance){toast('مبلغ کاهش از موجودی فعلی بیشتر است');return}
+    amount=action==='debit'?-unsigned:unsigned;
+  }
+  const note=await adminPrompt({title:'توضیح تراکنش',label:'توضیح',value:action==='zero'?'صفر کردن موجودی توسط مدیر':action==='debit'?'کاهش موجودی توسط مدیر':'افزایش موجودی توسط مدیر',required:true,confirmText:'ثبت تراکنش'});if(note===null)return;
+  await api(`/api/admin/accounts/${id}/wallet`,{method:'POST',body:JSON.stringify({amountToman:amount,note})});toast(`موجودی به ${fa(currentBalance+amount)} تومان تغییر کرد`);await open();
 }
 
 document.addEventListener('DOMContentLoaded',mount);

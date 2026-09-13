@@ -1327,8 +1327,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const resellerWalletTransfer=path.match(/^\/api\/reseller\/customers\/([^/]+)\/wallet$/);
         if(resellerWalletTransfer&&req.method==='POST'){
           const target=db.prepare("SELECT id,name,phone FROM accounts WHERE id=? AND role='customer' AND status='active'").get(resellerWalletTransfer[1]);
-          const body=await readJson(req),amount=Number(body.amountToman),note=String(body.note||'شارژ توسط همکار فروش').trim();
-          if(!target)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});if(!Number.isInteger(amount)||amount===0||note.length<3)return json(res,400,{error:'INVALID_AMOUNT'});
+          if(!target)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});
+          const body=await readJson(req),currentBalance=getWalletStatement(db,target.id,1).balanceToman;
+          if(body.zeroBalance===true&&currentBalance===0)return json(res,200,{balanceToman:0,resellerBalanceToman:getWalletStatement(db,account.id,1).balanceToman});
+          const amount=body.zeroBalance===true?-currentBalance:Number(body.amountToman),note=String(body.note||'شارژ توسط همکار فروش').trim();
+          if(!Number.isInteger(amount)||amount===0||note.length<3)return json(res,400,{error:'INVALID_AMOUNT'});
           if(amount<0){
             const debit=Math.abs(amount),owned=db.prepare("SELECT * FROM reseller_wallet_transfers WHERE reseller_id=? AND customer_account_id=? AND status IN ('active','partially_reversed') ORDER BY created_at DESC").all(account.id,target.id);
             const available=owned.reduce((sum,item)=>sum+Number(item.amount_toman-item.reversed_amount_toman),0);
