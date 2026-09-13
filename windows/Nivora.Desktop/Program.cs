@@ -24,13 +24,18 @@ namespace NivoraDesktop {
         readonly string deviceId = LoadDeviceId();
         Process xray;
         string sessionToken = "";
+        readonly NotifyIcon tray = new NotifyIcon();
+        bool exitRequested;
         bool proxyCaptured;
         object previousProxyEnabled, previousProxyServer;
         public DesktopForm() {
             // Keep the desktop client intentionally phone-like: the same compact flow
             // and responsive layout is used on Windows instead of a stretched dashboard.
-            Text = "Nivora"; Width = 500; Height = 790; MinimumSize = new System.Drawing.Size(430, 650); MaximumSize = new System.Drawing.Size(620, 920); StartPosition = FormStartPosition.CenterScreen;
-            Controls.Add(view); this.Load += async (s,e) => await Start(); FormClosing += (s,e) => Stop();
+            Text = "Nivora"; Width = 460; Height = 760; MinimumSize = new System.Drawing.Size(410, 620); MaximumSize = new System.Drawing.Size(560, 860); StartPosition = FormStartPosition.CenterScreen;
+            var iconPath=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"nivora.ico"); if(File.Exists(iconPath))Icon=new System.Drawing.Icon(iconPath);
+            tray.Icon=Icon??System.Drawing.SystemIcons.Shield;tray.Text="Nivora VPN";tray.Visible=true;tray.DoubleClick+=(s,e)=>RestoreWindow();
+            var menu=new ContextMenuStrip();menu.Items.Add("باز کردن Nivora",null,(s,e)=>RestoreWindow());menu.Items.Add("قطع اتصال",null,(s,e)=>{Stop();Reply("state",new{connected=false,message="اتصال قطع شد"});});menu.Items.Add("خروج",null,(s,e)=>{exitRequested=true;Close();});tray.ContextMenuStrip=menu;
+            Controls.Add(view); this.Load += async (s,e) => await Start(); Resize+=(s,e)=>{if(WindowState==FormWindowState.Minimized)Hide();}; FormClosing += (s,e) => {if(!exitRequested){e.Cancel=true;Hide();return;}Stop();tray.Visible=false;tray.Dispose();};
         }
         async System.Threading.Tasks.Task Start() {
             try {
@@ -39,6 +44,7 @@ namespace NivoraDesktop {
                 view.CoreWebView2.Settings.IsScriptEnabled = true;
                 view.CoreWebView2.Settings.IsWebMessageEnabled = true;
                 view.CoreWebView2.WebMessageReceived += async (s,e) => await Message(e.TryGetWebMessageAsString());
+                view.CoreWebView2.NavigationCompleted += async (s,e) => { var saved=LoadToken();if(!String.IsNullOrWhiteSpace(saved)){sessionToken=saved;Reply("session",new{token=saved});await LoadAccount(saved);} };
                 // The interface is fully self-contained. NavigateToString avoids a blank
                 // page on older WebView2 runtimes that fail virtual-host mappings.
                 view.CoreWebView2.NavigateToString(File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui", "index.html"), Encoding.UTF8));
@@ -51,6 +57,7 @@ namespace NivoraDesktop {
                 else if (action == "refresh") await LoadAccount(Get(msg,"token"));
                 else if (action == "connect") await Connect(Get(msg,"url"));
                 else if (action == "disconnect") { Stop(); Reply("state", new { connected = false, message = "اتصال قطع شد" }); }
+                else if (action == "logout") { Stop(); DeleteToken(); sessionToken=""; Reply("expired", new { }); }
                 else if (action == "openAccount") OpenAccount(Get(msg,"section"));
             } catch { Reply("error", new { message = "خطا در پردازش درخواست" }); }
         }
@@ -59,12 +66,12 @@ namespace NivoraDesktop {
             var request = Request(HttpMethod.Post, Api + "/api/customer/login", ""); request.Content = new StringContent(body, Encoding.UTF8,"application/json");
             var res = await http.SendAsync(request); var raw = await res.Content.ReadAsStringAsync();
             if (!res.IsSuccessStatusCode) { Reply("error", new { message = ApiError(raw) }); return; }
-            var data = json.Deserialize<Dictionary<string,object>>(raw); var token = Get(data,"token"); sessionToken = token; Reply("session", new { token = token }); await LoadAccount(token);
+            var data = json.Deserialize<Dictionary<string,object>>(raw); var token = Get(data,"token"); sessionToken = token; SaveToken(token); Reply("session", new { token = token }); await LoadAccount(token);
         }
         async System.Threading.Tasks.Task LoadAccount(string token) {
             if (String.IsNullOrWhiteSpace(token)) return;
             sessionToken = token; var r = Request(HttpMethod.Get, Api + "/api/customer/me", token);
-            var res = await http.SendAsync(r); if (!res.IsSuccessStatusCode) { Reply("expired", new { }); return; }
+            var res = await http.SendAsync(r); if (!res.IsSuccessStatusCode) { DeleteToken();sessionToken="";Reply("expired", new { }); return; }
             Reply("account", json.DeserializeObject(await res.Content.ReadAsStringAsync()));
         }
         async System.Threading.Tasks.Task Connect(string url) {
@@ -75,13 +82,21 @@ namespace NivoraDesktop {
                 if (!response.IsSuccessStatusCode) throw new Exception(response.StatusCode == HttpStatusCode.Unauthorized ? "این دستگاه برای اشتراک مجاز نیست" : "دریافت مسیر اتصال ناموفق بود");
                 var raw = await response.Content.ReadAsStringAsync(); var link = FindVless(raw); if (link == null) throw new Exception("مسیر سازگار پیدا نشد");
                 var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Nivora Desktop"); Directory.CreateDirectory(folder);
-                File.WriteAllText(Path.Combine(folder,"xray.json"), BuildConfig(link), new UTF8Encoding(false));
-                var exe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"core","xray.exe"); if (!File.Exists(exe)) throw new Exception("هسته اتصال پیدا نشد");
-                Stop(); xray = Process.Start(new ProcessStartInfo(exe,"run -c \"" + Path.Combine(folder,"xray.json") + "\"") { UseShellExecute=false, CreateNoWindow=true });
-                await System.Threading.Tasks.Task.Delay(1100); if (xray == null || xray.HasExited) throw new Exception("اجرای مسیر ناموفق بود"); Proxy(true); Reply("state", new { connected = true, message = "متصل شد · مسیر امن فعال است" });
+                var sing=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"core","sing-box.exe");
+                Stop();
+                if(File.Exists(sing)){
+                    var configPath=Path.Combine(folder,"sing-box.json");File.WriteAllText(configPath,BuildTunConfig(link),new UTF8Encoding(false));
+                    xray=Process.Start(new ProcessStartInfo(sing,"run -c \""+configPath+"\""){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=Path.GetDirectoryName(sing)});
+                }else{
+                    File.WriteAllText(Path.Combine(folder,"xray.json"), BuildConfig(link), new UTF8Encoding(false));
+                    var exe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"core","xray.exe"); if (!File.Exists(exe)) throw new Exception("هسته اتصال پیدا نشد");
+                    xray = Process.Start(new ProcessStartInfo(exe,"run -c \"" + Path.Combine(folder,"xray.json") + "\"") { UseShellExecute=false, CreateNoWindow=true, WorkingDirectory=Path.GetDirectoryName(exe) });Proxy(true);
+                }
+                await System.Threading.Tasks.Task.Delay(1500); if (xray == null || xray.HasExited) throw new Exception("اجرای مسیر ناموفق بود"); Reply("state", new { connected = true, message = File.Exists(sing)?"متصل شد · کل سیستم تحت پوشش است":"متصل شد · حالت سازگار فعال است" });
             } catch (Exception ex) { Stop(); Reply("error", new { message = ex.Message }); }
         }
         void Stop() { Proxy(false); try { if (xray != null && !xray.HasExited) xray.Kill(); } catch {} xray = null; }
+        void RestoreWindow(){Show();WindowState=FormWindowState.Normal;Activate();}
         void OpenAccount(string section) { var anchor=section=="wallet"?"#wallet-center":section=="support"?"#support-center":""; try{Process.Start(Api+"/account"+anchor);}catch{Reply("error",new{message="بازکردن حساب در مرورگر ممکن نشد"});} }
         void Reply(string type, object payload) { if (view.CoreWebView2 != null) view.CoreWebView2.PostWebMessageAsJson(json.Serialize(new { type = type, payload = payload })); }
         string BuildConfig(string link) {
@@ -93,11 +108,22 @@ namespace NivoraDesktop {
             var user=new Dictionary<string,object>{{"id",id},{"encryption",Val(query,"encryption","none")}}; if(query.ContainsKey("flow"))user["flow"]=query["flow"];
             return json.Serialize(new Dictionary<string,object>{{"log",new Dictionary<string,object>{{"loglevel","warning"}}},{"inbounds",new object[]{new Dictionary<string,object>{{"listen","127.0.0.1"},{"port",Int32.Parse(CorePort)},{"protocol","socks"},{"settings",new Dictionary<string,object>{{"udp",true}}}},new Dictionary<string,object>{{"listen","127.0.0.1"},{"port",Int32.Parse(HttpPort)},{"protocol","http"}}}},{"outbounds",new object[]{new Dictionary<string,object>{{"protocol","vless"},{"settings",new Dictionary<string,object>{{"vnext",new object[]{new Dictionary<string,object>{{"address",hp.Substring(0,colon)},{"port",port},{"users",new object[]{user}}}}}}},{"streamSettings",stream}}}}});
         }
+        string BuildTunConfig(string link) {
+            string value=link.Substring(8);int at=value.IndexOf('@');if(at<1)throw new Exception("لینک نامعتبر است");string id=value.Substring(0,at),rest=value.Substring(at+1);int hash=rest.IndexOf('#');if(hash>=0)rest=rest.Substring(0,hash);int q=rest.IndexOf('?');string hp=q>=0?rest.Substring(0,q):rest;var query=q>=0?Query(rest.Substring(q+1)):new Dictionary<string,string>();int colon=hp.LastIndexOf(':');int port;if(colon<1||!Int32.TryParse(hp.Substring(colon+1),out port))throw new Exception("لینک نامعتبر است");
+            var outbound=new Dictionary<string,object>{{"type","vless"},{"tag","proxy"},{"server",hp.Substring(0,colon)},{"server_port",port},{"uuid",id},{"packet_encoding","xudp"}};
+            var security=Val(query,"security","none");if(security=="tls"||security=="reality"){var tls=new Dictionary<string,object>{{"enabled",true},{"server_name",Val(query,"sni",hp.Substring(0,colon))},{"utls",new Dictionary<string,object>{{"enabled",true},{"fingerprint",Val(query,"fp","chrome")}}}};if(security=="reality")tls["reality"]=new Dictionary<string,object>{{"enabled",true},{"public_key",Val(query,"pbk","")},{"short_id",Val(query,"sid","")}};outbound["tls"]=tls;}
+            var type=Val(query,"type","tcp");if(type=="grpc")outbound["transport"]=new Dictionary<string,object>{{"type","grpc"},{"service_name",Val(query,"serviceName","")}};else if(type=="ws")outbound["transport"]=new Dictionary<string,object>{{"type","ws"},{"path",Val(query,"path","/")}};
+            return json.Serialize(new Dictionary<string,object>{{"log",new Dictionary<string,object>{{"level","warn"}}},{"inbounds",new object[]{new Dictionary<string,object>{{"type","tun"},{"tag","tun-in"},{"address",new object[]{"172.19.0.1/30"}},{"auto_route",true},{"strict_route",true},{"stack","mixed"}}}},{"outbounds",new object[]{outbound}},{"route",new Dictionary<string,object>{{"auto_detect_interface",true},{"final","proxy"}}}});
+        }
         static string FindVless(string raw) { raw=raw.Trim(); if(!raw.Contains("://"))try{raw=Encoding.UTF8.GetString(Convert.FromBase64String(raw));}catch{} foreach(var l in raw.Replace("\r","").Split('\n'))if(l.TrimStart().StartsWith("vless://",StringComparison.OrdinalIgnoreCase))return l.Trim(); return null; }
         static Dictionary<string,string> Query(string s) { var d=new Dictionary<string,string>(); foreach(var p in s.Split('&')){var i=p.IndexOf('=');if(i>0)d[Uri.UnescapeDataString(p.Substring(0,i))]=Uri.UnescapeDataString(p.Substring(i+1));}return d; }
         HttpRequestMessage Request(HttpMethod method, string url, string bearer) { var request = new HttpRequestMessage(method,url); request.Headers.TryAddWithoutValidation("X-Nivora-Device",deviceId); request.Headers.TryAddWithoutValidation("X-Nivora-Platform","Windows"); if(!String.IsNullOrWhiteSpace(bearer))request.Headers.Authorization=new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer",bearer); return request; }
         string ApiError(string raw) { try { var data=json.Deserialize<Dictionary<string,object>>(raw); var code=Get(data,"error"); if(code=="DEVICE_ALREADY_BOUND")return "این حساب روی دستگاه دیگری فعال است؛ از پشتیبانی بخواهید دستگاه قبلی را آزاد کند"; if(code=="DEVICE_LIMIT_REACHED")return "ظرفیت دستگاه‌های این حساب تکمیل است"; if(code=="RATE_LIMITED")return "تلاش‌ها زیاد بود؛ کمی بعد دوباره امتحان کنید"; if(code=="INVALID_CREDENTIALS")return "شماره یا رمز عبور نادرست است"; } catch {} return "ارتباط با حساب انجام نشد"; }
         static string LoadDeviceId() { var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Nivora"); Directory.CreateDirectory(folder); var path=Path.Combine(folder,"device.id"); try { var saved=File.Exists(path)?File.ReadAllText(path).Trim():""; if(saved.Length>=20)return saved; } catch {} var bytes=new byte[24]; using(var rng=RandomNumberGenerator.Create())rng.GetBytes(bytes); var value="win_"+Convert.ToBase64String(bytes).TrimEnd('=').Replace('+','-').Replace('/','_'); try{File.WriteAllText(path,value,Encoding.ASCII);}catch{} return value; }
+        static string TokenPath(){var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Nivora");Directory.CreateDirectory(folder);return Path.Combine(folder,"session.bin");}
+        static void SaveToken(string value){try{File.WriteAllBytes(TokenPath(),ProtectedData.Protect(Encoding.UTF8.GetBytes(value),null,DataProtectionScope.CurrentUser));}catch{}}
+        static string LoadToken(){try{return Encoding.UTF8.GetString(ProtectedData.Unprotect(File.ReadAllBytes(TokenPath()),null,DataProtectionScope.CurrentUser));}catch{return "";}}
+        static void DeleteToken(){try{File.Delete(TokenPath());}catch{}}
         static string Val(Dictionary<string,string>d,string k,string f){return d.ContainsKey(k)?d[k]:f;} static string Get(Dictionary<string,object>d,string k){return d!=null&&d.ContainsKey(k)&&d[k]!=null?d[k].ToString():"";} static string Escape(string s){return(s??"").Replace("\\","\\\\").Replace("\"","\\\"");}
         const int CHANGED=39, REFRESH=37; [DllImport("wininet.dll")] static extern bool InternetSetOption(IntPtr h,int o,IntPtr b,int l);
         void Proxy(bool on) { using(var k=Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings")){if(on){if(!proxyCaptured){previousProxyEnabled=k.GetValue("ProxyEnable",0);previousProxyServer=k.GetValue("ProxyServer",null);proxyCaptured=true;}k.SetValue("ProxyEnable",1,RegistryValueKind.DWord);k.SetValue("ProxyServer","127.0.0.1:"+HttpPort);}else if(proxyCaptured){k.SetValue("ProxyEnable",previousProxyEnabled??0,RegistryValueKind.DWord);if(previousProxyServer==null)k.DeleteValue("ProxyServer",false);else k.SetValue("ProxyServer",previousProxyServer);proxyCaptured=false;}}InternetSetOption(IntPtr.Zero,CHANGED,IntPtr.Zero,0);InternetSetOption(IntPtr.Zero,REFRESH,IntPtr.Zero,0); }
