@@ -48,7 +48,8 @@ import java.util.UUID
 import kotlin.concurrent.thread
 
 class MainActivity : FragmentActivity(), NivoraActions {
-    private companion object {
+    companion object {
+        const val ACTION_QUICK_CONNECT = "ir.nivora.app.QUICK_CONNECT"
         val BIOMETRIC_AUTHENTICATORS =
             BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
     }
@@ -217,6 +218,19 @@ class MainActivity : FragmentActivity(), NivoraActions {
         }
         NetworkSettingsAdvisor.inspect(this)
         handler.postDelayed(notificationPoll,60_000)
+        if (customerAudience && intent?.action == ACTION_QUICK_CONNECT) pendingVpnMode = VpnConnectionMode.PRIMARY
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (BuildConfig.APP_AUDIENCE == "customer" && intent.action == ACTION_QUICK_CONNECT) {
+            if (liveSessionValidated) requestVpn(VpnConnectionMode.PRIMARY)
+            else {
+                pendingVpnMode = VpnConnectionMode.PRIMARY
+                if (!dashboardValidationInFlight) loadDashboard(initial = state.account == null)
+            }
+        }
     }
 
     override fun onResume() {

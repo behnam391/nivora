@@ -590,7 +590,7 @@ private fun PartnerDirectoryRow(customer: ResellerDirectoryCustomer, onOpen: () 
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FilledTonalButton(onClick = onWallet, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 7.dp)) { Icon(Icons.Rounded.AccountBalanceWallet, null, Modifier.size(17.dp)); Text(" شارژ") }
+            FilledTonalButton(onClick = onWallet, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 7.dp)) { Icon(Icons.Rounded.AccountBalanceWallet, null, Modifier.size(17.dp)); Text(" ویرایش کیف پول") }
             FilledTonalButton(onClick = onDebt, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 7.dp)) { Icon(Icons.Rounded.RequestQuote, null, Modifier.size(17.dp)); Text(" بدهی") }
             Button(onClick = onSale, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 7.dp)) { Icon(Icons.Rounded.AddShoppingCart, null, Modifier.size(17.dp)); Text(" فروش") }
         }
@@ -991,7 +991,7 @@ private fun PartnerOwnCustomerDialog(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Button(onClick = onSale, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 6.dp)) { Icon(Icons.Rounded.AddShoppingCart, null, Modifier.size(17.dp)); Text(" فروش") }
-            if (onWallet != null) FilledTonalButton(onClick = onWallet, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("شارژ کیف پول") }
+            if (onWallet != null) FilledTonalButton(onClick = onWallet, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("ویرایش کیف پول") }
             if (onDebt != null) OutlinedButton(onClick = onDebt, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("ثبت بدهی") }
         }
         if (passwordAccessLoading) {
@@ -1027,7 +1027,7 @@ private fun PartnerDirectoryCustomerDialog(customer: ResellerSaleTarget, onDismi
         }
         Button(onClick = onSale, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.AddShoppingCart, null); Text(" فروش اشتراک") }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton(onClick = onWallet, modifier = Modifier.weight(1f)) { Text("شارژ کیف پول") }
+            FilledTonalButton(onClick = onWallet, modifier = Modifier.weight(1f)) { Text("ویرایش کیف پول") }
             OutlinedButton(onClick = onDebt, modifier = Modifier.weight(1f)) { Text("ثبت بدهی") }
         }
         Text("پس از اولین فروش یا شارژ، این مشتری به دفتر شما متصل می‌شود.", color = Color(0xFF8095B8), style = MaterialTheme.typography.bodySmall)
@@ -1095,11 +1095,15 @@ private fun PartnerWalletCreditDialog(customer: ResellerSaleTarget, resellerBala
     var amountText by rememberSaveable(customer.phone) { mutableStateOf("") }
     var note by rememberSaveable(customer.phone) { mutableStateOf("شارژ توسط همکار فروش") }
     val amount = amountText.toIntOrNull() ?: 0
-    PartnerDialog(onDismiss, "شارژ کیف پول", "${customer.name} · موجودی فعلی ${customer.balanceToman?.let(::toman) ?: "نامشخص"}") {
-        PartnerNumberField(amountText, { amountText = it }, "مبلغ شارژ (تومان)")
+    PartnerDialog(onDismiss, "ویرایش کیف پول", "${customer.name} · موجودی فعلی ${customer.balanceToman?.let(::toman) ?: "نامشخص"}") {
+        PartnerNumberField(amountText, { amountText = it }, "مبلغ (تومان)")
         PartnerField(note, { note = it.take(250) }, "توضیح تراکنش", Icons.AutoMirrored.Rounded.Notes)
-        Text("مبلغ از اعتبار همکاری شما کسر و به کیف پول مشتری افزوده می‌شود.", color = Color(0xFF8FA4C6), style = MaterialTheme.typography.bodySmall)
-        Button(onClick = { onSubmit(amount, note.trim()) }, enabled = !busy && ResellerPolicy.validTransfer(amount, resellerBalance), modifier = Modifier.fillMaxWidth()) { Text("تأیید انتقال ${if (amount > 0) toman(amount) else ""}") }
+        Text("افزایش از اعتبار شما کم می‌شود؛ کاهش فقط از شارژهای ثبت‌شده توسط خودتان مجاز است.", color = Color(0xFF8FA4C6), style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            Button(onClick = { onSubmit(amount, note.trim()) }, enabled = !busy && ResellerPolicy.validTransfer(amount, resellerBalance), modifier = Modifier.weight(1f)) { Text("＋ افزایش") }
+            FilledTonalButton(onClick = { onSubmit(-amount, note.trim()) }, enabled = !busy && amount > 0, modifier = Modifier.weight(1f)) { Text("− کاهش") }
+        }
+        OutlinedButton(onClick = { customer.balanceToman?.takeIf { it > 0 }?.let { onSubmit(-it, "صفر کردن موجودی توسط همکار فروش") } }, enabled = !busy && (customer.balanceToman ?: 0) > 0, modifier = Modifier.fillMaxWidth()) { Text("صفر کردن موجودی") }
         if (amount > resellerBalance) Text("اعتبار همکاری کافی نیست.", color = Color(0xFFFF7890))
         TextButton(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("انصراف") }
     }

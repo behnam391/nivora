@@ -5,5 +5,6 @@
     <application>
         <activity android:name=".NetworkLabActivity" tools:node="remove" />
         <service android:name=".vpn.NivoraVpnService" tools:node="remove" />
+        <service android:name=".vpn.NivoraQuickTileService" tools:node="remove" />
     </application>
 </manifest>

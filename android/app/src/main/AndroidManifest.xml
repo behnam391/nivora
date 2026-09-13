@@ -24,5 +24,8 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Encrypted VPN tunnel" />
             <intent-filter><action android:name="android.net.VpnService"/></intent-filter>
         </service>
+        <service android:name=".vpn.NivoraQuickTileService" android:label="اتصال Nivora" android:icon="@drawable/ic_nivora_notification" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE" android:exported="true">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE"/></intent-filter>
+        </service>
     </application>
 </manifest>
