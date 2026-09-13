@@ -23,7 +23,7 @@ internal object TunnelHealthProbe {
         val pool=Executors.newFixedThreadPool(targets.size.coerceIn(1,3)) { task -> Thread(task,"nivora-health").apply { isDaemon=true } }
         val completions=ExecutorCompletionService<Long?>(pool)
         val deadline=System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(budgetMs)
-        targets.take(3).forEach { target -> completions.submit(Callable { runCatching { probe(proxy,target,sockets) }.getOrNull() }) }
+        targets.take(3).forEach { target -> completions.submit(Callable { runCatching { probe(proxy,target,sockets,deadline) }.getOrNull() }) }
         return try {
             repeat(targets.size.coerceAtMost(3)) {
                 val remaining=deadline-System.nanoTime()
@@ -38,11 +38,12 @@ internal object TunnelHealthProbe {
         }
     }
 
-    private fun probe(proxy:HealthProxy,target:String,sockets:MutableList<Socket>):Long {
+    private fun probe(proxy:HealthProxy,target:String,sockets:MutableList<Socket>,deadline:Long):Long {
+        fun remaining():Int = TimeUnit.NANOSECONDS.toMillis(deadline-System.nanoTime()).coerceIn(1,6_000).toInt()
         val uri=URI(target);require(uri.scheme=="https" && uri.host!=null)
         val started=System.nanoTime()
         Socket().use { socket ->
-            sockets.add(socket);socket.soTimeout=1_800
+            sockets.add(socket);socket.soTimeout=remaining()
             socket.connect(InetSocketAddress("127.0.0.1",proxy.port),700)
             val input=DataInputStream(socket.getInputStream());val output=socket.getOutputStream()
             output.write(byteArrayOf(5,1,2));output.flush()
@@ -57,7 +58,7 @@ internal object TunnelHealthProbe {
             input.readFully(ByteArray(count+2))
             val tls=(SSLSocketFactory.getDefault() as SSLSocketFactory).createSocket(socket,uri.host,port,true) as SSLSocket
             tls.use {
-                it.soTimeout=1_800
+                it.soTimeout=remaining()
                 it.sslParameters=it.sslParameters.apply { endpointIdentificationAlgorithm="HTTPS";serverNames=listOf(SNIHostName(uri.host)) }
                 it.startHandshake()
                 val path=uri.rawPath.ifBlank { "/" }+(uri.rawQuery?.let { q->"?$q" }?:"")

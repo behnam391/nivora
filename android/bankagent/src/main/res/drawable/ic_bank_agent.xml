@@ -1,0 +1,4 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item><shape android:shape="rectangle"><solid android:color="#142238" /><corners android:radius="22dp" /></shape></item>
+    <item android:drawable="@drawable/ic_bank_agent_foreground" />
+</layer-list>

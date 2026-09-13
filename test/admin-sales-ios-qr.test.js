@@ -5,6 +5,31 @@ import { openDatabase } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import QRCode from 'qrcode';
 
+test('admin changes one subscription limits and issues QR without changing the shared plan',async t=>{
+  let applied;
+  const provisioner=async order=>({panelClientId:order.id,subscriptionUrl:'https://panel.test/sub/one'});
+  provisioner.setLimits=async value=>{applied=value};
+  const {db,base,admin}=await start(t,{provisioner});
+  const customer=await createAccount(base,admin,{name:'ویژه',phone:'09124449991'});
+  const {plan}=await createPlanAndLocation(base,admin);
+  let response=await fetch(`${base}/api/admin/sales`,{method:'POST',headers:admin,body:JSON.stringify({customerId:customer.id,planId:plan.id})});
+  assert.equal(response.status,201);
+  const order=db.prepare('SELECT id FROM orders WHERE account_id=?').get(customer.id);
+  const target=`${base}/api/admin/orders/${order.id}`;
+  assert.equal((await fetch(target+'/limits',{method:'POST',headers:{'content-type':'application/json'},body:'{}'})).status,401);
+  response=await fetch(target+'/limits',{method:'POST',headers:admin,body:JSON.stringify({trafficGb:0,durationDays:0,specialMessage:'اشتراک ویژه شما'})});
+  assert.equal(response.status,200);assert.equal(applied.trafficGb,0);assert.equal(applied.durationDays,0);
+  assert.notEqual(db.prepare('SELECT traffic_gb FROM plans WHERE id=?').get(plan.id).traffic_gb,0);
+  const changed=db.prepare('SELECT p.* FROM plans p JOIN orders o ON p.id=o.plan_id WHERE o.id=?').get(order.id);
+  assert.equal(changed.active,0);assert.equal(changed.duration_days,0);assert.equal(changed.special_message,'اشتراک ویژه شما');
+  response=await fetch(target+'/ios-import',{method:'POST',headers:admin,body:'{}'});
+  assert.equal(response.status,201);assert.match((await response.json()).qrDataUrl,/^data:image\/png;base64,/);
+  const issued=db.prepare('SELECT * FROM reseller_subscription_import_tokens WHERE issued_by_admin=1').get();
+  assert.equal(issued.account_id,customer.id);assert.equal(issued.max_fetches,3);
+  db.prepare("UPDATE subscriptions SET control_status='suspended' WHERE order_id=?").run(order.id);
+  assert.equal((await fetch(target+'/ios-import',{method:'POST',headers:admin,body:'{}'})).status,409);
+});
+
 test('wallet purchase retries and overlapping requests deliver and debit once',async t=>{
   let release,started;const wait=new Promise(r=>release=r),entered=new Promise(r=>started=r);let calls=0;
   const provisioner=async order=>{calls++;started();await wait;return {panelClientId:order.id,subscriptionUrl:'https://panel.test/sub/one'}};

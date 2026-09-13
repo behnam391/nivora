@@ -35,7 +35,7 @@ async function boot(){
 }
 
 function renderPlans(){
-  $('#plans-list').innerHTML=plans.length?plans.map((plan,index)=>`<article class="plan"><span class="tag">${index===1?'پیشنهاد محبوب':'اشتراک Nivora'}</span><h3>${esc(plan.name)}</h3><p class="desc">${esc(plan.description||'اتصال سریع و پایدار')}</p><div class="price">${fa(plan.priceIrr)} <small>تومان</small></div><ul class="features"><li>${fa(plan.trafficGb)} گیگابایت حجم</li><li>${fa(plan.durationDays)} روز اعتبار</li><li>${fa(plan.deviceLimit)} دستگاه</li></ul><button class="cta buy" data-id="${esc(plan.id)}">انتخاب پلن</button></article>`).join(''):'<div class="loading">در حال حاضر پلن فعالی وجود ندارد.</div>';
+  $('#plans-list').innerHTML=plans.length?plans.map((plan,index)=>`<article class="plan"><span class="tag">${index===1?'پیشنهاد محبوب':'اشتراک Nivora'}</span><h3>${esc(plan.name)}</h3><p>${countryBadges(plan.locations)}</p><p>${esc(plan.specialMessage||'')}</p><p class="desc">${esc(plan.description||'اتصال سریع و پایدار')}</p><div class="price">${fa(plan.priceIrr)} <small>تومان</small></div><ul class="features"><li>${plan.trafficGb===0?'حجم نامحدود':fa(plan.trafficGb)+' گیگابایت حجم'}</li><li>${plan.durationDays===0?'زمان نامحدود':fa(plan.durationDays)+' روز اعتبار'}</li><li>${fa(plan.deviceLimit)} دستگاه</li></ul><button class="cta buy" data-id="${esc(plan.id)}">انتخاب پلن</button></article>`).join(''):'<div class="loading">در حال حاضر پلن فعالی وجود ندارد.</div>';
   $$('.buy').forEach(button=>button.onclick=()=>{renewParent=null;openBuy(button.dataset.id)});
 }
 

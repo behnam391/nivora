@@ -2,6 +2,11 @@ package ir.nivora.app.ui
 
 import android.content.ActivityNotFoundException
 import android.net.Uri
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
@@ -67,6 +72,8 @@ fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
         }
     }
     CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides LayoutDirection.Rtl) {
+        Column(Modifier.fillMaxSize()) {
+        Box(Modifier.weight(1f)) {
         when {
             !state.signedIn -> Box(Modifier.fillMaxSize()) {
                 AuthScreen(state, actions)
@@ -77,6 +84,62 @@ fun NivoraApp(state: NivoraUiState, actions: NivoraActions) {
             state.loadError != null && state.account == null && state.reseller == null -> FullScreenError(state.loadError, actions::refresh, actions::logout)
             state.role == "reseller" -> PartnerAppDashboard(state, actions, snackbar)
             else -> MainDashboard(state, actions, snackbar)
+        }
+        }
+        if (!state.signedIn || state.role == "reseller") TelegramLinks()
+        }
+    }
+}
+
+@Composable
+private fun TelegramLinks() {
+    val uri=androidx.compose.ui.platform.LocalUriHandler.current
+    val context = LocalContext.current
+    Surface(color=MaterialTheme.colorScheme.surface.copy(alpha=.95f)) {
+        Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal=16.dp, vertical=6.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+            listOf("کانال" to "nivorali", "ربات" to "nivorali_bot").forEach { (label, handle) ->
+                Surface(onClick={runCatching{uri.openUri("https://t.me/$handle")}.onFailure {
+                    android.widget.Toast.makeText(context,"برنامه‌ای برای باز کردن لینک پیدا نشد",android.widget.Toast.LENGTH_SHORT).show()
+                }}, modifier=Modifier.weight(1f),shape=RoundedCornerShape(16.dp),
+                    color=MaterialTheme.colorScheme.primary.copy(.07f),border=BorderStroke(1.dp,MaterialTheme.colorScheme.primary.copy(.16f))) {
+                    Row(Modifier.heightIn(min=48.dp).padding(horizontal=10.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        Icon(if(label=="کانال") Icons.Rounded.Campaign else Icons.Rounded.SmartToy,null,modifier=Modifier.size(20.dp),tint=MaterialTheme.colorScheme.primary)
+                        Column { Text(label,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("@$handle",style=MaterialTheme.typography.labelMedium.copy(textDirection=TextDirection.Ltr),maxLines=1) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private enum class CustomerSection(val title: String) { NOTIFICATIONS("اعلان‌ها"), SUPPORT("پشتیبانی"), ACCOUNT("حساب من"), TELEGRAM("تلگرام") }
+
+@Composable
+private fun TelegramScreen() {
+    val uri = androidx.compose.ui.platform.LocalUriHandler.current
+    val context = LocalContext.current
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(18.dp)) {
+        Spacer(Modifier.height(20.dp))
+        Box(Modifier.size(82.dp).background(Color(0xFF2AABEE).copy(.12f),CircleShape),contentAlignment=Alignment.Center) {
+            Icon(Icons.AutoMirrored.Rounded.Send,null,Modifier.size(38.dp),tint=Color(0xFF65C8FF))
+        }
+        Text("همراه Nivora بمانید",style=MaterialTheme.typography.headlineMedium)
+        Text("خبرها، نسخه‌های تازه و خدمات حساب در تلگرام",style=MaterialTheme.typography.bodyMedium,textAlign=TextAlign.Center,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        listOf(Triple("کانال رسمی","خبرها و بروزرسانی‌های برنامه","nivorali"),Triple("ربات Nivora","خدمات حساب و پیگیری درخواست‌ها","nivorali_bot")).forEach { (title,subtitle,handle) ->
+            Surface(onClick={runCatching{uri.openUri("https://t.me/$handle")}.onFailure{android.widget.Toast.makeText(context,"باز کردن تلگرام ممکن نشد",android.widget.Toast.LENGTH_SHORT).show()}},
+                modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(22.dp),color=MaterialTheme.colorScheme.surface) {
+                Row(Modifier.padding(20.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                    Icon(if(handle=="nivorali")Icons.Rounded.Campaign else Icons.Rounded.SmartToy,null,tint=MaterialTheme.colorScheme.primary)
+                    Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(5.dp)) {
+                        Text(title,style=MaterialTheme.typography.titleMedium)
+                        Text(subtitle,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("@$handle",style=MaterialTheme.typography.labelMedium.copy(textDirection=TextDirection.Ltr),color=MaterialTheme.colorScheme.primary)
+                    }
+                    Icon(Icons.Rounded.OpenInNew,"باز کردن تلگرام",Modifier.size(18.dp))
+                }
+            }
         }
     }
 }
@@ -148,14 +211,19 @@ private fun AuthScreen(state: NivoraUiState, actions: NivoraActions) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Spacer(Modifier.height(12.dp))
-            NivoraLogo(modifier = Modifier.fillMaxWidth(), compact = false, onDark = true)
+            Box(Modifier.size(76.dp).background(MaterialTheme.colorScheme.primary.copy(.1f),CircleShape).border(1.dp,MaterialTheme.colorScheme.primary.copy(.3f),CircleShape),contentAlignment=Alignment.Center) {
+                Icon(Icons.Rounded.PowerSettingsNew,null,Modifier.size(36.dp),tint=MaterialTheme.colorScheme.primary)
+            }
+            Spacer(Modifier.height(14.dp))
+            Text("N I V O R A",style=MaterialTheme.typography.headlineLarge)
+            Text("فضای شخصی اتصال شما",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(24.dp))
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(28.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(.90f)),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(.30f)),
-                elevation = CardDefaults.cardElevation(4.dp)
+                elevation = CardDefaults.cardElevation(0.dp)
             ) {
                 Column(Modifier.padding(21.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
                     Text(if (registerMode) "ساخت حساب جدید" else if (partnerApp) "Nivora Partner" else "خوش آمدید", style = MaterialTheme.typography.headlineMedium)
@@ -373,6 +441,7 @@ private fun DeviceRecoveryDialog(
 @Composable
 private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar: SnackbarHostState) {
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
+    var section by rememberSaveable { mutableStateOf(CustomerSection.SUPPORT) }
     var purchasePlan by remember { mutableStateOf<Plan?>(null) }
     var renewSubscription by remember { mutableStateOf<Subscription?>(null) }
     var topupOpen by rememberSaveable { mutableStateOf(false) }
@@ -386,6 +455,25 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
     AuroraBackground(Modifier.fillMaxSize()) {
         Scaffold(
             containerColor = Color.Transparent,
+            contentWindowInsets = WindowInsets.statusBars,
+            bottomBar = {
+                NavigationBar(containerColor=MaterialTheme.colorScheme.surface,tonalElevation=0.dp) {
+                    listOf(
+                        Triple("اتصال",Icons.Rounded.PowerSettingsNew,AppDestination.HOME),
+                        Triple("خرید",Icons.Rounded.ShoppingBag,AppDestination.PLANS),
+                        Triple("کیف پول",Icons.Rounded.AccountBalanceWallet,AppDestination.WALLET)
+                    ).forEach { (label,icon,target) ->
+                        NavigationBarItem(selected=destination==target,onClick={destination=target},icon={Icon(icon,label,Modifier.size(22.dp))},label={Text(label,fontSize=10.sp,maxLines=1)})
+                    }
+                    listOf(
+                        Triple("پشتیبانی",Icons.Rounded.SupportAgent,CustomerSection.SUPPORT),
+                        Triple("حساب",Icons.Rounded.PersonOutline,CustomerSection.ACCOUNT),
+                        Triple("تلگرام",Icons.AutoMirrored.Rounded.Send,CustomerSection.TELEGRAM)
+                    ).forEach { (label,icon,target) ->
+                        NavigationBarItem(selected=destination==AppDestination.SUPPORT&&section==target,onClick={section=target;destination=AppDestination.SUPPORT},icon={Icon(icon,label,Modifier.size(22.dp))},label={Text(label,fontSize=10.sp,maxLines=1)})
+                    }
+                }
+            },
             snackbarHost = { SnackbarHost(snackbar, modifier = Modifier.navigationBarsPadding()) }
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
@@ -407,19 +495,23 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
                     }
                 }
                 Box(Modifier.fillMaxWidth().weight(1f)) {
-                    when (destination) {
+                    AnimatedContent(targetState=destination to section, transitionSpec={ fadeIn(tween(180)) togetherWith fadeOut(tween(90)) },label="customer-page") { (page, pageSection) ->
+                    when (page) {
                         AppDestination.HOME -> HomeScreen(
                             state,
                             actions,
                             onPlans = { destination = AppDestination.PLANS },
                             onWallet = { destination = AppDestination.WALLET },
-                            onNotifications = { destination = AppDestination.SUPPORT; actions.markNotificationsRead() },
+                            onNotifications = { section=CustomerSection.NOTIFICATIONS; destination = AppDestination.SUPPORT; actions.markNotificationsRead() },
+                            onSupport = { section=CustomerSection.SUPPORT; destination=AppDestination.SUPPORT },
+                            onAccount = { section=CustomerSection.ACCOUNT; destination=AppDestination.SUPPORT },
                             onRenew = { renewSubscription = it }
                         )
                         AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0) { purchasePlan = it }
                         AppDestination.WALLET -> WalletScreen(state, onTopup = { topupOpen = true })
-                        AppDestination.SUPPORT -> SupportScreen(
+                        AppDestination.SUPPORT -> if(pageSection==CustomerSection.TELEGRAM) TelegramScreen() else SupportScreen(
                             state,
+                            section=pageSection,
                             onNewTicket = { ticketOpen = true },
                             onAskAi = actions::askAiSupport,
                             onOpenTicket = actions::openTicket,
@@ -431,6 +523,7 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
                             onLogout = actions::logout,
                             onNetworkLab = actions::openNetworkLab
                         )
+                    }
                     }
                     if (state.actionBusy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
                     if (state.ticketLoading) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(.12f)), contentAlignment = Alignment.Center) {
@@ -675,7 +768,7 @@ private fun ResellerPlansScreen(plans: List<Plan>, balance: Int, preferredCustom
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
         item { Text("فروش اشتراک", style = MaterialTheme.typography.headlineLarge); Text(preferredCustomer?.let { "مشتری انتخاب‌شده: ${it.name}" } ?: "پلن را انتخاب و مشتری را مشخص کنید.", color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(10.dp)); Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(16.dp)).padding(14.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.AccountBalanceWallet, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("موجودی همکاری", Modifier.weight(1f)); Text(toman(balance), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } }
         if (plans.isEmpty()) item { EmptyState(Icons.Rounded.Inventory2, "پلنی فعال نیست", "پس از فعال‌شدن پلن توسط مدیریت اینجا نمایش داده می‌شود.") }
-        else items(plans, key = { it.id }) { plan -> Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(23.dp), border = CardDefaults.outlinedCardBorder()) { Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Row { Column(Modifier.weight(1f)) { Text(plan.name, style = MaterialTheme.typography.titleLarge); Text(plan.description, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2) }; Column(horizontalAlignment = Alignment.End) { Text(toman(plan.priceToman), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black); Text("هزینه شما", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }; Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { InfoTile("حجم", "${faNumber(plan.trafficGb)} گیگ"); InfoTile("اعتبار", "${faNumber(plan.durationDays)} روز"); InfoTile("دستگاه", faNumber(plan.deviceLimit)) }; Button(onClick = { onBuy(plan) }, enabled = balance >= plan.priceToman, modifier = Modifier.fillMaxWidth()) { Text(if (balance >= plan.priceToman) "انتخاب مشتری و ساخت" else "موجودی ناکافی") } } } }
+        else items(plans, key = { it.id }) { plan -> Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(23.dp), border = CardDefaults.outlinedCardBorder()) { Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Row { Column(Modifier.weight(1f)) { Text(plan.name, style = MaterialTheme.typography.titleLarge); Text(plan.description, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2) }; Column(horizontalAlignment = Alignment.End) { Text(toman(plan.priceToman), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black); Text("هزینه شما", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }; Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { InfoTile("حجم", if(plan.trafficGb==0) "نامحدود" else "${faNumber(plan.trafficGb)} گیگ"); InfoTile("اعتبار", if(plan.durationDays==0) "نامحدود" else "${faNumber(plan.durationDays)} روز"); InfoTile("دستگاه", faNumber(plan.deviceLimit)) }; Button(onClick = { onBuy(plan) }, enabled = balance >= plan.priceToman, modifier = Modifier.fillMaxWidth()) { Text(if (balance >= plan.priceToman) "انتخاب مشتری و ساخت" else "موجودی ناکافی") } } } }
     }
 }
 
@@ -720,6 +813,8 @@ private fun HomeScreen(
     onPlans: () -> Unit,
     onWallet: () -> Unit,
     onNotifications: () -> Unit,
+    onSupport: () -> Unit,
+    onAccount: () -> Unit,
     onRenew: (Subscription) -> Unit
 ) {
     val account = state.account ?: return
@@ -728,7 +823,7 @@ private fun HomeScreen(
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
             AppTopBar(
@@ -761,12 +856,6 @@ private fun HomeScreen(
                     primaryActive = !emergencyOwnsSession && state.vpnState in setOf("connected", "connecting"),
                     onToggle = actions::toggleEmergencyVpn
                 )
-            }
-        }
-        item {
-            Row(Modifier.padding(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                QuickCard(Icons.Rounded.AccountBalanceWallet, "کیف پول", toman(account.balanceToman), onWallet)
-                QuickCard(Icons.Rounded.Bolt, "وضعیت سرویس", if (state.activeSubscriptions.isEmpty()) "بدون اشتراک" else "فعال", onPlans)
             }
         }
         item {
@@ -803,6 +892,17 @@ private fun HomeScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun RowScope.SectionShortcut(icon:ImageVector,label:String,onClick:()->Unit,unread:Int=0) {
+    Surface(onClick=onClick,modifier=Modifier.weight(1f),shape=RoundedCornerShape(17.dp),
+        color=Color.Transparent) {
+        Column(Modifier.heightIn(min=60.dp).padding(vertical=8.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(6.dp)) {
+            BadgedBox(badge={if(unread>0) Badge{Text(faNumber(unread))}}) { Icon(icon,null,Modifier.size(22.dp),tint=MaterialTheme.colorScheme.primary) }
+            Text(label,style=MaterialTheme.typography.labelSmall,maxLines=1)
         }
     }
 }
@@ -945,6 +1045,7 @@ private fun TransactionRow(transaction: WalletTransaction) {
 @Composable
 private fun SupportScreen(
     state: NivoraUiState,
+    section: CustomerSection,
     onNewTicket: () -> Unit,
     onAskAi: (String) -> Unit,
     onOpenTicket: (SupportTicket) -> Unit,
@@ -964,9 +1065,10 @@ private fun SupportScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Text("پشتیبانی و حساب", style = MaterialTheme.typography.headlineLarge)
-            Text("اعلان‌ها و گفتگو با تیم Nivora", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(section.title, style = MaterialTheme.typography.headlineLarge)
+            Text(when(section){CustomerSection.ACCOUNT->"تنظیمات و امنیت حساب";CustomerSection.NOTIFICATIONS->"پیام‌های خرید، تمدید و پشتیبانی";CustomerSection.SUPPORT->"گفتگو با دستیار یا تیم پشتیبانی";CustomerSection.TELEGRAM->"کانال و ربات رسمی"}, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        if(section==CustomerSection.SUPPORT) {
         item {
             Card(Modifier.fillMaxWidth(), colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.primaryContainer.copy(.55f)), shape=RoundedCornerShape(22.dp)) {
                 Column(Modifier.padding(17.dp), verticalArrangement=Arrangement.spacedBy(10.dp)) {
@@ -978,6 +1080,8 @@ private fun SupportScreen(
                 }
             }
         }
+        }
+        if(section==CustomerSection.ACCOUNT) {
         item {
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = NivoraInk), shape = RoundedCornerShape(24.dp)) {
                 Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1028,10 +1132,14 @@ private fun SupportScreen(
                 }
             }
         }
+        }
+        if(section==CustomerSection.NOTIFICATIONS) {
         item { SectionHeader("اعلان‌ها", if (account.notifications.isEmpty()) "اعلان تازه‌ای ندارید" else "آخرین پیام‌های حساب", if (account.notifications.isEmpty()) null else "پاک‌سازی", if (account.notifications.isEmpty()) null else onClearNotifications) }
         if (account.notifications.isEmpty()) item {
             Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { EmptyState(Icons.Rounded.NotificationsNone, "همه‌چیز آرام است", "اعلان خرید، تمدید و پاسخ پشتیبانی اینجا نمایش داده می‌شود.") }
-        } else items(account.notifications.take(8), key = { it.id }) { NotificationRow(it) }
+        } else items(account.notifications, key = { it.id }) { NotificationRow(it) }
+        }
+        if(section==CustomerSection.SUPPORT) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 SectionHeader("تیکت‌های پشتیبانی", "پاسخ‌ها را از همین بخش دنبال کنید")
@@ -1048,6 +1156,8 @@ private fun SupportScreen(
         if (state.tickets.isEmpty()) item {
             Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) { EmptyState(Icons.Rounded.Forum, "گفتگویی ندارید", "اگر پرسشی دارید برای تیم پشتیبانی پیام بفرستید.", "ارسال پیام", onNewTicket) }
         } else items(state.tickets, key = { it.id }) { TicketRow(it) { onOpenTicket(it) } }
+        }
+        if(section==CustomerSection.ACCOUNT) {
         item {
             Card(Modifier.fillMaxWidth(), border = CardDefaults.outlinedCardBorder()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1065,6 +1175,7 @@ private fun SupportScreen(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1132,8 +1243,8 @@ private fun PurchaseDialog(
     AppDialog(onDismiss) {
         DialogTitle(Icons.Rounded.ShoppingBag, "خرید ${plan.name}", "اشتراک پس از پرداخت به‌صورت خودکار ساخته می‌شود.")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            InfoTile("حجم", "${faNumber(plan.trafficGb)} گیگ")
-            InfoTile("اعتبار", "${faNumber(plan.durationDays)} روز")
+            InfoTile("حجم", if(plan.trafficGb==0) "نامحدود" else "${faNumber(plan.trafficGb)} گیگ")
+            InfoTile("اعتبار", if(plan.durationDays==0) "نامحدود" else "${faNumber(plan.durationDays)} روز")
             InfoTile("دستگاه", faNumber(plan.deviceLimit))
         }
         OutlinedTextField(

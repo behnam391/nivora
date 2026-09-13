@@ -62,6 +62,17 @@ async function issue(ctx, headers = ctx.customerHeaders, routeId = ctx.routeId) 
   });
 }
 
+test('Hysteria enforces independent unlimited traffic and unlimited time',async t=>{
+  const ctx=await fixture();t.after(()=>ctx.server.close());
+  ctx.db.exec('UPDATE plans SET traffic_gb=0,duration_days=0');
+  ctx.stats[ctx.panelClientId].totalBytes=0;ctx.stats[ctx.panelClientId].expiryTime=0;
+  const response=await issue(ctx);assert.equal(response.status,201);
+  const row=ctx.db.prepare('SELECT hysteria_duration_days,hysteria_expires_at,hysteria_traffic_limit_bytes FROM subscriptions WHERE id=?').get(ctx.subscriptionId);
+  assert.equal(row.hysteria_duration_days,0);assert.equal(row.hysteria_expires_at,null);assert.equal(row.hysteria_traffic_limit_bytes,0);
+  const ticket=await response.json();
+  assert.equal((await authenticate(ctx,decodeURIComponent(new URL(ticket.uri).username))).status,200);
+});
+
 async function authenticate(ctx, token, secret = NODE_SECRET, routeId = ctx.routeId) {
   return fetch(`${ctx.base}/internal/v1/hysteria/auth/${routeId}`,{
     method:'POST',

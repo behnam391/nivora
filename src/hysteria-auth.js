@@ -161,31 +161,35 @@ export function createHysteriaTicketService(db, {
 
   const syncHysteriaEntitlement = row => {
     const totals = db.prepare(`
-      SELECT COALESCE(SUM(p.duration_days),0) duration_days,COALESCE(SUM(p.traffic_gb),0) traffic_gb
+      SELECT CASE WHEN MIN(p.duration_days)=0 THEN 0 ELSE SUM(p.duration_days) END duration_days,
+        CASE WHEN MIN(p.traffic_gb)=0 THEN 0 ELSE SUM(p.traffic_gb) END traffic_gb
       FROM orders o
       JOIN plans p ON p.id=o.plan_id
       JOIN subscriptions s ON s.order_id=o.id AND s.status='active'
-      WHERE o.status='approved' AND (o.id=? OR (o.order_kind='renewal' AND o.parent_order_id=?))
-    `).get(row.order_id, row.order_id);
+      WHERE o.status='approved' AND (o.id=? OR (o.order_kind='renewal' AND o.parent_order_id=? AND o.created_at>=COALESCE((SELECT entitlement_reset_at FROM subscriptions WHERE order_id=?),'')))
+    `).get(row.order_id, row.order_id, row.order_id);
     const appliedDays = Math.max(0, Number(row.hysteria_duration_days || 0));
-    const totalDays = Math.max(1, Number(totals.duration_days || 0));
+    const totalDays = Math.max(0, Number(totals.duration_days || 0));
     const clock = now();
     let startedAt = row.hysteria_started_at;
     let expiresAt = row.hysteria_expires_at;
-    if (!startedAt || !expiresAt) {
+    if (totalDays === 0) {
+      startedAt ||= new Date(clock).toISOString();
+      expiresAt = null;
+    } else if (!startedAt || !expiresAt) {
       startedAt = new Date(clock).toISOString();
       expiresAt = new Date(clock + totalDays * DAY_MS).toISOString();
     } else if (totalDays > appliedDays) {
       expiresAt = new Date(Date.parse(expiresAt) + (totalDays - appliedDays) * DAY_MS).toISOString();
     }
-    const trafficLimit = Math.max(1, Number(totals.traffic_gb || 0)) * GB;
+    const trafficLimit = Math.max(0, Number(totals.traffic_gb || 0)) * GB;
     db.prepare(`UPDATE subscriptions SET hysteria_started_at=?,hysteria_expires_at=?,hysteria_duration_days=?,hysteria_traffic_limit_bytes=? WHERE id=?`)
       .run(startedAt, expiresAt, totalDays, trafficLimit, row.subscription_id);
     return {...row, hysteria_started_at:startedAt, hysteria_expires_at:expiresAt, hysteria_duration_days:totalDays, hysteria_traffic_limit_bytes:trafficLimit};
   };
 
   const assertHysteriaEntitlement = row => {
-    if (!row.hysteria_expires_at || Date.parse(row.hysteria_expires_at) <= now()) {
+    if (Number(row.hysteria_duration_days) > 0 && (!row.hysteria_expires_at || Date.parse(row.hysteria_expires_at) <= now())) {
       throw new HysteriaAuthError('SUBSCRIPTION_EXPIRED', 409);
     }
     const limit = Number(row.hysteria_traffic_limit_bytes || 0);

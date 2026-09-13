@@ -678,8 +678,8 @@ private fun PartnerPlanCard(plan: Plan, affordable: Boolean, onBuy: () -> Unit) 
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-            PartnerMiniStat("حجم", "${faNumber(plan.trafficGb)} گیگ", Modifier.weight(1f))
-            PartnerMiniStat("اعتبار", "${faNumber(plan.durationDays)} روز", Modifier.weight(1f))
+            PartnerMiniStat("حجم", if(plan.trafficGb==0) "نامحدود" else "${faNumber(plan.trafficGb)} گیگ", Modifier.weight(1f))
+            PartnerMiniStat("اعتبار", if(plan.durationDays==0) "نامحدود" else "${faNumber(plan.durationDays)} روز", Modifier.weight(1f))
             PartnerMiniStat("دستگاه", faNumber(plan.deviceLimit), Modifier.weight(1f))
         }
         Spacer(Modifier.height(12.dp))

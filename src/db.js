@@ -14,8 +14,8 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       name TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       price_irr INTEGER NOT NULL CHECK(price_irr >= 0),
-      traffic_gb INTEGER NOT NULL CHECK(traffic_gb > 0),
-      duration_days INTEGER NOT NULL CHECK(duration_days > 0),
+      traffic_gb INTEGER NOT NULL CHECK(traffic_gb >= 0),
+      duration_days INTEGER NOT NULL CHECK(duration_days >= 0),
       device_limit INTEGER NOT NULL DEFAULT 1 CHECK(device_limit > 0),
       location_mode TEXT NOT NULL DEFAULT 'single' CHECK(location_mode IN ('single','multi')),
       bundle_size INTEGER NOT NULL DEFAULT 1 CHECK(bundle_size BETWEEN 1 AND 10),
@@ -383,6 +383,9 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
     CREATE TABLE IF NOT EXISTS telegram_account_links (telegram_user_id TEXT PRIMARY KEY,chat_id TEXT NOT NULL,account_id TEXT NOT NULL REFERENCES accounts(id),phone TEXT NOT NULL,linked_at TEXT NOT NULL,last_seen_at TEXT NOT NULL);
   `);
   const planColumns = db.prepare('PRAGMA table_info(plans)').all().map(c => c.name);
+  if (!planColumns.includes('special_message')) db.exec("ALTER TABLE plans ADD COLUMN special_message TEXT NOT NULL DEFAULT ''");
+  const importColumns = db.prepare('PRAGMA table_info(reseller_subscription_import_tokens)').all().map(c => c.name);
+  if (!importColumns.includes('issued_by_admin')) db.exec('ALTER TABLE reseller_subscription_import_tokens ADD COLUMN issued_by_admin INTEGER NOT NULL DEFAULT 0');
   if (!planColumns.includes('location_mode')) db.exec("ALTER TABLE plans ADD COLUMN location_mode TEXT NOT NULL DEFAULT 'single' CHECK(location_mode IN ('single','multi'))");
   if (!planColumns.includes('bundle_size')) db.exec('ALTER TABLE plans ADD COLUMN bundle_size INTEGER NOT NULL DEFAULT 1 CHECK(bundle_size BETWEEN 1 AND 10)');
   const orderColumns = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
@@ -398,6 +401,8 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!orderColumns.includes('bundle_index')) db.exec('ALTER TABLE orders ADD COLUMN bundle_index INTEGER');
   if (!orderColumns.includes('bundle_size')) db.exec('ALTER TABLE orders ADD COLUMN bundle_size INTEGER');
   const subscriptionColumns = db.prepare('PRAGMA table_info(subscriptions)').all().map(c => c.name);
+  if (!subscriptionColumns.includes('special_message')) db.exec("ALTER TABLE subscriptions ADD COLUMN special_message TEXT NOT NULL DEFAULT ''");
+  if (!subscriptionColumns.includes('entitlement_reset_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN entitlement_reset_at TEXT');
   if (!subscriptionColumns.includes('upstream_subscription_url')) db.exec('ALTER TABLE subscriptions ADD COLUMN upstream_subscription_url TEXT');
   if (!subscriptionColumns.includes('access_token')) db.exec('ALTER TABLE subscriptions ADD COLUMN access_token TEXT');
   if (!subscriptionColumns.includes('suspension_reason')) db.exec('ALTER TABLE subscriptions ADD COLUMN suspension_reason TEXT');
@@ -666,5 +671,21 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   // secure_delete scrubs database pages; truncate the WAL after one-time
   // plaintext redaction so old messages are not retained in that sidecar.
   if(redactedLegacyMessages&&filename!==':memory:')try{db.exec('PRAGMA wal_checkpoint(TRUNCATE)')}catch{}
+  // Rebuild only the legacy CHECK constraints; retain every column and row.
+  const planSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='plans'").get().sql;
+  if (/CHECK\(traffic_gb > 0\)/.test(planSchema)) {
+    const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='plans' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+    db.exec('PRAGMA foreign_keys=OFF');
+    try {
+      db.exec('BEGIN IMMEDIATE');
+      db.exec(planSchema.replace(/CREATE TABLE(?: IF NOT EXISTS)? ["`]?plans["`]?/i, 'CREATE TABLE plans_unlimited_migration')
+        .replace('CHECK(traffic_gb > 0)', 'CHECK(traffic_gb >= 0)').replace('CHECK(duration_days > 0)', 'CHECK(duration_days >= 0)'));
+      db.exec('INSERT INTO plans_unlimited_migration SELECT * FROM plans; DROP TABLE plans; ALTER TABLE plans_unlimited_migration RENAME TO plans;');
+      for (const index of indexes) db.exec(index.sql);
+      if (db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Plan migration foreign key check failed');
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    finally { db.exec('PRAGMA foreign_keys=ON'); }
+  }
   return db;
 }

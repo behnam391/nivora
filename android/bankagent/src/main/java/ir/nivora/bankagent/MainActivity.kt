@@ -15,7 +15,9 @@ class MainActivity : Activity() {
         val pad = (20 * resources.displayMetrics.density).toInt()
         val root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL;setPadding(pad,pad,pad,pad);setBackgroundColor(Color.rgb(7,17,38));gravity=Gravity.CENTER_HORIZONTAL }
         fun field(label:String,value:String="")=EditText(this).apply{hint=label;setText(value);setTextColor(Color.WHITE);setHintTextColor(Color.GRAY)}
-        root.addView(TextView(this).apply{text="NIVORA\nBANK AGENT";textSize=27f;setTextColor(Color.rgb(71,214,255));gravity=Gravity.CENTER})
+        val logoSize=(88*resources.displayMetrics.density).toInt()
+        root.addView(ImageView(this).apply{setImageResource(R.drawable.ic_bank_agent);contentDescription="ایجنت پیامک بانکی"},LinearLayout.LayoutParams(logoSize,logoSize).apply{bottomMargin=pad/2})
+        root.addView(TextView(this).apply{text="NIVORA\nBANK AGENT";textSize=27f;setTextColor(Color.rgb(232,190,105));gravity=Gravity.CENTER})
         root.addView(TextView(this).apply{text="این برنامه فقط روی گوشی دریافت‌کننده پیامک بانک نصب می‌شود. متن خام پیامک روی سرور ذخیره نمی‌شود.";setTextColor(Color.LTGRAY);gravity=Gravity.CENTER;setPadding(0,pad/2,0,pad)})
         val url=field("نشانی وبهوک",AgentStore.endpoint(this));val id=field("شناسه Agent",AgentStore.agentId(this));val secret=field(if(AgentStore.secret(this).isBlank())"کلید اتصال" else "کلید اتصال (برای حفظ خالی بگذارید)");val senders=field("فرستنده‌های مجاز، هر کدام یک خط",AgentStore.senders(this).joinToString("\n"))
         listOf(url,id,secret,senders).forEach{root.addView(it,LinearLayout.LayoutParams(-1,-2))}

@@ -136,11 +136,31 @@ export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) 
     };
   };
   provision.renew = async ({panelClientId,addDays,addTrafficGb}) => {
+    if (Number(addDays) === 0 || Number(addTrafficGb) === 0) {
+      const found = await call('GET', `clients/get/${encodeURIComponent(panelClientId)}`);
+      const client = found?.client || found;
+      if (!client?.email || !client?.subId) throw new Error('Incomplete client payload; refusing destructive update');
+      const expiry = Number(client.expiryTime || 0);
+      return call('POST', `clients/update/${encodeURIComponent(panelClientId)}`, {
+        ...client,
+        totalGB: Number(addTrafficGb) === 0 || Number(client.totalGB) === 0 ? 0 : Number(client.totalGB) + Number(addTrafficGb) * GB,
+        expiryTime: Number(addDays) === 0 || expiry === 0 ? 0 : expiry < 0 ? expiry - Number(addDays) * DAY : Math.max(expiry, Date.now()) + Number(addDays) * DAY
+      });
+    }
     const result=await call('POST','clients/bulkAdjust',{emails:[panelClientId],addDays:Number(addDays),addBytes:Number(addTrafficGb)*GB,flow:''});
     if(result?.adjusted!==undefined&&result.adjusted<1)throw new Error(result?.skipped?.[0]?.reason||'3X-UI did not adjust client');
     return result;
   };
   provision.suspend=async ({panelClientId})=>call('POST','clients/bulkDisable',{emails:[panelClientId]});
+  provision.setLimits = async ({panelClientId, trafficGb, durationDays}) => {
+    const found = await call('GET', `clients/get/${encodeURIComponent(panelClientId)}`);
+    const client = found?.client || found;
+    if (!client?.email || !client?.subId) throw new Error('Incomplete client payload; refusing destructive update');
+    return call('POST', `clients/update/${encodeURIComponent(panelClientId)}`, {
+      ...client, totalGB: trafficGb * GB,
+      expiryTime: durationDays === 0 ? 0 : Date.now() + durationDays * DAY
+    });
+  };
   provision.resume=async ({panelClientId})=>call('POST','clients/bulkEnable',{emails:[panelClientId]});
   provision.remove=async ({panelClientId})=>call('POST','clients/bulkDel',{emails:[panelClientId],keepTraffic:true});
   return provision;

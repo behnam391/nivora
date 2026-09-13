@@ -208,7 +208,13 @@ class MainActivity : FragmentActivity(), NivoraActions {
         }
         if(signedIn)scheduleNotificationWorker()
         if(signedIn&&Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        AppUpdateNotifier.check(this){release->showNotice("نسخه ${release.versionName} آماده است؛ از اعلان بالای صفحه نصب کنید")}
+        AppUpdateNotifier.check(this){release->
+            if(!isFinishing&&!isDestroyed) android.app.AlertDialog.Builder(this)
+                .setTitle("نسخه ${release.versionName} آماده است")
+                .setMessage(release.releaseNotes.ifBlank{"بروزرسانی در همین برنامه دانلود می‌شود."})
+                .setPositiveButton("دانلود داخل برنامه"){_,_->startActivity(Intent(this,UpdateInstallerActivity::class.java).putExtra("url",release.downloadUrl))}
+                .setNegativeButton("بعداً",null).show()
+        }
         NetworkSettingsAdvisor.inspect(this)
         handler.postDelayed(notificationPoll,60_000)
     }
@@ -463,13 +469,24 @@ class MainActivity : FragmentActivity(), NivoraActions {
                 connectionValidationInFlight=true
                 showNotice("در حال تأیید سریع حساب…")
                 background(work={api.connectionReady(session,cachedOrder.id)},success={ready->
+                    if (!isCurrentSession(session)) return@background
                     connectionValidationInFlight=false
-                    if(isCurrentSession(session) && ready && state.selectedSubscription?.id==cachedOrder.id){
-                        liveSessionValidated=true;resumePendingVpnRequest()
+                    if (ready && state.selectedSubscription?.id==cachedOrder.id) {
+                        liveSessionValidated=true
+                        state=state.copy(loadError=null,notice=null)
+                        resumePendingVpnRequest()
+                    } else {
+                        pendingVpnMode=null
+                        showNotice("اشتراک انتخاب‌شده تغییر کرده یا آماده نیست؛ دوباره اتصال را بزنید",true)
                     }
                 },failure={error->
+                    if (!isCurrentSession(session)) return@background
                     connectionValidationInFlight=false
-                    if(isCurrentSession(session))showNotice(friendly(error),true)
+                    if (isUnauthorized(error)) invalidateSession(session)
+                    else if (!liveSessionValidated) {
+                        pendingVpnMode=null
+                        showNotice(friendly(error),true)
+                    }
                 })
                 return
             }
@@ -850,6 +867,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
 
     override fun logout() {
         activeSessionToken = null
+        connectionValidationInFlight = false
         liveSessionValidated = false
         dashboardValidationInFlight = false
         pendingVpnMode = null
@@ -1037,11 +1055,14 @@ class MainActivity : FragmentActivity(), NivoraActions {
                 if (!isCurrentSession(token)) return@background
                 dashboardValidationInFlight = false
                 val hadPendingConnection = pendingVpnMode != null
-                pendingVpnMode = null
+                // A slower dashboard request must not cancel the independent,
+                // fast authorization request or report failure after it succeeded.
+                if (!connectionValidationInFlight && !liveSessionValidated) pendingVpnMode = null
                 if (isUnauthorized(error)) invalidateSession(token)
                 else {
-                    state = state.copy(loading = false, refreshing = false, loadError = friendly(error))
-                    if (hadPendingConnection || state.account == null) {
+                    state = state.copy(loading = false, refreshing = false,
+                        loadError = if (liveSessionValidated) null else friendly(error))
+                    if (!liveSessionValidated && !connectionValidationInFlight && (hadPendingConnection || state.account == null)) {
                         showNotice("ارتباط امن با حساب برقرار نشد؛ شبکه را بررسی کنید", true)
                     }
                 }

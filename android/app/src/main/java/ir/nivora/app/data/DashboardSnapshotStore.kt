@@ -110,7 +110,7 @@ class DashboardSnapshotStore(context: Context) {
         .put("startsOnFirstUse", value.startsOnFirstUse).putNullable("locationName", value.locationName)
         .putNullable("countryCode", value.countryCode).putNullable("flagEmoji", value.flagEmoji)
         .putNullable("city", value.city).put("routeCount", value.routeCount).put("trafficGb", value.trafficGb)
-        .put("durationDays", value.durationDays).put("deviceLimit", value.deviceLimit)
+        .put("durationDays", value.durationDays).put("deviceLimit", value.deviceLimit).put("specialMessage", value.specialMessage)
 
     private fun subscription(json: JSONObject) = Subscription(
         json.getString("id"), json.getString("planName"), json.getString("status"), json.textOrNull("url"),
@@ -118,7 +118,7 @@ class DashboardSnapshotStore(context: Context) {
         json.optDouble("usagePercent"), json.optInt("remainingDays"), json.longOrNull("expiryTime"),
         json.optBoolean("startsOnFirstUse"), json.textOrNull("locationName"), json.textOrNull("countryCode"),
         json.textOrNull("flagEmoji"), json.textOrNull("city"), json.optInt("routeCount"),
-        json.optInt("trafficGb"), json.optInt("durationDays"), json.optInt("deviceLimit")
+        json.optInt("trafficGb"), json.optInt("durationDays"), json.optInt("deviceLimit"), json.optString("specialMessage","")
     )
 
     private fun planJson(value: Plan) = JSONObject()

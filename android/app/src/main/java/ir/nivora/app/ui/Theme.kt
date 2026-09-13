@@ -16,10 +16,10 @@ import androidx.compose.ui.unit.sp
 
 // Legacy variable names are retained to avoid a noisy mechanical rewrite.
 // Their values now follow the final Nivora artwork: midnight, cobalt, cyan and silver.
-val NivoraGreen = Color(0xFF38D9FF)
-val NivoraGreenDark = Color(0xFF2563EB)
-val NivoraInk = Color(0xFF050816)
-val NivoraInkSoft = Color(0xFF0D1733)
+val NivoraGreen = Color(0xFFB8ACFF)
+val NivoraGreenDark = Color(0xFF7255C6)
+val NivoraInk = Color(0xFF101014)
+val NivoraInkSoft = Color(0xFF24212F)
 val NivoraMint = Color(0xFFEAF7FF)
 val NivoraBackground = Color(0xFFF4F8FF)
 val NivoraLine = Color(0xFFCADAF4)
@@ -49,15 +49,15 @@ private val DarkColors = darkColorScheme(
     onPrimary = NivoraInk,
     primaryContainer = NivoraInkSoft,
     onPrimaryContainer = Color(0xFFEAF7FF),
-    secondary = Color(0xFF62D4FF),
+    secondary = Color(0xFFA9F0D1),
     onSecondary = NivoraInk,
-    background = Color(0xFF050816),
+    background = Color(0xFF101014),
     onBackground = Color(0xFFF0F7FF),
-    surface = Color(0xFF0D1733),
+    surface = Color(0xFF1B1B22),
     onSurface = Color(0xFFF0F7FF),
-    surfaceVariant = Color(0xFF16254A),
-    onSurfaceVariant = Color(0xFFB5C6E3),
-    outline = Color(0xFF31466E),
+    surfaceVariant = Color(0xFF272630),
+    onSurfaceVariant = Color(0xFFA9A6B7),
+    outline = Color(0xFF494551),
     error = Color(0xFFFF7C91)
 )
 

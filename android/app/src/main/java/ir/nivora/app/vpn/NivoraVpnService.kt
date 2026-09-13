@@ -68,7 +68,7 @@ class NivoraVpnService : VpnService(), DialerController {
         private val coreRunning = AtomicBoolean(false)
         private val connectionAttempts = AtomicInteger()
         @Volatile private var healthProxy: HealthProxy? = null
-        private val healthTargets get() = listOf("https://www.gstatic.com/generate_204", "https://www.youtube.com/generate_204")
+        private val healthTargets get() = listOf("https://www.gstatic.com/generate_204", "https://www.youtube.com/generate_204", "https://b.nivorali.com/api/connectivity/204")
         fun measureActiveTunnel(): Long? {
             val proxy=healthProxy?:return null
             val result=TunnelHealthProbe.measure(proxy,healthTargets)
@@ -141,7 +141,7 @@ class NivoraVpnService : VpnService(), DialerController {
                 startTunnel(url, subscriptionId, shareLink, sessionToken, deviceId, label, runId, startId, connectionMode)
             } catch (error: Throwable) {
                 Log.e("NivoraVpnService", "VPN tunnel failed: ${error.javaClass.simpleName}")
-                failRunIfOwned(runId, startId, safeError(error), connectionMode)
+                recoverOrFail(error,url,subscriptionId,shareLink,sessionToken,deviceId,label,runId,startId,connectionMode)
             } finally {
                 connectionAttempts.decrementAndGet()
             }
@@ -389,7 +389,7 @@ class NivoraVpnService : VpnService(), DialerController {
         }
         // Use the authenticated loopback SOCKS ingress to prove HTTPS traverses
         // this exact outbound, independently of Android per-app VPN routing.
-        val latency=TunnelHealthProbe.measure(probe,healthTargets)
+        val latency=TunnelHealthProbe.measure(probe,healthTargets,budgetMs=6_000)
         ensureCurrent(runId)
         if(latency==null){
             val excluded=failedRoutes+smartRoute.signature
@@ -422,10 +422,11 @@ class NivoraVpnService : VpnService(), DialerController {
                 while(generation.get()==runId && healthProxy===probe){
                     Thread.sleep(TunnelHealthPolicy.CHECK_INTERVAL_MS)
                     ensureCurrent(runId)
-                    val measured=TunnelHealthProbe.measure(probe,healthTargets)
+                    val measured=TunnelHealthProbe.measure(probe,healthTargets,budgetMs=TunnelHealthPolicy.PROBE_BUDGET_MS)
                     ensureCurrent(runId)
                     if(healthProxy!==probe)return@thread
                     failures=if(measured==null)failures+1 else 0
+                    if(measured==null)Log.i("NivoraVpnService","Health probe missed ($failures/${TunnelHealthPolicy.FAILURE_THRESHOLD}); retaining tunnel")
                     if(measured!=null)getSharedPreferences("vpn",MODE_PRIVATE).edit().putLong("real_latency_ms",measured).apply()
                     if(TunnelHealthPolicy.shouldSwitch(failures,SystemClock.elapsedRealtime()-stableSince)){
                         val excluded=failedRoutes+smartRoute.signature
@@ -437,7 +438,43 @@ class NivoraVpnService : VpnService(), DialerController {
                         return@thread
                     }
                 }
-            }catch(error:Throwable){failRunIfOwned(runId,serviceStartId,safeError(error),connectionMode)}
+            }catch(error:Throwable){recoverOrFail(error,url,subscriptionId,shareLink,sessionToken,deviceId,label,runId,serviceStartId,connectionMode)}
+        }
+    }
+
+    // Retry only transport/health failures of an already authorized primary run.
+    // Account errors, malformed profiles and emergency lease rules are unchanged.
+    private fun recoverOrFail(initial:Throwable,url:String?,subscriptionId:String?,shareLink:String?,sessionToken:String?,deviceId:String?,label:String,runId:Int,serviceStartId:Int,mode:VpnConnectionMode) {
+        var error=initial
+        var attempt=0
+        while(generation.get()==runId) {
+            if(mode!=VpnConnectionMode.PRIMARY || activeRunId!=null || !TunnelHealthPolicy.canRecover(error)) {
+                failRunIfOwned(runId,serviceStartId,safeError(error),mode)
+                return
+            }
+            val delay=TunnelHealthPolicy.retryDelayMs(attempt++)
+            synchronized(coreLock) {
+                if(generation.get()!=runId)return
+                state("connecting",null,connectionMode=mode)
+                showNotification("در حال بازیابی اتصال…",label,false)
+            }
+            Log.i("NivoraVpnService","Transient link failure; recovery attempt=$attempt delayMs=$delay")
+            try {
+                val deadline=SystemClock.elapsedRealtime()+delay
+                while(SystemClock.elapsedRealtime()<deadline) {
+                    ensureCurrent(runId)
+                    Thread.sleep(minOf(500L,(deadline-SystemClock.elapsedRealtime()).coerceAtLeast(1L)))
+                }
+                ensureCurrent(runId)
+                connectionAttempts.incrementAndGet()
+                try { startTunnel(url,subscriptionId,shareLink,sessionToken,deviceId,label,runId,serviceStartId,mode) }
+                finally { connectionAttempts.decrementAndGet() }
+                Log.i("NivoraVpnService","Recovery completed")
+                return
+            } catch(next:Throwable) {
+                if(generation.get()!=runId)return
+                error=next
+            }
         }
     }
 
@@ -1065,7 +1102,7 @@ class NivoraVpnService : VpnService(), DialerController {
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setColor(Color.rgb(37, 99, 235))
-            .apply { if (connected) addAction(Notification.Action.Builder(null, "قطع اتصال", stop).build()) }
+            .addAction(Notification.Action.Builder(null, if(connected) "قطع اتصال" else "لغو اتصال", stop).build())
             .build()
         startForeground(NOTIFICATION_ID, notification)
     }

@@ -32,7 +32,8 @@ data class Subscription(
     val routeCount: Int,
     val trafficGb: Int,
     val durationDays: Int,
-    val deviceLimit: Int
+    val deviceLimit: Int,
+    val specialMessage: String = ""
 )
 
 data class WalletTransaction(

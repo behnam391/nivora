@@ -15,6 +15,10 @@ android/app/libs/*.aar
 android/signing.properties
 android/neuralmesh.properties
 /release/*.apk
+/release/*.zip
+/outputs/
+/.codex-known-hosts
+/.turkey-*-known-hosts*
 .tmp/
 __pycache__/
 *.pyc

@@ -429,7 +429,7 @@ test('customer renews an active subscription with tracking token and manual rece
   const renewal=await r.json();
   r=await fetch(`${base}/api/admin/orders/${renewal.id}/approve`,{method:'POST',headers:admin,body:'{}'});assert.equal(r.status,200);
   const renewedSub=await r.json();assert.equal(renewedSub.status,'active');assert.equal(renewedSub.panel_client_id,originalSub.panel_client_id);assert.equal(renewedSub.subscription_url,originalSub.subscription_url);
-  assert.deepEqual(renewCalls,[{panelClientId:originalSub.panel_client_id,addDays:30,addTrafficGb:40}]);
+  assert.equal(renewCalls.length,1);assert.deepEqual({...renewCalls[0],operationId:undefined},{panelClientId:originalSub.panel_client_id,addDays:30,addTrafficGb:40,operationId:undefined});assert.match(renewCalls[0].operationId,/^[a-f0-9-]{36}$/);
 });
 
 test('customer account uses wallet for instant purchase and renewal', async t => {

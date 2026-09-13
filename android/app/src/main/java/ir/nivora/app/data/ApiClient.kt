@@ -10,6 +10,10 @@ import android.util.Base64
 class ApiClient(private val baseUrl: String, private val deviceId: String = "", context: android.content.Context? = null) {
     private val purchaseRequests = PurchaseRequestStore(context)
     private data class RawResponse(val status: Int, val body: String)
+    companion object {
+        // Share the healthy route with the VPN service's API client in this process.
+        private val reachableOrigins = java.util.concurrent.ConcurrentHashMap<String, String>()
+    }
 
     // JSONObject represents a JSON null as the literal text "null" on some Android versions.
     // Do not let that leak into the UI as a location name or country code.
@@ -37,6 +41,12 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
             else -> null
         }
     }
+    private fun locationLabel(location:JSONObject):String {
+        val name=location.cleanText("name").orEmpty()
+        val code=(location.cleanText("countryCode")?:inferredCountry(name)).orEmpty().uppercase(java.util.Locale.US)
+        val flag=if(code.matches(Regex("[A-Z]{2}")))code.map{String(Character.toChars(0x1F1E6+it.code-'A'.code))}.joinToString("")else "🌐"
+        return "$flag $name"
+    }
 
     private fun rawRequest(
         path: String,
@@ -46,9 +56,37 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
         connectTimeoutMs: Int = 12_000,
         readTimeoutMs: Int = 20_000
     ): RawResponse {
+        val origins = ApiRoutePolicy.origins(baseUrl)
+            .sortedBy { if (it == reachableOrigins[baseUrl.trimEnd('/')]) 0 else 1 }
+        val retrySafe = ApiRoutePolicy.canRetry(path, method)
+        val candidates = if (retrySafe) origins else origins.take(1)
+        for ((index, origin) in candidates.withIndex()) {
+            try {
+                val response = rawRequestAt(origin, path, method, token, body,
+                    if (candidates.size > 1) minOf(connectTimeoutMs, 4_000) else connectTimeoutMs,
+                    if (candidates.size > 1) minOf(readTimeoutMs, 6_000) else readTimeoutMs)
+                reachableOrigins[baseUrl.trimEnd('/')] = origin
+                return response
+            } catch (error: java.io.IOException) {
+                // Never replay purchases, and never retry an authorization rejection.
+                if (index == candidates.lastIndex) throw error
+            }
+        }
+        error("No API origin configured")
+    }
+
+    private fun rawRequestAt(
+        origin: String,
+        path: String,
+        method: String = "GET",
+        token: String? = null,
+        body: JSONObject? = null,
+        connectTimeoutMs: Int = 12_000,
+        readTimeoutMs: Int = 20_000
+    ): RawResponse {
         val purchaseIdentity=purchaseRequests.identity(path,method,token,body?.toString().orEmpty())
         val purchaseKey=purchaseIdentity?.let(purchaseRequests::key)
-        val connection = (URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(origin + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = connectTimeoutMs
             readTimeout = readTimeoutMs
@@ -208,7 +246,7 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
             Plan(
                 it.getString("id"), it.getString("name"), it.optString("description"),
                 it.getInt("price_toman"), it.getInt("traffic_gb"), it.getInt("duration_days"),
-                it.getInt("device_limit"), it.optString("locations").split('،').map(String::trim).filter(String::isNotBlank)
+                it.getInt("device_limit"), it.array("locationDetails").objects().map{locationLabel(it)}.ifEmpty{it.optString("locations").split('،').map(String::trim).filter(String::isNotBlank)}
             )
         }
     }
@@ -433,7 +471,8 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
                 routeCount = order.optInt("route_count"),
                 trafficGb = order.optInt("traffic_gb"),
                 durationDays = order.optInt("duration_days"),
-                deviceLimit = order.optInt("device_limit")
+                deviceLimit = order.optInt("device_limit"),
+                specialMessage = order.cleanText("special_message").orEmpty()
             )
         }
         val transactions = json.array("transactions").objects().map {
@@ -475,13 +514,13 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
             Plan(
                 id = it.getString("id"),
                 name = it.getString("name"),
-                description = it.optString("description").takeIf(String::isNotBlank).orEmpty(),
+                description = listOf(it.cleanText("description"),it.cleanText("specialMessage")).filterNotNull().joinToString(" · "),
                 priceToman = it.getInt("priceIrr"),
                 trafficGb = it.getInt("trafficGb"),
                 durationDays = it.getInt("durationDays"),
                 deviceLimit = it.getInt("deviceLimit"),
                 locations = it.array("locations").objects().mapNotNull { location ->
-                    location.optString("name").takeIf(String::isNotBlank)
+                    locationLabel(location).takeIf(String::isNotBlank)
                 }
             )
         }

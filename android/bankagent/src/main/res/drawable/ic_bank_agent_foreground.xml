@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Safe zone: all identifying geometry fits inside the central 60dp. -->
+    <path android:fillColor="#E8BE69" android:pathData="M31,30 L77,30 Q82,30 82,35 L82,69 Q82,74 77,74 L49,74 L37,82 L37,74 L31,74 Q26,74 26,69 L26,35 Q26,30 31,30 Z" />
+    <path android:fillColor="#142238" android:pathData="M54,37 L72,46 L72,49 L36,49 L36,46 Z M38,52 L43,52 L43,64 L38,64 Z M51.5,52 L56.5,52 L56.5,64 L51.5,64 Z M65,52 L70,52 L70,64 L65,64 Z M35,67 L73,67 L73,70 L35,70 Z" />
+    <path android:fillColor="#FFF2D2" android:pathData="M54,41 A2,2 0,1 0,54,45 A2,2 0,1 0,54,41" />
+</vector>
