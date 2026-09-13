@@ -1328,7 +1328,22 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if(resellerWalletTransfer&&req.method==='POST'){
           const target=db.prepare("SELECT id,name,phone FROM accounts WHERE id=? AND role='customer' AND status='active'").get(resellerWalletTransfer[1]);
           const body=await readJson(req),amount=Number(body.amountToman),note=String(body.note||'شارژ توسط همکار فروش').trim();
-          if(!target)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});if(!Number.isInteger(amount)||amount<=0)return json(res,400,{error:'INVALID_AMOUNT'});
+          if(!target)return json(res,404,{error:'CUSTOMER_NOT_FOUND'});if(!Number.isInteger(amount)||amount===0||note.length<3)return json(res,400,{error:'INVALID_AMOUNT'});
+          if(amount<0){
+            const debit=Math.abs(amount),owned=db.prepare("SELECT * FROM reseller_wallet_transfers WHERE reseller_id=? AND customer_account_id=? AND status IN ('active','partially_reversed') ORDER BY created_at DESC").all(account.id,target.id);
+            const available=owned.reduce((sum,item)=>sum+Number(item.amount_toman-item.reversed_amount_toman),0);
+            if(debit>available)return json(res,400,{error:'REVERSAL_EXCEEDS_OWN_CREDIT',availableToman:available});
+            const adjustmentId=randomUUID(),now=new Date().toISOString();
+            try{
+              db.exec('BEGIN IMMEDIATE');
+              const customerTx=postWalletTransactionInTransaction(db,{accountId:target.id,amountToman:-debit,type:'transfer_out',reference:`reseller-adjustment:${adjustmentId}:customer`,actor:account.id,note});
+              const resellerTx=postWalletTransactionInTransaction(db,{accountId:account.id,amountToman:debit,type:'transfer_in',reference:`reseller-adjustment:${adjustmentId}:reseller`,actor:account.id,note:`برگشت از کیف پول ${target.phone}`});
+              let remaining=debit;
+              for(const item of owned){if(!remaining)break;const open=Number(item.amount_toman-item.reversed_amount_toman),take=Math.min(open,remaining),reversed=Number(item.reversed_amount_toman)+take;db.prepare('UPDATE reseller_wallet_transfers SET reversed_amount_toman=?,status=?,updated_at=? WHERE id=?').run(reversed,reversed===item.amount_toman?'reversed':'partially_reversed',now,item.id);remaining-=take;}
+              db.exec('COMMIT');
+              notify(target.id,'اصلاح موجودی کیف پول',`${debit.toLocaleString('fa-IR')} تومان از شارژهای ثبت‌شده توسط همکار فروش کسر شد. ${note}`);audit(account.id,'wallet_debit','customer',target.id,{adjustmentId,amount:debit,note});return json(res,200,{adjustmentId,balanceToman:customerTx.balanceToman,resellerBalanceToman:resellerTx.balanceToman});
+            }catch(e){try{db.exec('ROLLBACK')}catch{}return json(res,400,{error:e.message});}
+          }
           const transferId=randomUUID();try{
             const moved=transferWalletBalance(db,{fromAccountId:account.id,toAccountId:target.id,amountToman:amount,reference:`reseller-wallet:${transferId}`,actor:account.id,fromNote:`شارژ کیف پول ${target.phone}`,toNote:note,onTransfer:result=>{attachExistingCustomerToReseller(db,account.id,target,result.createdAt);db.prepare("INSERT INTO reseller_wallet_transfers(id,reseller_id,customer_account_id,amount_toman,note,status,created_at,updated_at) VALUES(?,?,?,?,?,'active',?,?)").run(transferId,account.id,target.id,amount,note,result.createdAt,result.createdAt);}});
             notify(target.id,'کیف پول شارژ شد',`${amount.toLocaleString('fa-IR')} تومان توسط همکار فروش به کیف پول شما افزوده شد.`);audit(account.id,'wallet_transfer','customer',target.id,{transferId,amount,note});return json(res,201,{transferId,balanceToman:moved.toBalanceToman,resellerBalanceToman:moved.fromBalanceToman});
