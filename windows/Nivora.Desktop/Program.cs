@@ -57,6 +57,8 @@ namespace NivoraDesktop {
                 else if (action == "refresh") await LoadAccount(Get(msg,"token"));
                 else if (action == "connect") await Connect(Get(msg,"url"));
                 else if (action == "disconnect") { Stop(); Reply("state", new { connected = false, message = "اتصال قطع شد" }); }
+                else if (action == "changePassword") await ChangePassword(Get(msg,"currentPassword"),Get(msg,"newPassword"));
+                else if (action == "recoverPassword") try{Process.Start("https://t.me/nivorali_bot?start=recovery");}catch{Reply("error",new{message="باز کردن بازیابی رمز ممکن نشد"});}
                 else if (action == "logout") { Stop(); DeleteToken(); sessionToken=""; Reply("expired", new { }); }
                 else if (action == "openAccount") OpenAccount(Get(msg,"section"));
             } catch { Reply("error", new { message = "خطا در پردازش درخواست" }); }
@@ -73,6 +75,14 @@ namespace NivoraDesktop {
             sessionToken = token; var r = Request(HttpMethod.Get, Api + "/api/customer/me", token);
             var res = await http.SendAsync(r); if (!res.IsSuccessStatusCode) { DeleteToken();sessionToken="";Reply("expired", new { }); return; }
             Reply("account", json.DeserializeObject(await res.Content.ReadAsStringAsync()));
+        }
+        async System.Threading.Tasks.Task ChangePassword(string currentPassword,string newPassword) {
+            if(String.IsNullOrWhiteSpace(sessionToken))throw new Exception("نشست حساب منقضی شده است");
+            var body="{\"currentPassword\":\""+Escape(currentPassword)+"\",\"newPassword\":\""+Escape(newPassword)+"\"}";
+            var request=Request(HttpMethod.Post,Api+"/api/customer/change-password",sessionToken);request.Content=new StringContent(body,Encoding.UTF8,"application/json");
+            var response=await http.SendAsync(request);var raw=await response.Content.ReadAsStringAsync();
+            if(!response.IsSuccessStatusCode){Reply("error",new{message=ApiError(raw)});return;}
+            DeleteToken();sessionToken="";Reply("passwordChanged",new{message="رمز تغییر کرد؛ دوباره وارد شوید"});
         }
         async System.Threading.Tasks.Task Connect(string url) {
             try {
@@ -92,10 +102,13 @@ namespace NivoraDesktop {
                     var exe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"core","xray.exe"); if (!File.Exists(exe)) throw new Exception("هسته اتصال پیدا نشد");
                     xray = Process.Start(new ProcessStartInfo(exe,"run -c \"" + Path.Combine(folder,"xray.json") + "\"") { UseShellExecute=false, CreateNoWindow=true, WorkingDirectory=Path.GetDirectoryName(exe) });Proxy(true);
                 }
-                await System.Threading.Tasks.Task.Delay(1500); if (xray == null || xray.HasExited) throw new Exception("اجرای مسیر ناموفق بود"); Reply("state", new { connected = true, message = File.Exists(sing)?"متصل شد · کل سیستم تحت پوشش است":"متصل شد · حالت سازگار فعال است" });
+                await System.Threading.Tasks.Task.Delay(1800); if (xray == null || xray.HasExited) throw new Exception("اجرای مسیر ناموفق بود");
+                if(File.Exists(sing)&&!await TunnelIsHealthy())throw new Exception("این مسیر اینترنت سالم نداد؛ مسیر قبلی سیستم بازگردانده شد");
+                Reply("state", new { connected = true, message = File.Exists(sing)?"متصل شد · کل سیستم تحت پوشش است":"متصل شد · حالت سازگار فعال است" });
             } catch (Exception ex) { Stop(); Reply("error", new { message = ex.Message }); }
         }
         void Stop() { Proxy(false); try { if (xray != null && !xray.HasExited) xray.Kill(); } catch {} xray = null; }
+        async System.Threading.Tasks.Task<bool> TunnelIsHealthy(){try{using(var probe=new HttpClient(){Timeout=TimeSpan.FromSeconds(8)}){var response=await probe.GetAsync("https://cp.cloudflare.com/generate_204");return response.IsSuccessStatusCode;}}catch{return false;}}
         void RestoreWindow(){Show();WindowState=FormWindowState.Normal;Activate();}
         void OpenAccount(string section) { var anchor=section=="wallet"?"#wallet-center":section=="support"?"#support-center":""; try{Process.Start(Api+"/account"+anchor);}catch{Reply("error",new{message="بازکردن حساب در مرورگر ممکن نشد"});} }
         void Reply(string type, object payload) { if (view.CoreWebView2 != null) view.CoreWebView2.PostWebMessageAsJson(json.Serialize(new { type = type, payload = payload })); }
@@ -113,12 +126,12 @@ namespace NivoraDesktop {
             var outbound=new Dictionary<string,object>{{"type","vless"},{"tag","proxy"},{"server",hp.Substring(0,colon)},{"server_port",port},{"uuid",id},{"packet_encoding","xudp"}};
             var security=Val(query,"security","none");if(security=="tls"||security=="reality"){var tls=new Dictionary<string,object>{{"enabled",true},{"server_name",Val(query,"sni",hp.Substring(0,colon))},{"utls",new Dictionary<string,object>{{"enabled",true},{"fingerprint",Val(query,"fp","chrome")}}}};if(security=="reality")tls["reality"]=new Dictionary<string,object>{{"enabled",true},{"public_key",Val(query,"pbk","")},{"short_id",Val(query,"sid","")}};outbound["tls"]=tls;}
             var type=Val(query,"type","tcp");if(type=="grpc")outbound["transport"]=new Dictionary<string,object>{{"type","grpc"},{"service_name",Val(query,"serviceName","")}};else if(type=="ws")outbound["transport"]=new Dictionary<string,object>{{"type","ws"},{"path",Val(query,"path","/")}};
-            return json.Serialize(new Dictionary<string,object>{{"log",new Dictionary<string,object>{{"level","warn"}}},{"inbounds",new object[]{new Dictionary<string,object>{{"type","tun"},{"tag","tun-in"},{"address",new object[]{"172.19.0.1/30"}},{"auto_route",true},{"strict_route",true},{"stack","mixed"}}}},{"outbounds",new object[]{outbound}},{"route",new Dictionary<string,object>{{"auto_detect_interface",true},{"final","proxy"}}}});
+            return json.Serialize(new Dictionary<string,object>{{"log",new Dictionary<string,object>{{"level","warn"}}},{"dns",new Dictionary<string,object>{{"servers",new object[]{new Dictionary<string,object>{{"type","tls"},{"tag","remote-dns"},{"server","1.1.1.1"},{"server_port",853},{"detour","proxy"}}}},{"final","remote-dns"},{"strategy","prefer_ipv4"}}},{"inbounds",new object[]{new Dictionary<string,object>{{"type","tun"},{"tag","tun-in"},{"address",new object[]{"172.19.0.1/30"}},{"auto_route",true},{"strict_route",false},{"stack","mixed"}}}},{"outbounds",new object[]{outbound}},{"route",new Dictionary<string,object>{{"auto_detect_interface",true},{"final","proxy"}}}});
         }
         static string FindVless(string raw) { raw=raw.Trim(); if(!raw.Contains("://"))try{raw=Encoding.UTF8.GetString(Convert.FromBase64String(raw));}catch{} foreach(var l in raw.Replace("\r","").Split('\n'))if(l.TrimStart().StartsWith("vless://",StringComparison.OrdinalIgnoreCase))return l.Trim(); return null; }
         static Dictionary<string,string> Query(string s) { var d=new Dictionary<string,string>(); foreach(var p in s.Split('&')){var i=p.IndexOf('=');if(i>0)d[Uri.UnescapeDataString(p.Substring(0,i))]=Uri.UnescapeDataString(p.Substring(i+1));}return d; }
         HttpRequestMessage Request(HttpMethod method, string url, string bearer) { var request = new HttpRequestMessage(method,url); request.Headers.TryAddWithoutValidation("X-Nivora-Device",deviceId); request.Headers.TryAddWithoutValidation("X-Nivora-Platform","Windows"); if(!String.IsNullOrWhiteSpace(bearer))request.Headers.Authorization=new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer",bearer); return request; }
-        string ApiError(string raw) { try { var data=json.Deserialize<Dictionary<string,object>>(raw); var code=Get(data,"error"); if(code=="DEVICE_ALREADY_BOUND")return "این حساب روی دستگاه دیگری فعال است؛ از پشتیبانی بخواهید دستگاه قبلی را آزاد کند"; if(code=="DEVICE_LIMIT_REACHED")return "ظرفیت دستگاه‌های این حساب تکمیل است"; if(code=="RATE_LIMITED")return "تلاش‌ها زیاد بود؛ کمی بعد دوباره امتحان کنید"; if(code=="INVALID_CREDENTIALS")return "شماره یا رمز عبور نادرست است"; } catch {} return "ارتباط با حساب انجام نشد"; }
+        string ApiError(string raw) { try { var data=json.Deserialize<Dictionary<string,object>>(raw); var code=Get(data,"error"); if(code=="DEVICE_ALREADY_BOUND")return "این حساب روی دستگاه دیگری فعال است؛ از پشتیبانی بخواهید دستگاه قبلی را آزاد کند"; if(code=="DEVICE_LIMIT_REACHED")return "ظرفیت دستگاه‌های این حساب تکمیل است"; if(code=="RATE_LIMITED")return "تلاش‌ها زیاد بود؛ کمی بعد دوباره امتحان کنید"; if(code=="INVALID_CREDENTIALS")return "شماره یا رمز عبور نادرست است"; if(code=="CURRENT_PASSWORD_INCORRECT")return "رمز فعلی صحیح نیست";if(code=="WEAK_PASSWORD")return "رمز جدید باید حداقل ۸ کاراکتر باشد"; } catch {} return "ارتباط با حساب انجام نشد"; }
         static string LoadDeviceId() { var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Nivora"); Directory.CreateDirectory(folder); var path=Path.Combine(folder,"device.id"); try { var saved=File.Exists(path)?File.ReadAllText(path).Trim():""; if(saved.Length>=20)return saved; } catch {} var bytes=new byte[24]; using(var rng=RandomNumberGenerator.Create())rng.GetBytes(bytes); var value="win_"+Convert.ToBase64String(bytes).TrimEnd('=').Replace('+','-').Replace('/','_'); try{File.WriteAllText(path,value,Encoding.ASCII);}catch{} return value; }
         static string TokenPath(){var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Nivora");Directory.CreateDirectory(folder);return Path.Combine(folder,"session.bin");}
         static void SaveToken(string value){try{File.WriteAllBytes(TokenPath(),ProtectedData.Protect(Encoding.UTF8.GetBytes(value),null,DataProtectionScope.CurrentUser));}catch{}}
