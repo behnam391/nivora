@@ -1,0 +1,13 @@
+[Unit]
+Description=Nivora OpenVPN mobile-network alternate TCP port
+After=network-online.target openvpn-server@nivora-classic.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/nivora-openvpn-alt-port start
+ExecStop=/usr/local/sbin/nivora-openvpn-alt-port stop
+
+[Install]
+WantedBy=multi-user.target

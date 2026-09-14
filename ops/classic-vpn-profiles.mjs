@@ -15,5 +15,6 @@ export function wireguardProfile({host, privateKey, publicKey, presharedKey, add
 }
 export function openvpnProfile({host, ca, cert, privateKey, tlsCrypt}) {
   for (const value of [ca, cert, privateKey, tlsCrypt]) if (typeof value !== 'string' || !value.includes('-----BEGIN ') || value.includes('</')) throw new Error('INVALID_PEM');
-  return `client\ndev tun\nproto tcp-client\nremote ${endpoint(host)} 1194\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\nverify-x509-name nivora-classic-server name\ntls-version-min 1.2\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\nauth SHA256\nauth-nocache\nverb 3\n<ca>\n${ca.trim()}\n</ca>\n<cert>\n${cert.trim()}\n</cert>\n<key>\n${privateKey.trim()}\n</key>\n<tls-crypt>\n${tlsCrypt.trim()}\n</tls-crypt>\n`;
+  const remoteHost = endpoint(host);
+  return `client\ndev tun\nproto tcp-client\nremote ${remoteHost} 2053\nremote ${remoteHost} 1194\nconnect-timeout 7\nserver-poll-timeout 10\nresolv-retry infinite\nnobind\npersist-key\npersist-tun\nremote-cert-tls server\nverify-x509-name nivora-classic-server name\ntls-version-min 1.2\ndata-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\nauth SHA256\nauth-nocache\nverb 3\n<ca>\n${ca.trim()}\n</ca>\n<cert>\n${cert.trim()}\n</cert>\n<key>\n${privateKey.trim()}\n</key>\n<tls-crypt>\n${tlsCrypt.trim()}\n</tls-crypt>\n`;
 }

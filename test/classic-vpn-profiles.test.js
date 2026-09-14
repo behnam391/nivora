@@ -20,6 +20,8 @@ test('OpenVPN profile verifies server identity and embeds separate credentials',
   assert.match(p,/remote-cert-tls server/);
   assert.match(p,/verify-x509-name nivora-classic-server name/);
   assert.match(p,/proto tcp-client/);
+  assert.match(p,/remote vpn\.example\.com 2053/);
+  assert.match(p,/remote vpn\.example\.com 1194/);
   assert.doesNotMatch(p,/comp-lzo|compress /);
   assert.throws(()=>openvpnProfile({host:'vpn.example.com',ca:pem+'</ca>',cert:pem,privateKey:pem,tlsCrypt:pem}));
 });
