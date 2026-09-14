@@ -1104,22 +1104,22 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const now=new Date(),nowIso=now.toISOString(),windowStart=new Date(now.getTime()-10*60_000).toISOString();
           const issued=Number(db.prepare('SELECT COUNT(*) count FROM subscription_import_tokens WHERE account_id=? AND created_at>?').get(account.id,windowStart).count);
           if(issued>=5){res.setHeader('retry-after','600');return json(res,429,{error:'IMPORT_RATE_LIMITED'});}
-          const rawToken=randomBytes(32).toString('base64url'),tokenHash=createHash('sha256').update(rawToken).digest('hex'),expiresAt=new Date(now.getTime()+120_000).toISOString(),id=randomUUID();
+          const rawToken=randomBytes(32).toString('base64url'),tokenHash=createHash('sha256').update(rawToken).digest('hex'),expiresAt=new Date(now.getTime()+15*60_000).toISOString(),id=randomUUID();
           db.exec('BEGIN IMMEDIATE');
           try{
             db.prepare('UPDATE subscription_import_tokens SET revoked_at=? WHERE account_id=? AND subscription_id=? AND platform=? AND revoked_at IS NULL').run(nowIso,account.id,subscription.subscription_id,'ios');
             db.prepare(`INSERT INTO subscription_import_tokens(id,token_hash,account_id,subscription_id,device_id,platform,expires_at,max_fetches,fetch_count,created_at)
-              VALUES(?,?,?,?,?,'ios',?,3,0,?)`).run(id,tokenHash,account.id,subscription.subscription_id,claimed.id,expiresAt,nowIso);
+              VALUES(?,?,?,?,?,'ios',?,10,0,?)`).run(id,tokenHash,account.id,subscription.subscription_id,claimed.id,expiresAt,nowIso);
             db.prepare("DELETE FROM subscription_import_tokens WHERE expires_at<? AND created_at<?").run(nowIso,new Date(now.getTime()-24*60*60_000).toISOString());
             db.prepare("UPDATE account_devices SET label='آیفون / مرورگر',platform='iOS',last_seen_at=? WHERE id=?").run(nowIso,claimed.id);
             db.exec('COMMIT');
           }catch(error){db.exec('ROLLBACK');throw error;}
-          audit(account.id,'issue','ios_subscription_import',subscription.subscription_id,{orderId:subscription.order_id,expiresAt,maxFetches:3});
+          audit(account.id,'issue','ios_subscription_import',subscription.subscription_id,{orderId:subscription.order_id,expiresAt,maxFetches:10});
           res.setHeader('cache-control','no-store');res.setHeader('referrer-policy','no-referrer');
           return json(res,201,{
             subscriptionUrl:`${publicOrigin(req)}/ios/import/${rawToken}`,
             profileName:`Nivora · ${subscription.plan_name}${subscription.location_name?` · ${subscription.location_name}`:''}`,
-            expiresAt,expiresInSeconds:120,maxFetches:3
+            expiresAt,expiresInSeconds:900,maxFetches:10
           });
         }
         const hysteriaTicket=path.match(/^\/api\/customer\/subscriptions\/([^/]+)\/connect-ticket$/);
@@ -1435,19 +1435,19 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const now=new Date(),nowIso=now.toISOString(),windowStart=new Date(now.getTime()-10*60_000).toISOString();
           const issued=Number(db.prepare('SELECT COUNT(*) count FROM reseller_subscription_import_tokens WHERE reseller_id=? AND created_at>?').get(account.id,windowStart).count);
           if(issued>=30){res.setHeader('retry-after','600');return json(res,429,{error:'IMPORT_RATE_LIMITED'});}
-          const rawToken=randomBytes(32).toString('base64url'),tokenHash=createHash('sha256').update(rawToken).digest('hex'),expiresAt=new Date(now.getTime()+5*60_000).toISOString(),id=randomUUID();
+          const rawToken=randomBytes(32).toString('base64url'),tokenHash=createHash('sha256').update(rawToken).digest('hex'),expiresAt=new Date(now.getTime()+15*60_000).toISOString(),id=randomUUID();
           db.exec('BEGIN IMMEDIATE');
           try{
             db.prepare('UPDATE reseller_subscription_import_tokens SET revoked_at=? WHERE reseller_id=? AND subscription_id=? AND revoked_at IS NULL').run(nowIso,account.id,subscription.subscription_id);
-            db.prepare(`INSERT INTO reseller_subscription_import_tokens(id,token_hash,reseller_id,account_id,subscription_id,expires_at,max_fetches,fetch_count,created_at) VALUES(?,?,?,?,?,?,3,0,?)`).run(id,tokenHash,account.id,subscription.account_id,subscription.subscription_id,expiresAt,nowIso);
+            db.prepare(`INSERT INTO reseller_subscription_import_tokens(id,token_hash,reseller_id,account_id,subscription_id,expires_at,max_fetches,fetch_count,created_at) VALUES(?,?,?,?,?,?,10,0,?)`).run(id,tokenHash,account.id,subscription.account_id,subscription.subscription_id,expiresAt,nowIso);
             db.prepare('DELETE FROM reseller_subscription_import_tokens WHERE expires_at<? AND created_at<?').run(nowIso,new Date(now.getTime()-24*60*60_000).toISOString());
             db.exec('COMMIT');
           }catch(error){db.exec('ROLLBACK');throw error;}
-          const importUrl=`${publicOrigin(req)}/ios/partner-import/${rawToken}`,profileName=`Nivora · ${subscription.plan_name}${subscription.location_name?` · ${subscription.location_name}`:''}`,deepLink=`v2box://install-sub?url=${encodeURIComponent(importUrl)}&name=${encodeURIComponent(profileName)}`;
-          const qrDataUrl=await QRCode.toDataURL(deepLink,{errorCorrectionLevel:'M',margin:2,width:360,color:{dark:'#07132f',light:'#ffffff'}});
-          audit(account.id,'issue','reseller_ios_import',subscription.subscription_id,{orderId:subscription.order_id,expiresAt,maxFetches:3});
+          const importUrl=`${publicOrigin(req)}/ios/partner-import/${rawToken}`,profileName=`Nivora · ${subscription.plan_name}${subscription.location_name?` · ${subscription.location_name}`:''}`;
+          const qrDataUrl=await QRCode.toDataURL(importUrl,{errorCorrectionLevel:'M',margin:2,width:360,color:{dark:'#07132f',light:'#ffffff'}});
+          audit(account.id,'issue','reseller_ios_import',subscription.subscription_id,{orderId:subscription.order_id,expiresAt,maxFetches:10});
           res.setHeader('cache-control','no-store');res.setHeader('referrer-policy','no-referrer');
-          return json(res,201,{qrDataUrl,profileName,expiresAt,expiresInSeconds:300,maxFetches:3});
+          return json(res,201,{qrDataUrl,profileName,expiresAt,expiresInSeconds:900,maxFetches:10});
         }
         if(req.method==='POST'&&path==='/api/reseller/purchase'){
           const b=await readJson(req),plan=db.prepare(`SELECT p.*,r.price_toman reseller_price FROM plans p LEFT JOIN reseller_plan_prices r ON r.plan_id=p.id AND r.reseller_id=? AND r.active=1 WHERE p.id=? AND p.active=1`).get(account.id,b.planId);
@@ -1602,10 +1602,10 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if(adminSubscriptionTools[2]==='ios-import'){
           if(row.panel_client_id?.startsWith('ovpn-'))return deliverOpenVpn({db,req,res,orderId:adminSubscriptionTools[1],role:'admin',actorId:'admin',provisionerForLocation,audit});
           if(!row.upstream_subscription_url&&!row.subscription_url)return json(res,409,{error:'SUBSCRIPTION_NOT_READY'});
-          const now=new Date().toISOString(),expiresAt=new Date(Date.now()+300_000).toISOString(),raw=randomBytes(32).toString('base64url');
-          db.prepare(`INSERT INTO reseller_subscription_import_tokens(id,token_hash,reseller_id,account_id,subscription_id,expires_at,max_fetches,fetch_count,created_at,issued_by_admin) VALUES(?,?,?,?,?,?,3,0,?,1)`).run(randomUUID(),createHash('sha256').update(raw).digest('hex'),row.account_id,row.account_id,row.subscription_id,expiresAt,now);
+          const now=new Date().toISOString(),expiresAt=new Date(Date.now()+15*60_000).toISOString(),raw=randomBytes(32).toString('base64url');
+          db.prepare(`INSERT INTO reseller_subscription_import_tokens(id,token_hash,reseller_id,account_id,subscription_id,expires_at,max_fetches,fetch_count,created_at,issued_by_admin) VALUES(?,?,?,?,?,?,10,0,?,1)`).run(randomUUID(),createHash('sha256').update(raw).digest('hex'),row.account_id,row.account_id,row.subscription_id,expiresAt,now);
           const profileName=`Nivora · ${row.plan_name} · ${row.location_name||''}`,url=`${publicOrigin(req)}/ios/partner-import/${raw}`;
-          const qrDataUrl=await QRCode.toDataURL(`v2box://install-sub?url=${encodeURIComponent(url)}&name=${encodeURIComponent(profileName)}`,{width:360,margin:2});
+          const qrDataUrl=await QRCode.toDataURL(url,{width:360,margin:2});
           audit('admin','issue','admin_ios_import',row.subscription_id,{});res.setHeader('cache-control','no-store');
           return json(res,201,{qrDataUrl,profileName,expiresAt});
         }

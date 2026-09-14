@@ -100,7 +100,7 @@ test('iOS import issues a short-lived hashed capability and V2Box can fetch it w
   assert.equal(response.status,201);
   assert.match(response.headers.get('cache-control')||'',/no-store/i);
   const issued=await response.json();
-  assert.equal(issued.expiresInSeconds,120);
+  assert.equal(issued.expiresInSeconds,900);
   assert.equal(typeof issued.profileName,'string');
   assert.ok(issued.profileName.trim().length>0);
   const importUrl=new URL(issued.subscriptionUrl,base);
@@ -140,7 +140,7 @@ test('iOS import does not reveal another customer order and rejects an inactive 
   assert.equal(db.prepare('SELECT COUNT(*) count FROM subscription_import_tokens').get().count,0);
 });
 
-test('iOS import URL expires and cannot be fetched more than its small retry allowance', async t => {
+test('iOS import URL expires and cannot be fetched more than its retry allowance', async t => {
   const {db,base,orderId,ownerHeaders}=await fixture(t);
 
   let response=await issue(base,orderId,ownerHeaders);
@@ -149,7 +149,7 @@ test('iOS import URL expires and cannot be fetched more than its small retry all
   const firstUrl=new URL(issued.subscriptionUrl,base);
   const firstHash=createHash('sha256').update(firstUrl.pathname.split('/').at(-1)).digest('hex');
   const token=db.prepare('SELECT max_fetches FROM subscription_import_tokens WHERE token_hash=?').get(firstHash);
-  assert.equal(token.max_fetches,3);
+  assert.equal(token.max_fetches,10);
   for(let attempt=0;attempt<token.max_fetches;attempt+=1){
     response=await fetch(firstUrl);
     assert.equal(response.status,200);

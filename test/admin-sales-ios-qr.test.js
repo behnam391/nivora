@@ -25,7 +25,7 @@ test('admin changes one subscription limits and issues QR without changing the s
   response=await fetch(target+'/ios-import',{method:'POST',headers:admin,body:'{}'});
   assert.equal(response.status,201);assert.match((await response.json()).qrDataUrl,/^data:image\/png;base64,/);
   const issued=db.prepare('SELECT * FROM reseller_subscription_import_tokens WHERE issued_by_admin=1').get();
-  assert.equal(issued.account_id,customer.id);assert.equal(issued.max_fetches,3);
+  assert.equal(issued.account_id,customer.id);assert.equal(issued.max_fetches,10);
   db.prepare("UPDATE subscriptions SET control_status='suspended' WHERE order_id=?").run(order.id);
   assert.equal((await fetch(target+'/ios-import',{method:'POST',headers:admin,body:'{}'})).status,409);
 });
@@ -110,10 +110,8 @@ test('reseller can create a short-lived iPhone QR only for a subscription it sol
   let response=await fetch(`${base}/api/reseller/customers`,{method:'POST',headers:resellerAuth,body:JSON.stringify({name:'مشتری آیفون',phone:'09125550001',password:'customer-password'})});assert.equal(response.status,201);const customer=await response.json();
   response=await fetch(`${base}/api/reseller/purchase`,{method:'POST',headers:resellerAuth,body:JSON.stringify({customerId:customer.id,planId:plan.id,salePriceToman:95000})});assert.equal(response.status,201);const sale=await response.json();
   response=await fetch(`${base}/api/reseller/orders/${sale.orderId}/ios-import`,{method:'POST',headers:otherAuth,body:'{}'});assert.equal(response.status,404);
-  response=await fetch(`${base}/api/reseller/orders/${sale.orderId}/ios-import`,{method:'POST',headers:resellerAuth,body:'{}'});assert.equal(response.status,201);assert.match(response.headers.get('cache-control')||'',/no-store/i);const qr=await response.json();assert.match(qr.qrDataUrl,/^data:image\/png;base64,/);assert.equal(qr.expiresInSeconds,300);assert.equal(qr.maxFetches,3);assert.equal('subscriptionUrl' in qr,false);assert.equal(db.prepare('SELECT COUNT(*) count FROM reseller_subscription_import_tokens WHERE reseller_id=? AND account_id=?').get(reseller.id,customer.account_id).count,1);
-  const deepLink=new URL(qrPayload);
-  assert.equal(deepLink.protocol,'v2box:');assert.equal(deepLink.hostname,'install-sub');
-  assert.equal(deepLink.searchParams.get('name'),qr.profileName);
-  const importUrl=new URL(deepLink.searchParams.get('url'));
+  response=await fetch(`${base}/api/reseller/orders/${sale.orderId}/ios-import`,{method:'POST',headers:resellerAuth,body:'{}'});assert.equal(response.status,201);assert.match(response.headers.get('cache-control')||'',/no-store/i);const qr=await response.json();assert.match(qr.qrDataUrl,/^data:image\/png;base64,/);assert.equal(qr.expiresInSeconds,900);assert.equal(qr.maxFetches,10);assert.equal('subscriptionUrl' in qr,false);assert.equal(db.prepare('SELECT COUNT(*) count FROM reseller_subscription_import_tokens WHERE reseller_id=? AND account_id=?').get(reseller.id,customer.account_id).count,1);
+  const importUrl=new URL(qrPayload);
+  assert.equal(importUrl.protocol,'http:');
   assert.equal(importUrl.origin,base);assert.match(importUrl.pathname,/^\/ios\/partner-import\/[A-Za-z0-9_-]+$/);
 });
