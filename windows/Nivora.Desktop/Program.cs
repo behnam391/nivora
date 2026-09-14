@@ -94,17 +94,21 @@ namespace NivoraDesktop {
                 var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Nivora Desktop"); Directory.CreateDirectory(folder);
                 var sing=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"core","sing-box.exe");
                 Stop();
+                var connectedWithTun=false;
                 if(File.Exists(sing)){
                     var configPath=Path.Combine(folder,"sing-box.json");File.WriteAllText(configPath,BuildTunConfig(link),new UTF8Encoding(false));
-                    xray=Process.Start(new ProcessStartInfo(sing,"run -c \""+configPath+"\""){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=Path.GetDirectoryName(sing)});
-                }else{
-                    File.WriteAllText(Path.Combine(folder,"xray.json"), BuildConfig(link), new UTF8Encoding(false));
-                    var exe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"core","xray.exe"); if (!File.Exists(exe)) throw new Exception("هسته اتصال پیدا نشد");
-                    xray = Process.Start(new ProcessStartInfo(exe,"run -c \"" + Path.Combine(folder,"xray.json") + "\"") { UseShellExecute=false, CreateNoWindow=true, WorkingDirectory=Path.GetDirectoryName(exe) });Proxy(true);
+                    var start=new ProcessStartInfo(sing,"run -c \""+configPath+"\""){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=Path.GetDirectoryName(sing),RedirectStandardError=true};
+                    xray=Process.Start(start);await System.Threading.Tasks.Task.Delay(1800);
+                    connectedWithTun=xray!=null&&!xray.HasExited&&await TunnelIsHealthy();
+                    if(!connectedWithTun){var reason="TUN_HEALTH_FAILED";try{if(xray!=null&&xray.HasExited)reason=xray.StandardError.ReadToEnd();}catch{}try{File.WriteAllText(Path.Combine(folder,"last-tun-error.txt"),reason,Encoding.UTF8);}catch{}Stop();}
                 }
-                await System.Threading.Tasks.Task.Delay(1800); if (xray == null || xray.HasExited) throw new Exception("اجرای مسیر ناموفق بود");
-                if(File.Exists(sing)&&!await TunnelIsHealthy())throw new Exception("این مسیر اینترنت سالم نداد؛ مسیر قبلی سیستم بازگردانده شد");
-                Reply("state", new { connected = true, message = File.Exists(sing)?"متصل شد · کل سیستم تحت پوشش است":"متصل شد · حالت سازگار فعال است" });
+                if(!connectedWithTun){
+                    var configPath=Path.Combine(folder,"xray.json");File.WriteAllText(configPath,BuildConfig(link),new UTF8Encoding(false));
+                    var exe=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"core","xray.exe");if(!File.Exists(exe))throw new Exception("هسته اتصال پیدا نشد");
+                    xray=Process.Start(new ProcessStartInfo(exe,"run -c \""+configPath+"\""){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=Path.GetDirectoryName(exe)});Proxy(true);
+                    await System.Threading.Tasks.Task.Delay(1400);if(xray==null||xray.HasExited){Stop();throw new Exception("مسیر انتخاب‌شده اجرا نشد");}
+                }
+                Reply("state",new{connected=true,message=connectedWithTun?"متصل شد · کل سیستم تحت پوشش است":"متصل شد · حالت سازگار ویندوز فعال است"});
             } catch (Exception ex) { Stop(); Reply("error", new { message = ex.Message }); }
         }
         void Stop() { Proxy(false); try { if (xray != null && !xray.HasExited) xray.Kill(); } catch {} xray = null; }
