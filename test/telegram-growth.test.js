@@ -49,6 +49,17 @@ test('private campaign deep links are recorded and continue normal onboarding',a
 
 test('a new Telegram contact is retained as a sales lead instead of being rejected',async()=>{
   const result=await run({message:{chat:{id:75,type:'private'},from:{id:75},contact:{user_id:75,phone_number:'+989121234567'}}});
-  assert.equal(result.status,200);assert.equal(result.sent.length,1);assert.match(result.sent[0].text,/مشکلی نیست/);
+  assert.equal(result.status,200);assert.equal(result.sent.length,1);assert.match(result.sent[0].text,/ساخت حساب/);
   assert.equal(result.db.prepare("SELECT status FROM sales_leads WHERE telegram_user_id='75'").get().status,'qualified');
+});
+
+test('Telegram registration creates and links a customer without storing plaintext password',async()=>{
+  const db=openDatabase(':memory:'),sent=[];
+  const handler=createTelegramRecovery(db,{getConfig:()=>({enabled:true,token:'1:test',secret:'secret',username:'nivorali_bot',adminIds:[],groupIds:[]}),fetchImpl:async(_url,options)=>{sent.push(JSON.parse(options.body));return {ok:true,json:async()=>({ok:true})}}});
+  const deliver=async message=>handler({headers:{'x-telegram-bot-api-secret-token':'secret'}},{writeHead(){},end(){}},async()=>({message}),(res,_code,payload)=>res.end(JSON.stringify(payload)));
+  await deliver({message_id:1,chat:{id:88,type:'private'},from:{id:88},contact:{user_id:88,phone_number:'+989121234568'}});
+  await deliver({message_id:2,chat:{id:88,type:'private'},from:{id:88},text:'کاربر تازه'});
+  await deliver({message_id:3,chat:{id:88,type:'private'},from:{id:88},text:'strong-pass-88'});
+  const account=db.prepare("SELECT * FROM accounts WHERE phone='09121234568'").get(),link=db.prepare("SELECT * FROM telegram_account_links WHERE telegram_user_id='88'").get();
+  assert.equal(account.name,'کاربر تازه');assert.equal(link.account_id,account.id);assert.notEqual(account.password_hash,'strong-pass-88');assert(sent.some(item=>item.message_id===3));
 });
