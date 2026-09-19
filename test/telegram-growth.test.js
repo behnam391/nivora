@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { openDatabase } from '../src/db.js';
 import { createTelegramRecovery } from '../src/telegram-bot.js';
 
-const run=async({message,config={},aiPublicAnswer}={})=>{
+const run=async({message,config={},aiPublicAnswer,seed}={})=>{
   const db=openDatabase(':memory:'),sent=[];
+  if(seed)seed(db);
   const handler=createTelegramRecovery(db,{
     getConfig:()=>({enabled:true,token:'1:test',secret:'secret',username:'nivorali_bot',adminIds:[],groupIds:['-1001234567'],groupAiEnabled:true,...config}),
     fetchImpl:async(_url,options)=>{sent.push(JSON.parse(options.body));return {ok:true,json:async()=>({ok:true})}},
@@ -20,6 +21,14 @@ test('group messages never expose customer actions and only explicit mentions in
   assert.equal(ignored.status,200);assert.equal(ignored.sent.length,0);
   const answered=await run({message:{chat:{id:-1001234567,type:'supergroup'},from:{id:42},text:'@nivorali_bot چطور خرید کنم؟'},aiPublicAnswer:async q=>`پاسخ عمومی: ${q}`});
   assert.equal(answered.sent.length,1);assert.match(answered.sent[0].text,/پاسخ عمومی/);assert.doesNotMatch(answered.sent[0].text,/اشتراک:\/\//);
+});
+
+test('private sales advisor qualifies a lead and recommends an active plan',async()=>{
+  const seed=db=>{const now=new Date().toISOString();db.prepare(`INSERT INTO plans(id,name,description,price_irr,traffic_gb,duration_days,device_limit,sort_order,active,created_at,updated_at) VALUES('p60','استاندارد','',1590000,60,30,1,1,1,?,?)`).run(now,now)};
+  const network=await run({seed,message:{chat:{id:52,type:'private'},from:{id:52},text:'sales:network:mtn'},config:{latestReleaseUrl:''}});
+  assert.match(network.sent[0].text,/دستگاه/);
+  const lead=network.db.prepare('SELECT * FROM sales_leads WHERE telegram_user_id=?').get('52');
+  assert.equal(lead.network,'mtn');
 });
 
 test('group AI fails closed until that group is explicitly allowed',async()=>{

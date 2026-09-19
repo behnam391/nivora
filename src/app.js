@@ -418,6 +418,14 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   };
   const telegramConfig=()=>({enabled:settingGet('telegram_enabled')==='true',token:decrypt(settingGet('telegram_token')||'')||process.env.TELEGRAM_BOT_TOKEN,secret:decrypt(settingGet('telegram_secret')||'')||process.env.TELEGRAM_WEBHOOK_SECRET,username:settingGet('telegram_username')||'',channel:settingGet('telegram_channel')||'',latestReleaseUrl:settingGet('telegram_latest_release_url')||'',adminUrl:`${String(process.env.PUBLIC_BASE_URL||'https://b.nivorali.com').replace(/\/$/,'')}/admin`,adminIds:(settingGet('telegram_admin_ids')||'').split(',').map(x=>x.trim()).filter(Boolean),groupIds:(settingGet('telegram_group_ids')||'').split(',').map(x=>x.trim()).filter(Boolean),groupAiEnabled:settingGet('telegram_group_ai_enabled')==='true',groupAutoReply:settingGet('telegram_group_auto_reply')==='true',publicContext:settingGet('telegram_public_context')||''});
   const telegramAdminAlert=async(text,replyMarkup)=>{const c=telegramConfig();if(!c.enabled||!c.token||!c.adminIds.length)return;await Promise.allSettled(c.adminIds.map(chat=>fetch(`https://api.telegram.org/bot${c.token}/sendMessage`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_id:chat,text,...(replyMarkup?{reply_markup:replyMarkup}:{})})})));};
+  const telegramAdminReceipt=async(item,caption,replyMarkup)=>{
+    const c=telegramConfig(),match=String(item.receipt_image_url||'').match(/^\/receipts\/([a-f0-9-]+\.(?:jpg|jpeg|png|webp))(?:\?|$)/i);
+    if(!c.enabled||!c.token||!c.adminIds.length||!match)return false;
+    let bytes;try{bytes=await readFile(resolve('receipts',match[1]));}catch{return false;}
+    const mime={'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp'}[extname(match[1]).toLowerCase()]||'application/octet-stream';
+    const results=await Promise.allSettled(c.adminIds.map(async chat=>{const form=new FormData();form.set('chat_id',chat);form.set('caption',caption.slice(0,1000));form.set('photo',new Blob([bytes],{type:mime}),match[1]);if(replyMarkup)form.set('reply_markup',JSON.stringify(replyMarkup));const response=await fetch(`https://api.telegram.org/bot${c.token}/sendPhoto`,{method:'POST',body:form,signal:AbortSignal.timeout(30000)});const data=await response.json().catch(()=>({}));if(!response.ok||!data.ok)throw new Error(data.description||'TELEGRAM_PHOTO_FAILED');return true;}));
+    return results.some(result=>result.status==='fulfilled');
+  };
   const aiConfig=()=>({enabled:settingGet('ai_enabled')==='true',token:decrypt(settingGet('ai_hetzner_token')||'')||process.env.HETZNER_INFERENCE_TOKEN||'',model:settingGet('ai_model')||'Qwen/Qwen3.6-35B-A3B-FP8',baseUrl:'https://inference.hetzner.com/api/v1'});
   const redactForAi=value=>String(value||'').replace(/(?:vless|vmess|trojan|ss|hysteria2):\/\/\S+/gi,'[لینک اشتراک حذف شد]').replace(/https?:\/\/\S+/gi,'[نشانی حذف شد]').replace(/\b(?:\+?98|0)?9\d{9}\b/g,'[شماره حذف شد]').replace(/\b[a-f0-9]{24,}\b/gi,'[شناسه محرمانه حذف شد]').replace(/\b[A-Za-z0-9_-]{32,}\b/g,'[کلید حذف شد]').slice(0,7000);
   const aiCompletion=async({system,user,maxTokens=500})=>{const c=aiConfig();if(!c.enabled||!c.token){const error=new Error('AI_NOT_CONFIGURED');error.status=400;throw error;}const response=await fetch(`${c.baseUrl}/chat/completions`,{method:'POST',headers:{authorization:`Bearer ${c.token}`,'content-type':'application/json'},body:JSON.stringify({model:c.model,messages:[{role:'system',content:system},{role:'user',content:redactForAi(user)}],temperature:.25,max_tokens:maxTokens,chat_template_kwargs:{enable_thinking:false}}),signal:AbortSignal.timeout(30000)}),data=await response.json().catch(()=>({}));if(!response.ok){const code=response.status===429?'AI_RATE_LIMITED':response.status===401?'INVALID_AI_TOKEN':response.status===503?'AI_PROVIDER_UNAVAILABLE':'AI_PROVIDER_ERROR',error=new Error(code);error.status=response.status===429?429:response.status===503?503:502;throw error;}const text=String(data?.choices?.[0]?.message?.content||'').trim();if(!text){const error=new Error('AI_EMPTY_RESPONSE');error.status=502;throw error;}return text.slice(0,2000);};
@@ -536,6 +544,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
 
   // Shared approval → provisioning path used by both the admin review routes and the
   // auto-review agent. The order's status must already be set to 'approved'.
+  const markSalesLeadConverted=order=>{if(order.account_id)db.prepare("UPDATE sales_leads SET status='converted',updated_at=? WHERE account_id=? AND status<>'closed'").run(new Date().toISOString(),order.account_id);};
   async function finalizeApprovedOrder(order, { actor = 'admin' } = {}) {
     const now = new Date().toISOString();
     const subscriptionId = randomUUID();
@@ -550,7 +559,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         await renewalProvisioner.renew({ panelClientId: parent.panel_client_id, addDays: order.duration_days, addTrafficGb: order.traffic_gb, operationId:order.id });
         db.prepare("UPDATE subscriptions SET status='active',activated_at=? WHERE id=?").run(new Date().toISOString(), subscriptionId);
         const row = subscriptionRow(subscriptionId); row.subscription_access_token = parent.subscription_access_token;
-        return { ok: true, subscription: row };
+        markSalesLeadConverted(order);return { ok: true, subscription: row };
       } catch (e) {
         db.prepare("UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?").run(String(e.message || e), subscriptionId);
         return { ok: false, code: 'RENEW_FAILED' };
@@ -576,7 +585,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       audit(actor,'approve','order_bundle',bundleId,{orderId:order.id,subscriptionCount:entries.length});
       const first=subscriptionRow(entries[0].subscriptionId);first.subscription_access_token=entries[0].accessToken;first.bundle_id=bundleId;first.bundle_size=entries.length;
-      return {ok:true,subscription:first,subscriptions:provisioned.items};
+      markSalesLeadConverted(order);return {ok:true,subscription:first,subscriptions:provisioned.items};
     }
     const location = order.location_id ? db.prepare('SELECT * FROM service_locations WHERE id=? AND active=1').get(order.location_id) : selectLocationForPlan(db, order.plan_id);
     if (!location) return { ok: false, code: 'NO_CAPACITY', note: 'No server capacity' };
@@ -594,7 +603,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         db.prepare(`UPDATE subscriptions SET status='failed',provision_error=? WHERE id=?`).run(String(e.message || e), subscriptionId);
       }
     }
-    return { ok: true, subscription: subscriptionRow(subscriptionId) };
+    const completed=subscriptionRow(subscriptionId);if(completed?.status==='active')markSalesLeadConverted(order);return { ok: true, subscription: completed };
   }
 
   // Load an approved order with the plan fields the provisioner needs, then provision it.
@@ -624,7 +633,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const isTopup=item.entityType==='wallet_topup';
         const title=isTopup?'شارژ کیف پول':'خرید اشتراک';
         const buttons=isTopup?{inline_keyboard:[[{text:'✅ تأیید و شارژ',callback_data:`topup:approve:${item.id}`},{text:'❌ رد',callback_data:`topup:reject:${item.id}`}]]}:undefined;
-        telegramAdminAlert(`⚠️ ${title} نیازمند بررسی دستی\nشناسه: ${item.id}\nدلیل: ${item.reason}`,buttons);
+        const amount=item.amount_toman!=null?`${Number(item.amount_toman).toLocaleString('fa-IR')} تومان`:item.amount_transferred_irr!=null?`${Math.round(Number(item.amount_transferred_irr)/10).toLocaleString('fa-IR')} تومان`:'';
+        const caption=`⚠️ ${title} نیازمند بررسی دستی\n${amount?`مبلغ: ${amount}\n`:''}شناسه: ${item.id}\nدلیل: ${item.reason}`;
+        telegramAdminReceipt(item,caption,buttons).then(sent=>{if(!sent)return telegramAdminAlert(caption,buttons)}).catch(()=>telegramAdminAlert(caption,buttons));
       }
     };
   };

@@ -288,7 +288,7 @@ export async function sweepPendingTopups(db, deps = {}) {
   }
   // Missing or ambiguous bank evidence must never cause an automatic financial
   // rejection. Keep the request reviewable and escalate it to a human once.
-  const expired = db.prepare("SELECT id,account_id,amount_toman FROM wallet_topups WHERE status='under_review' AND created_at<? ORDER BY created_at").all(cutoff);
+  const expired = db.prepare("SELECT id,account_id,amount_toman,receipt_reference,receipt_image_url FROM wallet_topups WHERE status='under_review' AND created_at<? ORDER BY created_at").all(cutoff);
   for (const topup of expired) {
     const reason = 'تطبیق خودکار کامل نشد؛ نیازمند بررسی دستی مدیر';
     const previous=lastTopupReview(db,topup.id);
@@ -309,7 +309,7 @@ export async function sweepPendingOrders(db, deps = {}) {
     const result = await evaluateOrder(db, id, { ...deps, config });
     if (result.decision === 'approved') approved++; else if (result.decision === 'rejected') rejected++;
   }
-  const expired = db.prepare("SELECT id,account_id,customer_name FROM orders WHERE status='under_review' AND created_at<? ORDER BY created_at").all(cutoff);
+  const expired = db.prepare("SELECT id,account_id,customer_name,amount_transferred_irr,receipt_reference,receipt_image_url FROM orders WHERE status='under_review' AND created_at<? ORDER BY created_at").all(cutoff);
   for (const order of expired) {
     const reason = 'تطبیق خودکار کامل نشد؛ نیازمند بررسی دستی مدیر';
     const previous=lastOrderReview(db,order.id);

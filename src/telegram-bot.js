@@ -5,8 +5,8 @@ import { approveWalletTopup } from './auto-review.js';
 
 const phone=v=>String(v||'').replace(/[^\d+]/g,'').replace(/^\+98/,'0').replace(/^0098/,'0');
 const fa=v=>Number(v||0).toLocaleString('fa-IR');
-const customerMenu={keyboard:[[{text:'👤 حساب من'},{text:'📦 اشتراک‌های من'}],[{text:'🔑 بازیابی رمز'},{text:'📥 دانلود برنامه'}],[{text:'☎️ پشتیبانی'}]],resize_keyboard:true};
-const adminMenu={keyboard:[[{text:'📊 داشبورد'},{text:'✨ تحلیل هوشمند'}],[{text:'🔎 جست‌وجوی مشتری'},{text:'🧾 پرداخت‌های منتظر'}],[{text:'🎫 تیکت‌های باز'},{text:'🖥 وضعیت سیستم'}],[{text:'🌐 بازکردن پنل'},{text:'🛡 مدیریت'}]],resize_keyboard:true};
+const customerMenu={keyboard:[[{text:'🛒 خرید اشتراک'},{text:'🧭 پیشنهاد هوشمند'}],[{text:'👤 حساب من'},{text:'📦 اشتراک‌های من'}],[{text:'🔑 بازیابی رمز'},{text:'📥 دانلود برنامه'}],[{text:'☎️ پشتیبانی'}]],resize_keyboard:true};
+const adminMenu={keyboard:[[{text:'📊 داشبورد'},{text:'🚀 فروش هوشمند'}],[{text:'✨ تحلیل هوشمند'},{text:'🔎 جست‌وجوی مشتری'}],[{text:'🧾 پرداخت‌های منتظر'},{text:'🎫 تیکت‌های باز'}],[{text:'🖥 وضعیت سیستم'},{text:'🌐 بازکردن پنل'}],[{text:'🛡 مدیریت'}]],resize_keyboard:true};
 const log=(db,actor,action,type,id,details=null)=>db.prepare('INSERT INTO audit_log(actor,action,entity_type,entity_id,details,created_at) VALUES(?,?,?,?,?,?)').run(actor,action,type,id,details&&JSON.stringify(details),new Date().toISOString());
 
 export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperationsSummary,aiPublicAnswer}={}){
@@ -20,6 +20,15 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
     const update=await readJson(req),callback=update.callback_query,m=update.message||callback?.message;if(!m?.chat?.id)return json(res,200,{ok:true});
     const chat=String(m.chat.id),user=String((callback?.from||m.from)?.id||''),text=String(callback?.data||m.text||'').trim(),now=new Date(),admin=c.adminIds.includes(user),actor=`telegram:${user}`,privateChat=m.chat.type==='private';
     const answerCallback=text=>callback?.id?fetchImpl(`https://api.telegram.org/bot${c.token}/answerCallbackQuery`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({callback_query_id:callback.id,text})}):Promise.resolve();
+    const storeUrl=String(c.adminUrl||'https://b.nivorali.com/admin').replace(/\/admin\/?$/,'/store');
+    const campaign=db.prepare("SELECT campaign_code FROM telegram_growth_events WHERE telegram_user_id=? AND event_type='campaign_start' ORDER BY created_at DESC LIMIT 1").get(user)?.campaign_code||null;
+    const touchLead=(fields={})=>{
+      const old=db.prepare('SELECT * FROM sales_leads WHERE telegram_user_id=?').get(user),timestamp=new Date().toISOString();
+      if(old){db.prepare(`UPDATE sales_leads SET chat_id=?,account_id=COALESCE(?,account_id),campaign_code=COALESCE(?,campaign_code),network=COALESCE(?,network),device=COALESCE(?,device),usage=COALESCE(?,usage),recommended_plan_id=COALESCE(?,recommended_plan_id),status=?,updated_at=? WHERE telegram_user_id=?`).run(chat,fields.accountId||null,fields.campaignCode||campaign,fields.network||null,fields.device||null,fields.usage||null,fields.planId||null,fields.status||old.status,timestamp,user);}
+      else db.prepare(`INSERT INTO sales_leads(id,telegram_user_id,chat_id,account_id,campaign_code,network,device,usage,recommended_plan_id,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),user,chat,fields.accountId||null,fields.campaignCode||campaign,fields.network||null,fields.device||null,fields.usage||null,fields.planId||null,fields.status||'new',timestamp,timestamp);
+    };
+    const activePlans=()=>db.prepare("SELECT id,name,CAST(price_irr/10 AS INTEGER) price_toman,traffic_gb,duration_days,device_limit FROM plans WHERE active=1 AND id NOT LIKE 'staff-%' ORDER BY sort_order,name").all();
+    const planText=plan=>`${plan.name}\n${plan.traffic_gb?fa(plan.traffic_gb)+' گیگ':'حجم نامحدود'} · ${plan.duration_days?fa(plan.duration_days)+' روز':'زمان نامحدود'} · ${fa(plan.device_limit)} دستگاه\n${fa(plan.price_toman)} تومان`;
 
     // Account, payment and recovery flows must never run in a group. In groups the
     // bot answers only an explicit mention/reply and reveals no customer data.
@@ -66,6 +75,12 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
       if(text==='📊 داشبورد'){
         const s=db.prepare(`SELECT (SELECT COUNT(*) FROM orders WHERE status='approved') orders,(SELECT COALESCE(SUM(amount_transferred_irr/10),0) FROM orders WHERE status='approved') sales,(SELECT COALESCE(SUM(balance_toman),0) FROM wallet_accounts) wallets,(SELECT COUNT(*) FROM subscriptions WHERE status='failed' AND created_at>=datetime('now','-1 day')) failed`).get();
         await send(chat,`فروش ثبت‌شده: ${fa(s.orders)}\nمبلغ فروش: ${fa(s.sales)} تومان\nموجودی کل کیف پول‌ها: ${fa(s.wallets)} تومان\nساخت ناموفق ۲۴ ساعت: ${fa(s.failed)}`,{reply_markup:adminMenu});return json(res,200,{ok:true});
+      }
+      if(text==='🚀 فروش هوشمند'){
+        const s=db.prepare(`SELECT COUNT(*) leads,COUNT(CASE WHEN status IN ('qualified','recommended','linked','converted') THEN 1 END) qualified,COUNT(CASE WHEN status='recommended' THEN 1 END) recommended,COUNT(CASE WHEN status='linked' THEN 1 END) linked,COUNT(CASE WHEN status='converted' THEN 1 END) converted FROM sales_leads`).get();
+        const campaigns=db.prepare(`SELECT COALESCE(campaign_code,'بدون کمپین') campaign,COUNT(DISTINCT telegram_user_id) starts FROM telegram_growth_events WHERE event_type='campaign_start' GROUP BY campaign_code ORDER BY starts DESC LIMIT 5`).all();
+        const rate=s.leads?Math.round(Number(s.converted||0)*100/Number(s.leads)):0;
+        await send(chat,`گزارش ایجنت فروش\n\nسرنخ‌ها: ${fa(s.leads)}\nنیازسنجی‌شده: ${fa(s.qualified)}\nپیشنهاد دریافت‌کرده: ${fa(s.recommended)}\nحساب متصل: ${fa(s.linked)}\nخرید موفق: ${fa(s.converted)}\nنرخ تبدیل: ${fa(rate)}٪${campaigns.length?'\n\nکمپین‌ها:\n'+campaigns.map(x=>`${x.campaign}: ${fa(x.starts)}`).join('\n'):''}`,{reply_markup:adminMenu});return json(res,200,{ok:true});
       }
       if(text==='✨ تحلیل هوشمند'){
         try{if(!aiOperationsSummary)throw new Error('AI_NOT_CONFIGURED');await send(chat,'در حال تحلیل آمار تجمیعی…');await send(chat,await aiOperationsSummary(),{reply_markup:adminMenu});}catch(error){await send(chat,error.message==='AI_RATE_LIMITED'?'ظرفیت رایگان موقتاً پر شده است.':'سرویس هوش مصنوعی فعلاً پاسخ نداد.',{reply_markup:adminMenu});}return json(res,200,{ok:true});
@@ -117,9 +132,32 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
     }
 
     const link=db.prepare('SELECT l.*,a.name FROM telegram_account_links l JOIN accounts a ON a.id=l.account_id WHERE l.telegram_user_id=?').get(user);
+    if(/^sales:(network|device|usage):/i.test(text)){
+      const [,step,value]=text.split(':'),state=states.get(user)||{};
+      if(step==='network'){state.network=value;state.mode='sales-device';states.set(user,state);touchLead({network:value,status:'qualified'});await answerCallback('ثبت شد');await send(chat,'از چه دستگاهی استفاده می‌کنید؟',{reply_markup:{inline_keyboard:[[{text:'اندروید',callback_data:'sales:device:android'},{text:'آیفون',callback_data:'sales:device:ios'}],[{text:'ویندوز',callback_data:'sales:device:windows'},{text:'چند دستگاه',callback_data:'sales:device:multi'}]]}});return json(res,200,{ok:true});}
+      if(step==='device'){state.device=value;state.mode='sales-usage';states.set(user,state);touchLead({device:value,status:'qualified'});await answerCallback('ثبت شد');await send(chat,'مصرف تقریبی ماهانه شما چقدر است؟',{reply_markup:{inline_keyboard:[[{text:'کم؛ پیام‌رسان و وب',callback_data:'sales:usage:light'}],[{text:'متوسط؛ شبکه‌های اجتماعی',callback_data:'sales:usage:medium'}],[{text:'زیاد؛ ویدئو و دانلود',callback_data:'sales:usage:heavy'}]]}});return json(res,200,{ok:true});}
+      if(step==='usage'){
+        state.usage=value;const plans=activePlans();if(!plans.length){await send(chat,'در حال حاضر پلن فعالی برای فروش وجود ندارد.',{reply_markup:customerMenu});return json(res,200,{ok:true});}
+        const target=value==='light'?30:value==='medium'?60:120;
+        const plan=plans.find(x=>Number(x.traffic_gb)===0||Number(x.traffic_gb)>=target)||plans.at(-1);
+        states.delete(user);touchLead({usage:value,planId:plan.id,status:'recommended'});db.prepare("INSERT INTO telegram_growth_events(id,telegram_user_id,chat_id,event_type,campaign_code,created_at) VALUES(?,?,?,'plan_recommended',?,?)").run(randomUUID(),user,chat,campaign,new Date().toISOString());await answerCallback('پیشنهاد آماده شد');await send(chat,`پیشنهاد مناسب برای شما:\n\n${planText(plan)}\n\nاین پیشنهاد بر اساس دستگاه و میزان مصرف انتخاب شده است؛ کیفیت نهایی به اپراتور و شرایط شبکه شما نیز بستگی دارد.`,{reply_markup:{inline_keyboard:[[{text:'🛒 مشاهده و خرید',url:storeUrl}],[{text:'دیدن همه پلن‌ها',callback_data:'sales:plans:all'}]]}});return json(res,200,{ok:true});
+      }
+    }
+    if(text==='sales:plans:all'){
+      const plans=activePlans();await answerCallback('پلن‌های فعال');touchLead({status:'qualified'});await send(chat,plans.length?plans.map(planText).join('\n\n────────\n\n'):'پلن فعالی موجود نیست.',{reply_markup:{inline_keyboard:[[{text:'🛒 ورود به صفحه خرید',url:storeUrl}]]}});return json(res,200,{ok:true});
+    }
+    if(text==='sales:restart'){
+      states.set(user,{mode:'sales-network'});touchLead({status:'new'});await answerCallback('شروع نیازسنجی');await send(chat,'اینترنت اصلی شما کدام است؟',{reply_markup:{inline_keyboard:[[{text:'همراه اول',callback_data:'sales:network:mci'},{text:'ایرانسل',callback_data:'sales:network:mtn'}],[{text:'رایتل',callback_data:'sales:network:rightel'},{text:'وای‌فای / مخابرات',callback_data:'sales:network:wifi'}]]}});return json(res,200,{ok:true});
+    }
+    if(text==='🧭 پیشنهاد هوشمند'){
+      states.set(user,{mode:'sales-network'});touchLead({status:'new'});await send(chat,'برای پیشنهاد دقیق‌تر، اینترنت اصلی شما کدام است؟',{reply_markup:{inline_keyboard:[[{text:'همراه اول',callback_data:'sales:network:mci'},{text:'ایرانسل',callback_data:'sales:network:mtn'}],[{text:'رایتل',callback_data:'sales:network:rightel'},{text:'وای‌فای / مخابرات',callback_data:'sales:network:wifi'}]]}});return json(res,200,{ok:true});
+    }
+    if(text==='🛒 خرید اشتراک'){
+      const plans=activePlans();touchLead({status:'qualified'});db.prepare("INSERT INTO telegram_growth_events(id,telegram_user_id,chat_id,event_type,campaign_code,created_at) VALUES(?,?,?,'store_open',?,?)").run(randomUUID(),user,chat,campaign,new Date().toISOString());await send(chat,plans.length?`پلن‌های فعال Nivora:\n\n${plans.map(planText).join('\n\n────────\n\n')}`:'در حال حاضر پلن فعالی ثبت نشده است.',{reply_markup:{inline_keyboard:[[{text:'🛒 ادامه خرید امن',url:storeUrl}],[{text:'🧭 کمک برای انتخاب',callback_data:'sales:restart'}]]}});return json(res,200,{ok:true});
+    }
     if(text==='📥 دانلود برنامه'){if(!c.latestReleaseUrl){await send(chat,'لینک نسخه جدید هنوز منتشر نشده است.',{reply_markup:customerMenu});return json(res,200,{ok:true});}await send(chat,'آخرین نسخه رسمی Nivora آماده دانلود است.',{reply_markup:{inline_keyboard:[[{text:'📥 دانلود آخرین نسخه',url:c.latestReleaseUrl}]]}});return json(res,200,{ok:true});}
     if((normalizedText==='/start'||text==='🔑 بازیابی رمز')&&!link){await send(chat,'برای اتصال امن حساب، شماره متعلق به همین حساب تلگرام را ارسال کنید.',{reply_markup:{keyboard:[[{text:'📱 ارسال شماره من',request_contact:true}]],resize_keyboard:true,one_time_keyboard:true}});return json(res,200,{ok:true});}
-    if(m.contact){if(String(m.contact.user_id)!==user){await send(chat,'فقط شماره حساب تلگرام خودتان پذیرفته می‌شود.');return json(res,200,{ok:true});}const p=phone(m.contact.phone_number),a=db.prepare("SELECT id,name FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(p);if(!a){await send(chat,'حساب فعالی با این شماره پیدا نشد.');return json(res,200,{ok:true});}db.prepare(`INSERT INTO telegram_account_links(telegram_user_id,chat_id,account_id,phone,linked_at,last_seen_at) VALUES(?,?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET chat_id=excluded.chat_id,account_id=excluded.account_id,phone=excluded.phone,last_seen_at=excluded.last_seen_at`).run(user,chat,a.id,p,now.toISOString(),now.toISOString());await send(chat,`حساب ${a.name} با موفقیت متصل شد.`,{reply_markup:customerMenu});return json(res,200,{ok:true});}
+    if(m.contact){if(String(m.contact.user_id)!==user){await send(chat,'فقط شماره حساب تلگرام خودتان پذیرفته می‌شود.');return json(res,200,{ok:true});}const p=phone(m.contact.phone_number),a=db.prepare("SELECT id,name FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(p);if(!a){await send(chat,'حساب فعالی با این شماره پیدا نشد.');return json(res,200,{ok:true});}db.prepare(`INSERT INTO telegram_account_links(telegram_user_id,chat_id,account_id,phone,linked_at,last_seen_at) VALUES(?,?,?,?,?,?) ON CONFLICT(telegram_user_id) DO UPDATE SET chat_id=excluded.chat_id,account_id=excluded.account_id,phone=excluded.phone,last_seen_at=excluded.last_seen_at`).run(user,chat,a.id,p,now.toISOString(),now.toISOString());touchLead({accountId:a.id,status:'linked'});await send(chat,`حساب ${a.name} با موفقیت متصل شد.`,{reply_markup:customerMenu});return json(res,200,{ok:true});}
     if(!link){await send(chat,'ابتدا /start را بزنید و شماره خودتان را تأیید کنید.');return json(res,200,{ok:true});}
     if(text==='👤 حساب من'){const w=db.prepare('SELECT balance_toman FROM wallet_accounts WHERE account_id=?').get(link.account_id);await send(chat,`${link.name}\n${link.phone}\nموجودی: ${fa(w?.balance_toman)} تومان`,{reply_markup:customerMenu});}
     else if(text==='📦 اشتراک‌های من'){const rows=db.prepare(`SELECT p.name,s.status,s.subscription_url FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id WHERE o.account_id=? AND o.order_kind='purchase' ORDER BY o.created_at DESC LIMIT 10`).all(link.account_id);await send(chat,rows.length?rows.map(x=>`${x.name} — ${x.status}${x.subscription_url?`\n${x.subscription_url}`:''}`).join('\n\n'):'اشتراکی ندارید.',{reply_markup:customerMenu});}
