@@ -43,6 +43,12 @@ test('approved groups can answer relevant questions without a mention when auto 
 
 test('private campaign deep links are recorded and continue normal onboarding',async()=>{
   const first=await run({message:{chat:{id:42,type:'private'},from:{id:42},text:'/start camp_irancell-sep'}});
-  assert.equal(first.status,200);assert.equal(first.sent.length,1);assert.match(first.sent[0].text,/شماره/);
+  assert.equal(first.status,200);assert.equal(first.sent.length,1);assert.match(first.sent[0].text,/خرید/);
   assert.equal(first.db.prepare("SELECT COUNT(*) count FROM telegram_growth_events WHERE campaign_code='irancell-sep'").get().count,1);
+});
+
+test('a new Telegram contact is retained as a sales lead instead of being rejected',async()=>{
+  const result=await run({message:{chat:{id:75,type:'private'},from:{id:75},contact:{user_id:75,phone_number:'+989121234567'}}});
+  assert.equal(result.status,200);assert.equal(result.sent.length,1);assert.match(result.sent[0].text,/مشکلی نیست/);
+  assert.equal(result.db.prepare("SELECT status FROM sales_leads WHERE telegram_user_id='75'").get().status,'qualified');
 });
