@@ -68,6 +68,16 @@ test('admin dashboard is served and protected API rejects invalid token', async 
   r = await fetch(`${base}/brand-mark.png`); assert.equal(r.status,200); assert.equal(r.headers.get('content-type'),'image/png'); assert.ok((await r.arrayBuffer()).byteLength>1000);
 });
 
+test('admin and managing reseller can permanently purge customer accounts only with confirmation',async t=>{
+  const {server,base,db}=await start();t.after(()=>server.close());const admin={authorization:'Bearer test-token','content-type':'application/json'},password=hashPassword('StrongPass88'),now=new Date().toISOString();
+  const create=(id,phone,role,manager=null)=>{db.prepare('INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt,managed_by_reseller_id) VALUES(?,?,?, ?,\'active\',0,?,?,?,?,?)').run(id,phone,id,role,now,now,password.hash,password.salt,manager);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(`w-${id}`,id,now)};
+  create('reseller-a','09120000001','reseller');create('customer-a','09120000002','customer','reseller-a');create('customer-b','09120000003','customer');db.prepare("INSERT INTO reseller_customers(id,reseller_id,name,phone,note,status,created_at,updated_at,account_id) VALUES('book-a','reseller-a','customer-a','09120000002','','active',?,?, 'customer-a')").run(now,now);db.prepare("INSERT INTO notifications(id,account_id,title,body,created_at) VALUES('n-a','customer-a','x','y',?)").run(now);
+  let response=await fetch(`${base}/api/admin/accounts/customer-b/purge`,{method:'DELETE',headers:admin,body:JSON.stringify({confirm:false})});assert.equal(response.status,400);assert.ok(db.prepare("SELECT 1 FROM accounts WHERE id='customer-b'").get());
+  const login=await fetch(`${base}/api/reseller/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({phone:'09120000001',password:'StrongPass88'})}).then(r=>r.json()),reseller={authorization:`Bearer ${login.token}`,'content-type':'application/json'};
+  response=await fetch(`${base}/api/reseller/customers/book-a/purge`,{method:'DELETE',headers:reseller,body:JSON.stringify({confirm:true})});assert.equal(response.status,200,await response.text());assert.equal(db.prepare("SELECT 1 FROM accounts WHERE id='customer-a'").get(),undefined);assert.equal(db.prepare("SELECT 1 FROM notifications WHERE account_id='customer-a'").get(),undefined);
+  response=await fetch(`${base}/api/admin/accounts/customer-b/purge`,{method:'DELETE',headers:admin,body:JSON.stringify({confirm:true})});assert.equal(response.status,200);assert.equal(db.prepare("SELECT 1 FROM accounts WHERE id='customer-b'").get(),undefined);
+});
+
 test('public landing is separated from private commerce pages and robots policy', async t => {
   const {server,base}=await start();t.after(()=>server.close());
   let r=await fetch(`${base}/`);assert.equal(r.status,200);assert.equal(r.headers.get('x-robots-tag'),null);
