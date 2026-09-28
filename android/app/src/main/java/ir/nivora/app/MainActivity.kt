@@ -186,7 +186,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
             hasSession = signedIn,
             enabled = biometricPreferences.getBoolean("enabled", false)
         )
-        liveSessionValidated = false
+        liveSessionValidated = session.isRecentlyValidated()
         state = state.copy(
             signedIn = signedIn,
             loading = signedIn && !biometricEnabled,
@@ -487,6 +487,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
                     connectionValidationInFlight=false
                     if (ready && state.selectedSubscription?.id==cachedOrder.id) {
                         liveSessionValidated=true
+                        this@MainActivity.session.markValidated()
                         state=state.copy(loadError=null,notice=null)
                         resumePendingVpnRequest()
                     } else {
@@ -894,6 +895,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
         biometricPreferences.edit().clear().apply()
         if (BuildConfig.APP_AUDIENCE == "customer") sendVpnStopCommand()
         session.clear()
+        QuickConnectionStore(this).clear()
         SubscriptionBundleStore(this).clear()
         DashboardSnapshotStore(this).clear()
         WorkManager.getInstance(this).cancelUniqueWork("nivora-notification-poll")
@@ -928,6 +930,9 @@ class MainActivity : FragmentActivity(), NivoraActions {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         state = state.copy(vpnState = "connecting", vpnError = null, vpnMode = mode)
+        if (mode == VpnConnectionMode.PRIMARY) QuickConnectionStore(this).save(
+            QuickConnection(url, subscription.id, subscription.locationName ?: subscription.planName)
+        )
         startForegroundService(
             Intent(this, NivoraVpnService::class.java)
                 .putExtra(NivoraVpnService.EXTRA_URL, url)
@@ -991,6 +996,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
                 if (!isCurrentSession(token)) return@background
                 dashboardValidationInFlight = false
                 liveSessionValidated = true
+                session.markValidated()
                 showNewNotifications(payload.reseller?.notifications.orEmpty())
                 state = state.copy(
                     signedIn = true,
@@ -1062,6 +1068,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
                 if (!isCurrentSession(token)) return@background
                 dashboardValidationInFlight = false
                 liveSessionValidated = true
+                session.markValidated()
                 applyCustomerAccount(token, account, state.plans, state.tickets)
                 resumePendingVpnRequest()
             },
@@ -1104,6 +1111,7 @@ class MainActivity : FragmentActivity(), NivoraActions {
     private fun applyCustomerAccount(token: String, account: Account, plans: List<Plan>, tickets: List<SupportTicket>) {
         if (!isCurrentSession(token)) return
         showNewNotifications(account.notifications)
+        showSubscriptionWarnings(account.subscriptions)
         val active = account.subscriptions.filter { it.status == "active" && it.url != null }
         val storedId = selection.getString("subscription_id", null)
         val selectedId = active.firstOrNull { it.id == storedId }?.id ?: active.firstOrNull()?.id
@@ -1335,6 +1343,27 @@ class MainActivity : FragmentActivity(), NivoraActions {
         if(Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(NotificationChannel(channel,"اعلان‌های نیورا",NotificationManager.IMPORTANCE_HIGH).apply{enableVibration(true);setShowBadge(true);vibrationPattern=longArrayOf(0,220,120,220);setSound(sound,AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).build())})
         val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         fresh.take(3).forEachIndexed{index,n->manager.notify(n.id.hashCode(),Notification.Builder(this,channel).setSmallIcon(R.drawable.ic_nivora_notification).setContentTitle(n.title).setContentText(n.body).setContentIntent(open).setSound(sound).setNumber(fresh.size-index).setAutoCancel(true).build())}
+    }
+
+    private fun showSubscriptionWarnings(items:List<Subscription>){
+        val warning=items.filter{it.status=="active"}.mapNotNull{subscription->
+            when{
+                subscription.totalBytes>0&&subscription.remainingBytes<=0L->subscription to ("حجم اشتراک تمام شده" to "برای ادامه اتصال، اشتراک ${subscription.planName} را تمدید کنید.")
+                subscription.durationDays>0&&!subscription.startsOnFirstUse&&subscription.remainingDays<=0->subscription to ("زمان اشتراک تمام شده" to "اعتبار ${subscription.planName} پایان یافته است.")
+                subscription.totalBytes>0&&subscription.usagePercent>=80->subscription to ("حجم اشتراک رو‌به‌اتمام است" to "تنها ${100-subscription.usagePercent.toInt()}٪ از حجم ${subscription.planName} باقی مانده است.")
+                subscription.durationDays>0&&!subscription.startsOnFirstUse&&subscription.remainingDays<=3->subscription to ("اعتبار اشتراک رو‌به‌اتمام است" to "${subscription.remainingDays} روز از ${subscription.planName} باقی مانده است.")
+                else->null
+            }
+        }.firstOrNull()?:return
+        val subscription=warning.first;val title=warning.second.first;val body=warning.second.second
+        val key="subscription_warning_${subscription.id}_${subscription.remainingDays}_${subscription.usagePercent.toInt()/10}"
+        if(alertPreferences.getBoolean(key,false))return
+        alertPreferences.edit().putBoolean(key,true).apply()
+        showNotice("$title؛ $body",true)
+        val manager=getSystemService(NotificationManager::class.java);val channel="nivora_alerts_v4";val sound=android.provider.Settings.System.DEFAULT_NOTIFICATION_URI
+        if(Build.VERSION.SDK_INT>=26)manager.createNotificationChannel(NotificationChannel(channel,"اعلان‌های نیورا",NotificationManager.IMPORTANCE_HIGH).apply{enableVibration(true);setShowBadge(true);setSound(sound,AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).build())})
+        val open=PendingIntent.getActivity(this,0,Intent(this,MainActivity::class.java),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        manager.notify(key.hashCode(),Notification.Builder(this,channel).setSmallIcon(R.drawable.ic_nivora_notification).setContentTitle(title).setContentText(body).setContentIntent(open).setAutoCancel(true).build())
     }
 
     private fun scheduleNotificationWorker(){

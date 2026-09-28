@@ -2219,9 +2219,10 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
 
       if (req.method === 'GET' && path === '/api/admin/orders') {
-        const rows = db.prepare(`SELECT o.*,CAST(o.amount_transferred_irr/10 AS INTEGER) amount_transferred_irr,p.name plan_name,CAST(p.price_irr/10 AS INTEGER) price_irr,s.status subscription_status,s.control_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.provision_error,l.name location_name,${locationSequenceSql} location_sequence
+        const panelStats=await readAllStats();
+        const rows = db.prepare(`SELECT o.*,CAST(o.amount_transferred_irr/10 AS INTEGER) amount_transferred_irr,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,CAST(p.price_irr/10 AS INTEGER) price_irr,s.status subscription_status,s.control_status,s.subscription_url,COALESCE(s.access_token,(SELECT ps.access_token FROM subscriptions ps WHERE ps.order_id=o.parent_order_id)) subscription_access_token,s.panel_client_id,s.provision_error,l.name location_name,${locationSequenceSql} location_sequence
           FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id ORDER BY o.created_at DESC`).all();
-        return json(res, 200, rows.map(row=>exposeSubscription(req,row)));
+        return json(res, 200, rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats)));
       }
 
       const adminControlMatch=path.match(/^\/api\/admin\/orders\/([^/]+)\/(suspend|resume|delete)$/);

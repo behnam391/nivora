@@ -33,7 +33,14 @@ class SecureSessionStore(private val context: Context) {
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
         val payload = cipher.iv + encrypted
-        preferences.edit().putString("token", Base64.encodeToString(payload, Base64.NO_WRAP)).putString("role", role).apply()
+        preferences.edit().putString("token", Base64.encodeToString(payload, Base64.NO_WRAP)).putString("role", role).putLong("validated_at", 0L).apply()
+    }
+
+    fun markValidated(nowMs: Long = System.currentTimeMillis()) = preferences.edit().putLong("validated_at", nowMs).apply()
+
+    fun isRecentlyValidated(maxAgeMs: Long = 24 * 60 * 60 * 1000L, nowMs: Long = System.currentTimeMillis()): Boolean {
+        val validatedAt = preferences.getLong("validated_at", 0L)
+        return token() != null && validatedAt > 0L && nowMs - validatedAt in 0..maxAgeMs
     }
 
     fun role(): String = preferences.getString("role", "customer") ?: "customer"

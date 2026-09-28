@@ -603,7 +603,9 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
         json.cleanText("control_status") ?: "active",
         json.cleanText("subscription_url"), json.cleanText("location_name"),
         json.optInt("traffic_gb"), json.optInt("duration_days"), json.optInt("remainingDays"),
-        json.optInt("reseller_sale_price_toman"), json.getString("created_at")
+        json.optInt("reseller_sale_price_toman"), json.getString("created_at"),
+        json.optLong("usedBytes"),json.optLong("totalBytes"),json.optLong("remainingBytes"),
+        json.optDouble("usagePercent"),json.optBoolean("startsOnFirstUse")
     )
 
     private fun session(json: JSONObject, role: String) = Session(

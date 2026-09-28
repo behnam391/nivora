@@ -160,7 +160,12 @@ data class ResellerOrder(
     val durationDays: Int,
     val remainingDays: Int,
     val salePriceToman: Int,
-    val createdAt: String
+    val createdAt: String,
+    val usedBytes: Long = 0,
+    val totalBytes: Long = 0,
+    val remainingBytes: Long = 0,
+    val usagePercent: Double = 0.0,
+    val startsOnFirstUse: Boolean = false
 ) {
     val effectiveStatus: String
         get() = controlStatus.takeUnless { it.isBlank() || it == "active" } ?: status

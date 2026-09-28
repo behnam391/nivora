@@ -690,6 +690,13 @@ private fun PartnerPlanCard(plan: Plan, affordable: Boolean, onBuy: () -> Unit) 
 }
 
 @Composable
+private fun formatBytes(value:Long):String=when{
+    value>=1_073_741_824L->"${faNumber(((value/1_073_741_824.0)*10).toInt()/10.0)} گیگ"
+    value>=1_048_576L->"${faNumber(value/1_048_576L)} مگ"
+    else->"${faNumber(value/1024L)} کیلوبایت"
+}
+
+@Composable
 private fun PartnerOrderRow(order: ResellerOrder, onOpen: (ResellerOrder) -> Unit) {
     PartnerGlassCard(Modifier.fillMaxWidth().clickable { onOpen(order) }, padding = 14.dp) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -709,7 +716,8 @@ private fun PartnerOrderCard(order: ResellerOrder, onRenew: (ResellerOrder) -> U
             Column(Modifier.weight(1f)) {
                 Text(order.customerName, color = Color.White, fontWeight = FontWeight.Black)
                 Text("${order.phone} · ${order.planName}", color = Color(0xFF9BB0D1), style = MaterialTheme.typography.bodySmall)
-                Text("${order.locationName ?: "انتخاب خودکار"} · ${faNumber(order.remainingDays)} روز مانده", color = Color(0xFF7890B5), style = MaterialTheme.typography.labelSmall)
+                Text("${order.locationName ?: "انتخاب خودکار"} · ${if(order.durationDays==0) "زمان نامحدود" else if(order.startsOnFirstUse) "شروع نشده" else "${faNumber(order.remainingDays)} روز مانده"}", color = Color(0xFF7890B5), style = MaterialTheme.typography.labelSmall)
+                Text(if(order.trafficGb==0) "حجم نامحدود" else "${faNumber(order.usagePercent.toInt())}٪ مصرف · ${formatBytes(order.remainingBytes)} باقی", color = if(order.usagePercent>=80) Color(0xFFFF9AAB) else Color(0xFF7890B5), style = MaterialTheme.typography.labelSmall)
             }
             PartnerStatus(order.effectiveStatus)
         }
