@@ -276,7 +276,8 @@ fun SubscriptionCard(
     selected: Boolean,
     onSelect: () -> Unit,
     onRenew: () -> Unit,
-    onRefund: () -> Unit
+    onRefund: () -> Unit,
+    onDiscard: () -> Unit
 ) {
     var expanded by androidx.compose.runtime.saveable.rememberSaveable(subscription.id) { androidx.compose.runtime.mutableStateOf(false) }
     val progress = (subscription.usagePercent / 100.0).toFloat().coerceIn(0f, 1f)
@@ -365,6 +366,9 @@ fun SubscriptionCard(
                     }
                     if (subscription.resellerId == null) TextButton(onClick = onRefund, modifier = Modifier.fillMaxWidth()) {
                         Text("لغو و محاسبه بازگشت وجه")
+                    }
+                    if (selected) TextButton(onClick = onDiscard, modifier = Modifier.fillMaxWidth()) {
+                        Text("حذف این اشتراک بدون بازگشت وجه")
                     }
                 }
             }

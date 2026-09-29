@@ -378,6 +378,10 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
         request("/api/customer/subscriptions/$orderId","DELETE",token)
     }
 
+    fun discardSubscription(token: String, orderId: String) {
+        request("/api/customer/subscriptions/$orderId/discard","POST",token,JSONObject().put("confirm",true))
+    }
+
     fun currencyRates(): CurrencyRates {
         val data=request("/api/currency-rates")
         return CurrencyRates(data.optInt("usdToman"),data.optInt("eurToman"),data.cleanText("updatedAt"),data.optString("source","manual"))

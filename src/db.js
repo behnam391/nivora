@@ -23,6 +23,8 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       cost_currency TEXT NOT NULL DEFAULT 'NONE',
       cost_amount REAL NOT NULL DEFAULT 0,
       markup_percent INTEGER NOT NULL DEFAULT 0,
+      base_price_toman INTEGER NOT NULL DEFAULT 0,
+      base_rate_toman INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
@@ -396,6 +398,8 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!planColumns.includes('cost_currency')) db.exec("ALTER TABLE plans ADD COLUMN cost_currency TEXT NOT NULL DEFAULT 'NONE'");
   if (!planColumns.includes('cost_amount')) db.exec('ALTER TABLE plans ADD COLUMN cost_amount REAL NOT NULL DEFAULT 0');
   if (!planColumns.includes('markup_percent')) db.exec('ALTER TABLE plans ADD COLUMN markup_percent INTEGER NOT NULL DEFAULT 0');
+  if (!planColumns.includes('base_price_toman')) db.exec('ALTER TABLE plans ADD COLUMN base_price_toman INTEGER NOT NULL DEFAULT 0');
+  if (!planColumns.includes('base_rate_toman')) db.exec('ALTER TABLE plans ADD COLUMN base_rate_toman INTEGER NOT NULL DEFAULT 0');
   const orderColumns = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
   if (!orderColumns.includes('tracking_token')) db.exec('ALTER TABLE orders ADD COLUMN tracking_token TEXT');
   if (!orderColumns.includes('account_id')) db.exec('ALTER TABLE orders ADD COLUMN account_id TEXT REFERENCES accounts(id)');

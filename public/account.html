@@ -66,6 +66,11 @@
           <span>موجودی کیف پول</span><b><span id="balance">۰</span> <small>تومان</small></b><p>برای خرید و تمدید فوری از موجودی استفاده می‌شود.</p><button id="topup" class="cyan-button">شارژ کیف پول با رسید</button>
         </article>
       </div>
+      <section id="renewal-prompt" class="renewal-prompt" hidden aria-label="یادآوری تمدید">
+        <div class="renewal-prompt-head"><span class="renewal-unread-dot" aria-hidden="true"></span><b id="renewal-title"></b><button id="renewal-later" type="button">بعداً</button></div>
+        <p id="renewal-detail"></p><div class="renewal-track"><span id="renewal-track-fill"></span></div>
+        <button id="renewal-action" class="primary" type="button"></button>
+      </section>
       <section id="currency-card" class="panel section-panel currency-card" hidden><div class="panel-head"><div><span class="eyebrow">نرخ مبنای قیمت‌گذاری</span><h2>دلار و یورو امروز</h2><p>قیمت پلن‌های ارزی بر اساس این نرخ‌ها محاسبه می‌شود.</p></div><span id="currency-source" class="status-pill"></span></div><div class="currency-grid"><article><span>دلار</span><b id="currency-usd">—</b><small id="currency-usd-change"></small></article><article><span>یورو</span><b id="currency-eur">—</b><small id="currency-eur-change"></small></article></div><small id="currency-updated" class="currency-updated"></small></section>
 
       <section class="panel section-panel">

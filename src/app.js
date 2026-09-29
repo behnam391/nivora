@@ -207,7 +207,8 @@ const planFromRow = row => row && ({
   durationDays: row.duration_days, deviceLimit: row.device_limit,
   locationMode: row.location_mode === 'multi' ? 'multi' : 'single',
   bundleSize: row.location_mode === 'multi' ? Math.max(2, Number(row.bundle_size) || 3) : 1,
-  autoPrice: Boolean(row.auto_price), costCurrency: row.cost_currency || 'NONE',
+  autoPrice: Boolean(row.auto_price), priceMode: !row.auto_price?'fixed':Number(row.base_price_toman)>0?'base_fx':'cost_markup',
+  basePriceToman:Number(row.base_price_toman||0),baseRateToman:Number(row.base_rate_toman||0),costCurrency: row.cost_currency || 'NONE',
   costAmount: Number(row.cost_amount || 0), markupPercent: Number(row.markup_percent || 0),
   sortOrder: row.sort_order, active: Boolean(row.active),
   locations: row.locations ? row.locations.split('|').map(x => { const [id,name,countryCode,city,flagEmoji] = x.split('~'); return {id,name:planLocationName(row.location_mode,name,countryCode),countryCode,city,flagEmoji:flagEmoji||''}; }) : [],
@@ -223,7 +224,9 @@ function validPlan(body) {
     body.priceIrr >= 0 && body.trafficGb >= 0 && body.durationDays >= 0 && body.deviceLimit > 0 &&
     ['single','multi'].includes(locationMode) && Number.isInteger(bundleSize) &&
     (locationMode === 'single' ? bundleSize === 1 : bundleSize >= 2 && bundleSize <= 10) &&
-    (!body.autoPrice || (['USD','EUR'].includes(body.costCurrency) && Number(body.costAmount) > 0 && Number(body.markupPercent) >= 0));
+    (!body.autoPrice || (['USD','EUR'].includes(body.costCurrency) && (body.priceMode==='base_fx'
+      ? Number.isInteger(Number(body.basePriceToman)) && Number(body.basePriceToman)>0
+      : Number(body.costAmount)>0 && Number(body.markupPercent)>=0)));
 }
 
 const resellerCustomerFromBody = body => ({
@@ -374,7 +377,13 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
     previousUsdToman:Math.max(0,Number(settingGet('pricing_previous_usd_toman')||0)),previousEurToman:Math.max(0,Number(settingGet('pricing_previous_eur_toman')||0)),
     updatedAt:settingGet('pricing_updated_at')||null,source:settingGet('pricing_source')||'manual',autoRefresh:settingGet('pricing_auto_refresh')==='true'
   });
-  const applyAutomaticPlanPrices=()=>{const rates=pricingSnapshot(),now=new Date().toISOString(),rows=db.prepare("SELECT id,cost_currency,cost_amount,markup_percent FROM plans WHERE auto_price=1 AND cost_currency IN ('USD','EUR')").all(),update=db.prepare('UPDATE plans SET price_irr=?,updated_at=? WHERE id=?');let updated=0;db.exec('BEGIN IMMEDIATE');try{for(const row of rows){const rate=row.cost_currency==='USD'?rates.usdToman:rates.eurToman;if(!rate)continue;const raw=Number(row.cost_amount)*rate*(1+Number(row.markup_percent||0)/100),rounded=Math.max(0,Math.ceil(raw/5000)*5000);update.run(rounded*10,now,row.id);updated++;}db.exec('COMMIT');return updated;}catch(error){db.exec('ROLLBACK');throw error;}};
+  const planRate=(currency,rates=pricingSnapshot())=>currency==='USD'?rates.usdToman:currency==='EUR'?rates.eurToman:0;
+  const roundedPlanPrice=raw=>Math.max(0,Math.ceil(raw/5000)*5000);
+  const automaticPlanPrice=(row,rates=pricingSnapshot())=>{const rate=planRate(row.cost_currency,rates);if(!rate)return null;const anchored=Number(row.base_price_toman)>0&&Number(row.base_rate_toman)>0;const raw=anchored
+    ? Number(row.base_price_toman)*rate/Number(row.base_rate_toman)
+    : Number(row.cost_amount)*rate*(1+Number(row.markup_percent||0)/100);return anchored?Math.max(0,Math.round(raw)):roundedPlanPrice(raw);};
+  const planPricingInput=(body,old=null)=>{const mode=body.autoPrice?(body.priceMode==='base_fx'?'base_fx':'cost_markup'):'fixed',rate=planRate(body.costCurrency);let basePrice=0,baseRate=0;if(mode==='base_fx'){basePrice=Number(body.basePriceToman);if(!rate)return null;baseRate=old?.auto_price&&Number(old.base_price_toman)===basePrice&&old.cost_currency===body.costCurrency&&!body.resetRateAnchor?Number(old.base_rate_toman)||rate:rate;}const row={cost_currency:mode==='fixed'?'NONE':body.costCurrency,cost_amount:mode==='cost_markup'?Number(body.costAmount):0,markup_percent:mode==='cost_markup'?Number(body.markupPercent):0,base_price_toman:basePrice,base_rate_toman:baseRate};const price=mode==='fixed'?body.priceIrr:automaticPlanPrice(row);return {...row,auto_price:mode==='fixed'?0:1,price_irr:(price??body.priceIrr)*10};};
+  const applyAutomaticPlanPrices=()=>{const rates=pricingSnapshot(),now=new Date().toISOString(),rows=db.prepare("SELECT id,cost_currency,cost_amount,markup_percent,base_price_toman,base_rate_toman FROM plans WHERE auto_price=1 AND cost_currency IN ('USD','EUR')").all(),update=db.prepare('UPDATE plans SET price_irr=?,updated_at=? WHERE id=?');let updated=0;db.exec('BEGIN IMMEDIATE');try{for(const row of rows){const price=automaticPlanPrice(row,rates);if(price===null)continue;update.run(price*10,now,row.id);updated++;}db.exec('COMMIT');return updated;}catch(error){db.exec('ROLLBACK');throw error;}};
   let pricingRefreshPromise=null;
   const refreshCurrencyRates=async()=>{if(pricingRefreshPromise)return pricingRefreshPromise;pricingRefreshPromise=(async()=>{const key=decrypt(settingGet('pricing_navasan_key')||'');if(!key){const error=new Error('PRICING_API_KEY_REQUIRED');error.status=400;throw error;}const response=await fetch(`https://api.navasan.tech/latest/?api_key=${encodeURIComponent(key)}`,{headers:{accept:'application/json'},signal:AbortSignal.timeout(15000)}),data=await response.json().catch(()=>({}));if(!response.ok)throw Object.assign(new Error('PRICING_PROVIDER_ERROR'),{status:502});const value=(...names)=>{for(const name of names){const raw=data?.[name]?.value??data?.[name];const number=Number(String(raw??'').replace(/,/g,''));if(Number.isFinite(number)&&number>0)return number;}return 0},usd=value('usd_sell','usd','usd_farda_sell'),eur=value('eur_sell','eur');if(!usd||!eur)throw Object.assign(new Error('PRICING_PROVIDER_DATA_INVALID'),{status:502});const previous=pricingSnapshot();settingSet('pricing_previous_usd_toman',previous.usdToman||usd);settingSet('pricing_previous_eur_toman',previous.eurToman||eur);settingSet('pricing_usd_toman',usd);settingSet('pricing_eur_toman',eur);settingSet('pricing_updated_at',new Date().toISOString());settingSet('pricing_source','Navasan');const updatedPlans=applyAutomaticPlanPrices();return {...pricingSnapshot(),updatedPlans};})().finally(()=>{pricingRefreshPromise=null});return pricingRefreshPromise;};
   const emergencyConfig=()=>normalizeEmergencyConfig({
@@ -1219,6 +1228,25 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           let stats={};try{stats=(await panelStatsReader()||{})[row.panel_client_id]||{}}catch{}const expiry=Number(stats.expiryTime||0),total=Number(stats.totalBytes??(Number(row.traffic_gb||0)*1024**3)),used=Number(stats.upBytes||0)+Number(stats.downBytes||0),localExpiry=row.duration_days>0&&row.activated_at?Date.parse(row.activated_at)+row.duration_days*86_400_000:0,expired=row.subscription_status==='expired'||(expiry>0&&expiry<=Date.now())||(localExpiry>0&&localExpiry<=Date.now())||(total>0&&used>=total);
           if(!expired)return json(res,409,{error:'SUBSCRIPTION_NOT_EXPIRED'});if(row.control_status!=='deleted'&&row.panel_client_id){const remote=provisionerForLocation(db.prepare('SELECT * FROM service_locations WHERE id=?').get(row.location_id));if(remote?.remove)try{await remote.remove({panelClientId:row.panel_client_id})}catch{return json(res,502,{error:'PANEL_CONTROL_FAILED'});}}
           db.prepare("UPDATE subscriptions SET status='expired',control_status='deleted',deleted_at=? WHERE id=?").run(new Date().toISOString(),row.subscription_id);audit(account.id,'delete_expired','subscription',row.subscription_id);return json(res,200,{deleted:true});
+        }
+        const customerDiscard=path.match(/^\/api\/customer\/subscriptions\/([^/]+)\/discard$/);
+        if(customerDiscard&&req.method==='POST'){
+          const b=await readJson(req);if(b.confirm!==true)return json(res,400,{error:'CONFIRMATION_REQUIRED'});
+          const row=db.prepare(`SELECT o.id,o.location_id,s.id subscription_id,s.status,s.control_status,s.panel_client_id
+            FROM orders o JOIN subscriptions s ON s.order_id=o.id
+            WHERE o.id=? AND o.account_id=? AND o.order_kind='purchase'`).get(customerDiscard[1],account.id);
+          if(!row)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
+          if(row.control_status==='deleted')return json(res,409,{error:'SUBSCRIPTION_ALREADY_DELETED'});
+          if(row.status!=='active'||row.control_status!=='active')return json(res,409,{error:'SUBSCRIPTION_NOT_ACTIVE'});
+          const activeRenewal=db.prepare("SELECT 1 FROM orders o JOIN subscriptions s ON s.order_id=o.id WHERE o.parent_order_id=? AND o.order_kind='renewal' AND o.status='approved' AND s.status='active' LIMIT 1").get(row.id);
+          if(activeRenewal)return json(res,409,{error:'SUBSCRIPTION_HAS_RENEWAL'});
+          if(row.panel_client_id){const remote=provisionerForLocation(db.prepare('SELECT * FROM service_locations WHERE id=?').get(row.location_id));
+            if(!remote?.remove)return json(res,409,{error:'PANEL_CONTROL_NOT_SUPPORTED'});
+            try{await remote.remove({panelClientId:row.panel_client_id})}catch{return json(res,502,{error:'PANEL_CONTROL_FAILED'});}}
+          const result=db.prepare("UPDATE subscriptions SET control_status='deleted',deleted_at=? WHERE id=? AND control_status<>'deleted'").run(new Date().toISOString(),row.subscription_id);
+          if(!result.changes)return json(res,409,{error:'SUBSCRIPTION_ALREADY_DELETED'});
+          audit(account.id,'discard_without_refund','subscription',row.subscription_id,{orderId:row.id});
+          return json(res,200,{deleted:true,refundToman:0});
         }
         if(req.method==='PATCH'&&path==='/api/customer/profile'){
           const b=await readJson(req),name=String(b.name||'').trim().replace(/\s+/g,' ');
@@ -2187,11 +2215,12 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       if (req.method === 'POST' && path === '/api/admin/plans') {
         const b = await readJson(req);
         if (!validPlan(b)) return json(res, 400, { error: 'INVALID_PLAN' });
+        const planPricing=planPricingInput(b);if(!planPricing)return json(res,409,{error:'PRICING_RATE_REQUIRED'});
         const id = randomUUID(), now = new Date().toISOString();
         const locationMode=b.locationMode==='multi'?'multi':'single',bundleSize=locationMode==='multi'?Number(b.bundleSize||3):1;
-        db.prepare(`INSERT INTO plans(id,name,description,price_irr,traffic_gb,duration_days,device_limit,location_mode,bundle_size,sort_order,active,created_at,updated_at,auto_price,cost_currency,cost_amount,markup_percent)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, b.name.trim(), b.description || '', b.priceIrr * 10, b.trafficGb, b.durationDays,
-          b.deviceLimit, locationMode, bundleSize, b.sortOrder || 0, b.active === false ? 0 : 1, now, now,b.autoPrice?1:0,b.autoPrice?b.costCurrency:'NONE',b.autoPrice?Number(b.costAmount):0,b.autoPrice?Number(b.markupPercent):0);
+        db.prepare(`INSERT INTO plans(id,name,description,price_irr,traffic_gb,duration_days,device_limit,location_mode,bundle_size,sort_order,active,created_at,updated_at,auto_price,cost_currency,cost_amount,markup_percent,base_price_toman,base_rate_toman)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, b.name.trim(), b.description || '', planPricing.price_irr, b.trafficGb, b.durationDays,
+          b.deviceLimit, locationMode, bundleSize, b.sortOrder || 0, b.active === false ? 0 : 1, now, now,planPricing.auto_price,planPricing.cost_currency,planPricing.cost_amount,planPricing.markup_percent,planPricing.base_price_toman,planPricing.base_rate_toman);
         audit('admin', 'create', 'plan', id, b);
         db.prepare('UPDATE plans SET special_message=? WHERE id=?').run(String(b.specialMessage||'').slice(0,500),id);
         return json(res, 201, planFromRow(db.prepare('SELECT * FROM plans WHERE id=?').get(id)));
@@ -2203,10 +2232,11 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if (!old) return json(res, 404, { error: 'PLAN_NOT_FOUND' });
         const b = { ...planFromRow(old), ...(await readJson(req)) };
         if (!validPlan(b)) return json(res, 400, { error: 'INVALID_PLAN' });
+        const planPricing=planPricingInput(b,old);if(!planPricing)return json(res,409,{error:'PRICING_RATE_REQUIRED'});
         const now = new Date().toISOString();
         const locationMode=b.locationMode==='multi'?'multi':'single',bundleSize=locationMode==='multi'?Number(b.bundleSize||3):1;
-        db.prepare(`UPDATE plans SET name=?,description=?,price_irr=?,traffic_gb=?,duration_days=?,device_limit=?,location_mode=?,bundle_size=?,sort_order=?,active=?,updated_at=?,auto_price=?,cost_currency=?,cost_amount=?,markup_percent=? WHERE id=?`)
-          .run(b.name.trim(), b.description || '', b.priceIrr * 10, b.trafficGb, b.durationDays, b.deviceLimit, locationMode, bundleSize, b.sortOrder || 0, b.active ? 1 : 0, now,b.autoPrice?1:0,b.autoPrice?b.costCurrency:'NONE',b.autoPrice?Number(b.costAmount):0,b.autoPrice?Number(b.markupPercent):0,planMatch[1]);
+        db.prepare(`UPDATE plans SET name=?,description=?,price_irr=?,traffic_gb=?,duration_days=?,device_limit=?,location_mode=?,bundle_size=?,sort_order=?,active=?,updated_at=?,auto_price=?,cost_currency=?,cost_amount=?,markup_percent=?,base_price_toman=?,base_rate_toman=? WHERE id=?`)
+          .run(b.name.trim(), b.description || '', planPricing.price_irr, b.trafficGb, b.durationDays, b.deviceLimit, locationMode, bundleSize, b.sortOrder || 0, b.active ? 1 : 0, now,planPricing.auto_price,planPricing.cost_currency,planPricing.cost_amount,planPricing.markup_percent,planPricing.base_price_toman,planPricing.base_rate_toman,planMatch[1]);
         audit('admin', 'update', 'plan', planMatch[1], b);
         db.prepare('UPDATE plans SET special_message=? WHERE id=?').run(String(b.specialMessage||'').slice(0,500),planMatch[1]);
         return json(res, 200, planFromRow(db.prepare('SELECT * FROM plans WHERE id=?').get(planMatch[1])));

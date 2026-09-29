@@ -447,6 +447,7 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
     var refundSubscription by remember { mutableStateOf<Subscription?>(null) }
     var refundPreview by remember { mutableStateOf<RefundPreview?>(null) }
     var expiredToDelete by remember { mutableStateOf<Subscription?>(null) }
+    var subscriptionToDiscard by remember { mutableStateOf<Subscription?>(null) }
     var topupOpen by rememberSaveable { mutableStateOf(false) }
     var ticketOpen by rememberSaveable { mutableStateOf(false) }
     var passwordOpen by rememberSaveable { mutableStateOf(false) }
@@ -510,7 +511,8 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
                             onAccount = { section=CustomerSection.ACCOUNT; destination=AppDestination.SUPPORT },
                             onRenew = { renewSubscription = it },
                             onRefund = { subscription -> actions.previewRefund(subscription) { preview -> refundSubscription = subscription; refundPreview = preview } },
-                            onDeleteExpired = { expiredToDelete = it }
+                            onDeleteExpired = { expiredToDelete = it },
+                            onDiscard = { subscriptionToDiscard = it }
                         )
                         AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0, state.currencyRates) { purchasePlan = it }
                         AppDestination.WALLET -> WalletScreen(state, onTopup = { topupOpen = true })
@@ -583,6 +585,17 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
             busy = state.actionBusy,
             onDismiss = { expiredToDelete = null },
             onConfirm = { actions.deleteExpiredSubscription(subscription); expiredToDelete = null }
+        )
+    }
+    subscriptionToDiscard?.let { subscription ->
+        ConfirmDialog(
+            icon = Icons.Rounded.DeleteForever,
+            title = "حذف قطعی ${subscription.planName}",
+            body = "اتصال این اشتراک قطع و دسترسی آن از سرور حذف می‌شود. هیچ مبلغی به کیف پول یا کارت بانکی برنمی‌گردد. اگر بازگشت وجه می‌خواهید، انصراف بزنید و گزینه لغو با محاسبه بازگشت وجه را انتخاب کنید.",
+            confirm = "حذف بدون بازگشت وجه",
+            busy = state.actionBusy,
+            onDismiss = { subscriptionToDiscard = null },
+            onConfirm = { actions.discardSubscription(subscription); subscriptionToDiscard = null }
         )
     }
     if (topupOpen) TopupDialog(
@@ -846,7 +859,8 @@ private fun HomeScreen(
     onAccount: () -> Unit,
     onRenew: (Subscription) -> Unit,
     onRefund: (Subscription) -> Unit,
-    onDeleteExpired: (Subscription) -> Unit
+    onDeleteExpired: (Subscription) -> Unit,
+    onDiscard: (Subscription) -> Unit
 ) {
     val account = state.account ?: return
     var subscriptionsOpen by rememberSaveable { mutableStateOf(false) }
@@ -856,6 +870,15 @@ private fun HomeScreen(
         subscription.status == "expired" ||
             (subscription.expiryTime != null && subscription.expiryTime > 0 && subscription.expiryTime <= now) ||
             (subscription.totalBytes > 0 && subscription.remainingBytes <= 0)
+    }
+    val renewalCandidate = expiredSubscriptions.firstOrNull() ?: state.activeSubscriptions
+        .filter { it.durationDays > 0 && !it.startsOnFirstUse && it.remainingDays <= 5 || it.totalBytes > 0 && it.usagePercent >= 85 }
+        .minByOrNull { it.remainingDays }
+    val context = LocalContext.current
+    val reminderPreferences = remember(context) { context.getSharedPreferences("nivora_renewal_reminders", android.content.Context.MODE_PRIVATE) }
+    val reminderKey = renewalCandidate?.let { "renewal_${it.id}" }
+    var reminderDismissed by rememberSaveable(reminderKey) {
+        mutableStateOf(reminderKey != null && reminderPreferences.getLong(reminderKey, 0L) > now)
     }
     val selectedSubscription = state.selectedSubscription ?: state.activeSubscriptions.firstOrNull()
     LazyColumn(
@@ -896,6 +919,14 @@ private fun HomeScreen(
                 )
             }
         }
+        if (renewalCandidate != null && !reminderDismissed) item(key = "renewal-reminder-${renewalCandidate.id}") {
+            RenewalReminderCard(
+                subscription = renewalCandidate,
+                expired = renewalCandidate in expiredSubscriptions,
+                onRenew = { if (renewalCandidate in expiredSubscriptions) onPlans() else onRenew(renewalCandidate) },
+                onLater = { reminderKey?.let { reminderPreferences.edit().putLong(it, now + 24 * 60 * 60 * 1000L).apply() }; reminderDismissed = true }
+            )
+        }
         item {
             Column(Modifier.padding(horizontal = 20.dp)) {
                 SectionHeader(
@@ -916,7 +947,7 @@ private fun HomeScreen(
             selectedSubscription?.let { subscription ->
                 item(key = "selected-${subscription.id}") {
                     Box(Modifier.padding(horizontal = 20.dp)) {
-                        SubscriptionCard(subscription, true, { actions.selectSubscription(subscription) }, { onRenew(subscription) }, { onRefund(subscription) })
+                        SubscriptionCard(subscription, true, { actions.selectSubscription(subscription) }, { onRenew(subscription) }, { onRefund(subscription) }, { onDiscard(subscription) })
                     }
                 }
             }
@@ -927,7 +958,8 @@ private fun HomeScreen(
                         false,
                         { actions.selectSubscription(subscription) },
                         { onRenew(subscription) },
-                        { onRefund(subscription) }
+                        { onRefund(subscription) },
+                        { onDiscard(subscription) }
                     )
                 }
             }
@@ -948,6 +980,36 @@ private fun HomeScreen(
                         TextButton(onClick = { onDeleteExpired(subscription) }) { Text("حذف") }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RenewalReminderCard(subscription: Subscription, expired: Boolean, onRenew: () -> Unit, onLater: () -> Unit) {
+    val progress = if (expired) 1f else maxOf(subscription.usagePercent.toFloat() / 100f,
+        if (subscription.durationDays > 0) (1f - subscription.remainingDays.toFloat() / subscription.durationDays).coerceIn(0f, 1f) else 0f)
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .78f))
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(9.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
+                Spacer(Modifier.width(9.dp))
+                Text(if (expired) "اشتراک منتظر ادامه است" else "یک قدم تا اتصال بی‌وقفه", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                TextButton(onClick = onLater) { Text("بعداً") }
+            }
+            Text(if (expired) "${subscription.planName} تمام شده؛ برای ادامه، پلن مناسب را انتخاب کنید."
+                else if (subscription.durationDays == 0) "${subscription.planName} · حجم اشتراک رو به پایان است. می‌توانید همین حالا تمدید کنید."
+                else "${subscription.planName} · ${faNumber(subscription.remainingDays)} روز مانده. می‌توانید همین حالا تمدید کنید.",
+                style = MaterialTheme.typography.bodyMedium)
+            LinearProgressIndicator(progress = { progress.coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().height(5.dp).clip(CircleShape))
+            FilledTonalButton(onClick = onRenew, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Autorenew, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (expired) "دیدن پلن‌ها" else "تمدید این اشتراک")
             }
         }
     }

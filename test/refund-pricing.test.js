@@ -16,6 +16,15 @@ test('customer refund is prorated, capped after five days and credited once',asy
   response=await fetch(`${base}/api/customer/subscriptions/${orderId}/cancel`,{method:'POST',headers:auth,body:'{}'});assert.equal(response.status,200);assert.equal((await response.json()).balanceToman,200000);assert.equal(removed.length,1);
   response=await fetch(`${base}/api/customer/me`,{headers:auth});assert.equal(response.status,200);assert.equal((await response.json()).orders.some(order=>order.id===orderId),false);
   response=await fetch(`${base}/api/customer/subscriptions/${orderId}/cancel`,{method:'POST',headers:auth,body:'{}'});assert.equal(response.status,409);assert.equal((await response.json()).error,'SUBSCRIPTION_ALREADY_REFUNDED');
+  response=await fetch(`${base}/api/customer/wallet/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:plan.id})});assert.equal(response.status,201);const discardId=(await response.json()).orderIds[0];
+  response=await fetch(`${base}/api/customer/subscriptions/${discardId}/discard`,{method:'POST',headers:auth,body:'{}'});assert.equal(response.status,400);
+  response=await fetch(`${base}/api/customer/subscriptions/${discardId}/discard`,{method:'POST',headers:auth,body:JSON.stringify({confirm:true})});assert.equal(response.status,200);assert.equal((await response.json()).refundToman,0);assert.equal(removed.length,2);
+  response=await fetch(`${base}/api/customer/me`,{headers:auth});const afterDiscard=await response.json();assert.equal(afterDiscard.balanceToman,0);assert.equal(afterDiscard.orders.some(order=>order.id===discardId),false);
+  await fetch(`${base}/api/admin/accounts/${session.account.id}/wallet`,{method:'POST',headers:admin,body:JSON.stringify({amountToman:300000})});
+  response=await fetch(`${base}/api/customer/wallet/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:plan.id})});assert.equal(response.status,201);const renewedParent=(await response.json()).orderIds[0],renewalId=randomUUID();
+  db.prepare("INSERT INTO orders(id,customer_name,phone,plan_id,status,created_at,account_id,order_kind,parent_order_id) VALUES(?,?,?,?,'approved',?,?, 'renewal',?)").run(renewalId,'مشتری بازگشت','09120001122',plan.id,new Date().toISOString(),session.account.id,renewedParent);
+  db.prepare("INSERT INTO subscriptions(id,order_id,status,created_at) VALUES(?,?,'active',?)").run(randomUUID(),renewalId,new Date().toISOString());
+  response=await fetch(`${base}/api/customer/subscriptions/${renewedParent}/discard`,{method:'POST',headers:auth,body:JSON.stringify({confirm:true})});assert.equal(response.status,409);assert.equal((await response.json()).error,'SUBSCRIPTION_HAS_RENEWAL');assert.equal(removed.length,2);
 });
 
 test('automatic plan pricing rounds to a clear 5000 toman step',async t=>{
@@ -24,4 +33,9 @@ test('automatic plan pricing rounds to a clear 5000 toman step',async t=>{
   let response=await fetch(`${base}/api/admin/plans`,{method:'POST',headers:admin,body:JSON.stringify({name:'پلن ارزی',priceIrr:1,trafficGb:10,durationDays:30,deviceLimit:1,autoPrice:true,costCurrency:'USD',costAmount:1.25,markupPercent:20})});assert.equal(response.status,201);const plan=await response.json();
   response=await fetch(`${base}/api/admin/pricing`,{method:'PATCH',headers:admin,body:JSON.stringify({usdToman:110000,eurToman:120000})});assert.equal(response.status,200);
   response=await fetch(`${base}/api/admin/plans`,{headers:admin});const updated=(await response.json()).find(item=>item.id===plan.id);assert.equal(updated.priceIrr,165000);
+  response=await fetch(`${base}/api/admin/plans`,{method:'POST',headers:admin,body:JSON.stringify({name:'پلن پایه ارزی',priceIrr:200000,trafficGb:10,durationDays:30,deviceLimit:1,autoPrice:true,priceMode:'base_fx',basePriceToman:200000,costCurrency:'USD'})});assert.equal(response.status,201);const anchored=await response.json();assert.equal(anchored.priceIrr,200000);assert.equal(anchored.baseRateToman,110000);
+  await fetch(`${base}/api/admin/pricing`,{method:'PATCH',headers:admin,body:JSON.stringify({usdToman:132000,eurToman:120000})});response=await fetch(`${base}/api/admin/plans`,{headers:admin});assert.equal((await response.json()).find(item=>item.id===anchored.id).priceIrr,240000);
+  await fetch(`${base}/api/admin/pricing`,{method:'PATCH',headers:admin,body:JSON.stringify({usdToman:99000,eurToman:120000})});response=await fetch(`${base}/api/admin/plans`,{headers:admin});assert.equal((await response.json()).find(item=>item.id===anchored.id).priceIrr,180000);
+  response=await fetch(`${base}/api/admin/plans/${anchored.id}`,{method:'PATCH',headers:admin,body:JSON.stringify({basePriceToman:250000})});assert.equal(response.status,200);assert.equal((await response.json()).baseRateToman,99000);
+  await fetch(`${base}/api/admin/pricing`,{method:'PATCH',headers:admin,body:JSON.stringify({usdToman:110000,eurToman:120000})});response=await fetch(`${base}/api/admin/plans`,{headers:admin});assert.equal((await response.json()).find(item=>item.id===anchored.id).priceIrr,Math.round(250000*110000/99000));
 });

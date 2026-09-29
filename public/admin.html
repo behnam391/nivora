@@ -68,7 +68,26 @@
   </div>
 
   <dialog id="plan-dialog"><form id="plan-form"><div class="modal-head"><div><p class="eyebrow">PLAN EDITOR</p><h2 id="plan-dialog-title">پلن جدید</h2></div><button type="button" class="icon close-dialog">×</button></div><input id="plan-id" type="hidden">
-    <div class="form-grid"><label class="span-2">نام پلن<input id="plan-name" required></label><label class="span-2">توضیح<textarea id="plan-description" rows="2"></textarea></label><label class="span-2">پیام ویژه اشتراک<input id="plan-special-message" maxlength="500" placeholder="این اشتراک ویژه شماست"></label><label>قیمت کل (تومان)<input id="plan-price" type="number" min="0" required></label><label>حجم هر اشتراک (گیگابایت؛ صفر = نامحدود)<input id="plan-traffic" type="number" min="0" required></label><label>مدت (روز؛ صفر = نامحدود)<input id="plan-days" type="number" min="0" required></label><label>تعداد دستگاه<input id="plan-devices" type="number" min="1" required></label><label>نوع تحویل<select id="plan-location-mode"><option value="single">تک‌لوکیشن</option><option value="multi">چندلوکیشنه</option></select></label><label id="plan-bundle-size-wrap">تعداد اشتراک در هر خرید<input id="plan-bundle-size" type="number" min="2" max="10" value="3"></label><label class="check span-2"><input id="plan-auto-price" type="checkbox"> قیمت بر اساس ارز خودکار محاسبه شود</label><label>ارز هزینه<select id="plan-cost-currency"><option value="USD">دلار</option><option value="EUR">یورو</option></select></label><label>هزینه ارزی پلن<input id="plan-cost-amount" type="number" min="0" step="0.01"></label><label>سود و هزینه‌ها (درصد)<input id="plan-markup" type="number" min="0" max="1000" value="30"></label><label>ترتیب نمایش<input id="plan-sort" type="number" value="0"></label><label class="check"><input id="plan-active" type="checkbox" checked> فعال و قابل فروش</label></div>
+    <div class="form-grid">
+      <label class="span-2">نام پلن<input id="plan-name" required></label>
+      <label class="span-2">توضیح<textarea id="plan-description" rows="2"></textarea></label>
+      <label class="span-2">پیام ویژه اشتراک<input id="plan-special-message" maxlength="500" placeholder="این اشتراک ویژه شماست"></label>
+      <label>قیمت فعلی (تومان)<input id="plan-price" type="number" min="0" required></label>
+      <label>حجم هر اشتراک (گیگابایت؛ صفر = نامحدود)<input id="plan-traffic" type="number" min="0" required></label>
+      <label>مدت (روز؛ صفر = نامحدود)<input id="plan-days" type="number" min="0" required></label>
+      <label>تعداد دستگاه<input id="plan-devices" type="number" min="1" required></label>
+      <label>نوع تحویل<select id="plan-location-mode"><option value="single">تک‌لوکیشن</option><option value="multi">چندلوکیشنه</option></select></label>
+      <label id="plan-bundle-size-wrap">تعداد اشتراک در هر خرید<input id="plan-bundle-size" type="number" min="2" max="10" value="3"></label>
+      <label>روش قیمت‌گذاری<select id="plan-price-mode"><option value="fixed">قیمت ثابت</option><option value="base_fx">قیمت پایه متناسب با نرخ ارز</option><option value="cost_markup">هزینه ارزی + سود</option></select></label>
+      <label id="plan-currency-wrap">ارز مبنا<select id="plan-cost-currency"><option value="USD">دلار</option><option value="EUR">یورو</option></select></label>
+      <label id="plan-base-price-wrap">قیمت پایه (تومان)<input id="plan-base-price" type="number" min="1"><small>با تغییر این عدد، نرخ ارز همان لحظه مبنای تازه می‌شود.</small></label>
+      <label id="plan-base-rate-wrap">نرخ مبنای ثبت‌شده (تومان)<input id="plan-base-rate" type="number" readonly><small>قیمت فعلی = قیمت پایه × نرخ کنونی ÷ نرخ مبنا</small></label>
+      <label id="plan-rebase-wrap" class="check span-2"><input id="plan-rebase" type="checkbox"> نرخ فعلی ارز، مبنای جدید همین پلن شود</label>
+      <label id="plan-cost-amount-wrap">هزینه ارزی پلن<input id="plan-cost-amount" type="number" min="0" step="0.01"></label>
+      <label id="plan-markup-wrap">سود و هزینه‌ها (درصد)<input id="plan-markup" type="number" min="0" max="1000" value="30"></label>
+      <label>ترتیب نمایش<input id="plan-sort" type="number" value="0"></label>
+      <label class="check"><input id="plan-active" type="checkbox" checked> فعال و قابل فروش</label>
+    </div>
     <div class="modal-actions"><button type="button" class="ghost close-dialog">انصراف</button><button class="primary" type="submit">ذخیره پلن</button></div></form></dialog>
 
   <dialog id="review-dialog"><form id="review-form"><div class="modal-head"><div><p class="eyebrow">RECEIPT REVIEW</p><h2>بررسی پرداخت</h2></div><button type="button" class="icon close-review">×</button></div><div id="review-summary"></div><label>یادداشت مدیر<textarea id="review-note" rows="3" placeholder="اختیاری"></textarea></label><div class="modal-actions split"><button type="button" id="reject-order" class="danger">رد پرداخت</button><button type="button" class="ghost close-review">انصراف</button><button type="submit" class="primary">تأیید پرداخت</button></div></form></dialog>

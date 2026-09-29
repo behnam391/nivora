@@ -111,6 +111,7 @@ interface NivoraActions {
     fun previewRefund(subscription: Subscription, onReady: (RefundPreview) -> Unit)
     fun cancelSubscription(subscription: Subscription)
     fun deleteExpiredSubscription(subscription: Subscription)
+    fun discardSubscription(subscription: Subscription)
     fun loadPaymentCards()
     fun submitTopup(amountToman: Int, reference: String, receiptUri: String)
     fun createTicket(subject: String, body: String)

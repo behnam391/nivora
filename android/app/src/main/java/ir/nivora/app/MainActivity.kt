@@ -620,6 +620,14 @@ class MainActivity : FragmentActivity(), NivoraActions {
         })
     }
 
+    override fun discardSubscription(subscription: Subscription) = withToken { token ->
+        runAction(work = { api.discardSubscription(token, subscription.id) }, success = {
+            if (state.selectedSubscriptionId == subscription.id && state.vpnState != "disconnected") requestVpnStop()
+            showNotice("اشتراک بدون بازگشت وجه حذف شد")
+            loadDashboard(initial = false)
+        })
+    }
+
     override fun loadPaymentCards() {
         if (state.paymentCards.isNotEmpty()) return
         background(
@@ -1439,6 +1447,8 @@ class MainActivity : FragmentActivity(), NivoraActions {
             "WALLET_TRANSFER_NOT_FOUND" -> "این انتقال دیگر قابل اصلاح نیست"
             "SUSPENSION_REASON_REQUIRED" -> "دلیل تعلیق را کامل بنویسید"
             "SUBSCRIPTION_NOT_FOUND" -> "اشتراک قابل کنترل پیدا نشد"
+            "SUBSCRIPTION_NOT_ACTIVE" -> "این اشتراک دیگر فعال نیست"
+            "SUBSCRIPTION_HAS_RENEWAL" -> "این اشتراک تمدید فعال دارد؛ برای حذف آن با پشتیبانی تماس بگیرید"
             "PANEL_CONTROL_FAILED" -> "کنترل اشتراک در پنل سرور انجام نشد"
             "INVALID_SERVER_RESPONSE" -> "پاسخ سرور قابل خواندن نبود"
             else -> when (resolved) {
