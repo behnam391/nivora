@@ -444,6 +444,9 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
     var section by rememberSaveable { mutableStateOf(CustomerSection.SUPPORT) }
     var purchasePlan by remember { mutableStateOf<Plan?>(null) }
     var renewSubscription by remember { mutableStateOf<Subscription?>(null) }
+    var refundSubscription by remember { mutableStateOf<Subscription?>(null) }
+    var refundPreview by remember { mutableStateOf<RefundPreview?>(null) }
+    var expiredToDelete by remember { mutableStateOf<Subscription?>(null) }
     var topupOpen by rememberSaveable { mutableStateOf(false) }
     var ticketOpen by rememberSaveable { mutableStateOf(false) }
     var passwordOpen by rememberSaveable { mutableStateOf(false) }
@@ -505,9 +508,11 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
                             onNotifications = { section=CustomerSection.NOTIFICATIONS; destination = AppDestination.SUPPORT; actions.markNotificationsRead() },
                             onSupport = { section=CustomerSection.SUPPORT; destination=AppDestination.SUPPORT },
                             onAccount = { section=CustomerSection.ACCOUNT; destination=AppDestination.SUPPORT },
-                            onRenew = { renewSubscription = it }
+                            onRenew = { renewSubscription = it },
+                            onRefund = { subscription -> actions.previewRefund(subscription) { preview -> refundSubscription = subscription; refundPreview = preview } },
+                            onDeleteExpired = { expiredToDelete = it }
                         )
-                        AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0) { purchasePlan = it }
+                        AppDestination.PLANS -> PlansScreen(state.plans, state.account?.balanceToman ?: 0, state.currencyRates) { purchasePlan = it }
                         AppDestination.WALLET -> WalletScreen(state, onTopup = { topupOpen = true })
                         AppDestination.SUPPORT -> if(pageSection==CustomerSection.TELEGRAM) TelegramScreen() else SupportScreen(
                             state,
@@ -554,6 +559,30 @@ private fun MainDashboard(state: NivoraUiState, actions: NivoraActions, snackbar
             busy = state.actionBusy,
             onDismiss = { renewSubscription = null },
             onConfirm = { actions.renew(subscription); renewSubscription = null }
+        )
+    }
+    refundSubscription?.let { subscription ->
+        refundPreview?.let { preview ->
+            ConfirmDialog(
+                icon = Icons.Rounded.CurrencyExchange,
+                title = if (preview.refundToman > 0) "لغو ${subscription.planName}" else "بازگشت وجه ممکن نیست",
+                body = if (preview.refundToman > 0) "از ${toman(preview.paidToman)} پرداختی، ${toman(preview.refundToman)} به کیف پول برمی‌گردد. ${faNumber(preview.usedDays)} روز استفاده ثبت شده است. پس از لغو، اتصال این اشتراک قطع می‌شود و این کار برگشت‌پذیر نیست." else "برای این اشتراک مبلغ بازگشتی باقی نمانده است. اشتراک بدون کسر از کیف پول شما فعال می‌ماند.",
+                confirm = if (preview.refundToman > 0) "لغو و بازگشت ${toman(preview.refundToman)}" else "متوجه شدم",
+                busy = state.actionBusy,
+                onDismiss = { refundSubscription = null; refundPreview = null },
+                onConfirm = { if (preview.refundToman > 0) actions.cancelSubscription(subscription); refundSubscription = null; refundPreview = null }
+            )
+        }
+    }
+    expiredToDelete?.let { subscription ->
+        ConfirmDialog(
+            icon = Icons.Rounded.DeleteOutline,
+            title = "حذف ${subscription.planName}",
+            body = "این اشتراک تمام‌شده از فهرست شما حذف می‌شود. خریدهای قبلی در سوابق کیف پول باقی می‌مانند.",
+            confirm = "حذف اشتراک تمام‌شده",
+            busy = state.actionBusy,
+            onDismiss = { expiredToDelete = null },
+            onConfirm = { actions.deleteExpiredSubscription(subscription); expiredToDelete = null }
         )
     }
     if (topupOpen) TopupDialog(
@@ -815,10 +844,19 @@ private fun HomeScreen(
     onNotifications: () -> Unit,
     onSupport: () -> Unit,
     onAccount: () -> Unit,
-    onRenew: (Subscription) -> Unit
+    onRenew: (Subscription) -> Unit,
+    onRefund: (Subscription) -> Unit,
+    onDeleteExpired: (Subscription) -> Unit
 ) {
     val account = state.account ?: return
     var subscriptionsOpen by rememberSaveable { mutableStateOf(false) }
+    var expiredOpen by rememberSaveable { mutableStateOf(false) }
+    val now = System.currentTimeMillis()
+    val expiredSubscriptions = account.subscriptions.filter { subscription ->
+        subscription.status == "expired" ||
+            (subscription.expiryTime != null && subscription.expiryTime > 0 && subscription.expiryTime <= now) ||
+            (subscription.totalBytes > 0 && subscription.remainingBytes <= 0)
+    }
     val selectedSubscription = state.selectedSubscription ?: state.activeSubscriptions.firstOrNull()
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -878,7 +916,7 @@ private fun HomeScreen(
             selectedSubscription?.let { subscription ->
                 item(key = "selected-${subscription.id}") {
                     Box(Modifier.padding(horizontal = 20.dp)) {
-                        SubscriptionCard(subscription, true, { actions.selectSubscription(subscription) }, { onRenew(subscription) })
+                        SubscriptionCard(subscription, true, { actions.selectSubscription(subscription) }, { onRenew(subscription) }, { onRefund(subscription) })
                     }
                 }
             }
@@ -888,8 +926,27 @@ private fun HomeScreen(
                         subscription,
                         false,
                         { actions.selectSubscription(subscription) },
-                        { onRenew(subscription) }
+                        { onRenew(subscription) },
+                        { onRefund(subscription) }
                     )
+                }
+            }
+        }
+        if (expiredSubscriptions.isNotEmpty()) {
+            item {
+                Box(Modifier.padding(horizontal = 20.dp)) {
+                    SectionHeader("اشتراک‌های تمام‌شده", "${faNumber(expiredSubscriptions.size)} اشتراک", if (expiredOpen) "بستن" else "نمایش") { expiredOpen = !expiredOpen }
+                }
+            }
+            if (expiredOpen) items(expiredSubscriptions, key = { "expired-${it.id}" }) { subscription ->
+                Card(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(subscription.planName, style = MaterialTheme.typography.titleSmall)
+                            Text(subscription.locationName ?: "اشتراک تمام‌شده", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                        }
+                        TextButton(onClick = { onDeleteExpired(subscription) }) { Text("حذف") }
+                    }
                 }
             }
         }
@@ -927,7 +984,7 @@ private fun RowScope.QuickCard(icon: ImageVector, label: String, value: String, 
 }
 
 @Composable
-private fun PlansScreen(plans: List<Plan>, balance: Int, onBuy: (Plan) -> Unit) {
+private fun PlansScreen(plans: List<Plan>, balance: Int, rates: CurrencyRates?, onBuy: (Plan) -> Unit) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(20.dp),
@@ -946,6 +1003,14 @@ private fun PlansScreen(plans: List<Plan>, balance: Int, onBuy: (Plan) -> Unit) 
                     Spacer(Modifier.width(8.dp))
                     Text("موجودی شما", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                     Text(toman(balance), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+        if (rates != null && rates.usdToman > 0 && rates.eurToman > 0) item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("نرخ مرجع ارز", style = MaterialTheme.typography.labelMedium)
+                    Text("دلار ${toman(rates.usdToman)}  ·  یورو ${toman(rates.eurToman)}", style = MaterialTheme.typography.labelMedium)
                 }
             }
         }

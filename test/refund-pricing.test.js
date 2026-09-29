@@ -14,6 +14,7 @@ test('customer refund is prorated, capped after five days and credited once',asy
   response=await fetch(`${base}/api/customer/wallet/purchase`,{method:'POST',headers:auth,body:JSON.stringify({planId:plan.id})});assert.equal(response.status,201);const purchase=await response.json(),orderId=purchase.orderIds[0],sub=db.prepare('SELECT * FROM subscriptions WHERE order_id=?').get(orderId);stats[sub.panel_client_id]={totalBytes:30*1024**3,upBytes:1024**3,downBytes:2*1024**3};db.prepare('UPDATE subscriptions SET activated_at=? WHERE id=?').run(new Date(Date.now()-6.2*86400000).toISOString(),sub.id);
   response=await fetch(`${base}/api/customer/subscriptions/${orderId}/refund-preview`,{headers:auth});assert.equal(response.status,200);const preview=await response.json();assert.equal(preview.usedDays,7);assert.equal(preview.refundToman,100000);
   response=await fetch(`${base}/api/customer/subscriptions/${orderId}/cancel`,{method:'POST',headers:auth,body:'{}'});assert.equal(response.status,200);assert.equal((await response.json()).balanceToman,200000);assert.equal(removed.length,1);
+  response=await fetch(`${base}/api/customer/me`,{headers:auth});assert.equal(response.status,200);assert.equal((await response.json()).orders.some(order=>order.id===orderId),false);
   response=await fetch(`${base}/api/customer/subscriptions/${orderId}/cancel`,{method:'POST',headers:auth,body:'{}'});assert.equal(response.status,409);assert.equal((await response.json()).error,'SUBSCRIPTION_ALREADY_REFUNDED');
 });
 

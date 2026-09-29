@@ -1,6 +1,8 @@
 package ir.nivora.app.data
 
 data class AppRelease(val versionCode:Int,val versionName:String,val downloadUrl:String,val releaseNotes:String,val forceUpdate:Boolean)
+data class RefundPreview(val paidToman:Int,val refundToman:Int,val usedDays:Int,val refundRate:Double,val subscriptionCount:Int)
+data class CurrencyRates(val usdToman:Int,val eurToman:Int,val updatedAt:String?,val source:String)
 
 data class Plan(
     val id: String,
@@ -33,7 +35,8 @@ data class Subscription(
     val trafficGb: Int,
     val durationDays: Int,
     val deviceLimit: Int,
-    val specialMessage: String = ""
+    val specialMessage: String = "",
+    val resellerId: String? = null
 )
 
 data class WalletTransaction(

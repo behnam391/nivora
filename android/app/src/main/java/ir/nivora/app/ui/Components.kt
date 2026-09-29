@@ -275,7 +275,8 @@ fun SubscriptionCard(
     subscription: Subscription,
     selected: Boolean,
     onSelect: () -> Unit,
-    onRenew: () -> Unit
+    onRenew: () -> Unit,
+    onRefund: () -> Unit
 ) {
     var expanded by androidx.compose.runtime.saveable.rememberSaveable(subscription.id) { androidx.compose.runtime.mutableStateOf(false) }
     val progress = (subscription.usagePercent / 100.0).toFloat().coerceIn(0f, 1f)
@@ -361,6 +362,9 @@ fun SubscriptionCard(
                     }
                     Button(onClick = onRenew, modifier = Modifier.fillMaxWidth().height(40.dp)) {
                         Icon(Icons.Rounded.Autorenew, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("تمدید اشتراک")
+                    }
+                    if (subscription.resellerId == null) TextButton(onClick = onRefund, modifier = Modifier.fillMaxWidth()) {
+                        Text("لغو و محاسبه بازگشت وجه")
                     }
                 }
             }

@@ -366,6 +366,23 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
         request("/api/customer/orders/$orderId/renew", "POST", token, JSONObject())
     }
 
+    fun refundPreview(token: String, orderId: String): RefundPreview {
+        val data=request("/api/customer/subscriptions/$orderId/refund-preview",token=token)
+        return RefundPreview(data.optInt("paidToman"),data.optInt("refundToman"),data.optInt("usedDays"),data.optDouble("refundRate"),data.optInt("subscriptionCount",1))
+    }
+
+    fun cancelSubscription(token: String, orderId: String): Int =
+        request("/api/customer/subscriptions/$orderId/cancel","POST",token,JSONObject()).optInt("refundToman")
+
+    fun deleteExpiredSubscription(token: String, orderId: String) {
+        request("/api/customer/subscriptions/$orderId","DELETE",token)
+    }
+
+    fun currencyRates(): CurrencyRates {
+        val data=request("/api/currency-rates")
+        return CurrencyRates(data.optInt("usdToman"),data.optInt("eurToman"),data.cleanText("updatedAt"),data.optString("source","manual"))
+    }
+
     fun uploadReceipt(token:String, bytes:ByteArray, mimeType:String):String = request(
         "/api/receipts", "POST", token,
         JSONObject().put("mimeType",mimeType).put("data",Base64.encodeToString(bytes,Base64.NO_WRAP)),
@@ -455,7 +472,8 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
             Subscription(
                 id = order.getString("id"),
                 planName = order.getString("plan_name"),
-                status = order.optString("subscription_status", order.getString("status")),
+                status = order.optString("control_status").takeIf { it.isNotBlank() && it != "active" }
+                    ?: order.optString("subscription_status", order.getString("status")),
                 url = order.cleanText("subscription_url"),
                 usedBytes = order.optLong("usedBytes"),
                 totalBytes = order.optLong("totalBytes"),
@@ -472,7 +490,8 @@ class ApiClient(private val baseUrl: String, private val deviceId: String = "", 
                 trafficGb = order.optInt("traffic_gb"),
                 durationDays = order.optInt("duration_days"),
                 deviceLimit = order.optInt("device_limit"),
-                specialMessage = order.cleanText("special_message").orEmpty()
+                specialMessage = order.cleanText("special_message").orEmpty(),
+                resellerId = order.cleanText("reseller_id")
             )
         }
         val transactions = json.array("transactions").objects().map {

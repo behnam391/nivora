@@ -601,6 +601,25 @@ class MainActivity : FragmentActivity(), NivoraActions {
         )
     }
 
+    override fun previewRefund(subscription: Subscription, onReady: (RefundPreview) -> Unit) = withToken { token ->
+        runAction(work = { api.refundPreview(token, subscription.id) }, success = onReady)
+    }
+
+    override fun cancelSubscription(subscription: Subscription) = withToken { token ->
+        runAction(work = { api.cancelSubscription(token, subscription.id) }, success = { amount ->
+            if (state.selectedSubscriptionId == subscription.id && state.vpnState != "disconnected") requestVpnStop()
+            showNotice("${amount} تومان به کیف پول برگشت")
+            loadDashboard(initial = false)
+        })
+    }
+
+    override fun deleteExpiredSubscription(subscription: Subscription) = withToken { token ->
+        runAction(work = { api.deleteExpiredSubscription(token, subscription.id) }, success = {
+            showNotice("اشتراک تمام‌شده حذف شد")
+            loadDashboard(initial = false)
+        })
+    }
+
     override fun loadPaymentCards() {
         if (state.paymentCards.isNotEmpty()) return
         background(
@@ -1127,6 +1146,11 @@ class MainActivity : FragmentActivity(), NivoraActions {
             loadError = null
         )
         saveDashboardSnapshot(token, account, plans, tickets)
+        background(
+            work = api::currencyRates,
+            success = { rates -> if (isCurrentSession(token)) state = state.copy(currencyRates = rates) },
+            failure = { /* Rates are optional; connection and shopping stay responsive. */ }
+        )
         if (EmergencyConnectPolicy.shouldStopAfterDashboard(state.vpnMode, state.vpnState, account.emergency)) {
             restartAfterDisconnect = null
             showNotice("اتصال اضطراری توسط مدیریت متوقف شد", true)

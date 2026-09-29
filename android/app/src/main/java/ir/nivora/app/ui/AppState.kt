@@ -12,6 +12,8 @@ import ir.nivora.app.data.ResellerSaleTarget
 import ir.nivora.app.data.ResellerDebt
 import ir.nivora.app.data.ResellerWalletTransfer
 import ir.nivora.app.data.Subscription
+import ir.nivora.app.data.RefundPreview
+import ir.nivora.app.data.CurrencyRates
 import ir.nivora.app.data.SupportTicket
 import ir.nivora.app.data.TicketConversation
 import ir.nivora.app.data.VpnConnectionMode
@@ -46,6 +48,7 @@ data class NivoraUiState(
     val resellerPasswordManagedCustomerIds: Set<String> = emptySet(),
     val resellerProfileLoadingId: String? = null,
     val plans: List<Plan> = emptyList(),
+    val currencyRates: CurrencyRates? = null,
     val tickets: List<SupportTicket> = emptyList(),
     val ticketConversation: TicketConversation? = null,
     val ticketLoading: Boolean = false,
@@ -70,7 +73,11 @@ data class NivoraUiState(
     val notice: UiNotice? = null
 ) {
     val activeSubscriptions: List<Subscription>
-        get() = account?.subscriptions.orEmpty().filter { it.status == "active" && it.url != null }
+        get() = account?.subscriptions.orEmpty().filter {
+            it.status == "active" && it.url != null &&
+                (it.expiryTime == null || it.expiryTime > System.currentTimeMillis()) &&
+                (it.totalBytes == 0L || it.remainingBytes > 0L)
+        }
 
     val selectedSubscription: Subscription?
         get() = activeSubscriptions.firstOrNull { it.id == selectedSubscriptionId } ?: activeSubscriptions.firstOrNull()
@@ -101,6 +108,9 @@ interface NivoraActions {
     fun validateDiscount(code: String)
     fun clearDiscount()
     fun renew(subscription: Subscription)
+    fun previewRefund(subscription: Subscription, onReady: (RefundPreview) -> Unit)
+    fun cancelSubscription(subscription: Subscription)
+    fun deleteExpiredSubscription(subscription: Subscription)
     fun loadPaymentCards()
     fun submitTopup(amountToman: Int, reference: String, receiptUri: String)
     fun createTicket(subject: String, body: String)
