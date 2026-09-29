@@ -207,6 +207,8 @@ const planFromRow = row => row && ({
   durationDays: row.duration_days, deviceLimit: row.device_limit,
   locationMode: row.location_mode === 'multi' ? 'multi' : 'single',
   bundleSize: row.location_mode === 'multi' ? Math.max(2, Number(row.bundle_size) || 3) : 1,
+  autoPrice: Boolean(row.auto_price), costCurrency: row.cost_currency || 'NONE',
+  costAmount: Number(row.cost_amount || 0), markupPercent: Number(row.markup_percent || 0),
   sortOrder: row.sort_order, active: Boolean(row.active),
   locations: row.locations ? row.locations.split('|').map(x => { const [id,name,countryCode,city,flagEmoji] = x.split('~'); return {id,name:planLocationName(row.location_mode,name,countryCode),countryCode,city,flagEmoji:flagEmoji||''}; }) : [],
   createdAt: row.created_at, updatedAt: row.updated_at
@@ -220,7 +222,8 @@ function validPlan(body) {
     [body.priceIrr, body.trafficGb, body.durationDays, body.deviceLimit].every(Number.isInteger) &&
     body.priceIrr >= 0 && body.trafficGb >= 0 && body.durationDays >= 0 && body.deviceLimit > 0 &&
     ['single','multi'].includes(locationMode) && Number.isInteger(bundleSize) &&
-    (locationMode === 'single' ? bundleSize === 1 : bundleSize >= 2 && bundleSize <= 10);
+    (locationMode === 'single' ? bundleSize === 1 : bundleSize >= 2 && bundleSize <= 10) &&
+    (!body.autoPrice || (['USD','EUR'].includes(body.costCurrency) && Number(body.costAmount) > 0 && Number(body.markupPercent) >= 0));
 }
 
 const resellerCustomerFromBody = body => ({
@@ -366,6 +369,14 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   const settingsKey=createHash('sha256').update(process.env.SETTINGS_ENCRYPTION_KEY||adminToken).digest();
   const encrypt=value=>{const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',settingsKey,iv),data=Buffer.concat([cipher.update(value,'utf8'),cipher.final()]);return `${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${data.toString('base64url')}`};
   const decrypt=value=>{try{const [a,b,c]=value.split('.'),iv=Buffer.from(a,'base64url'),dec=createDecipheriv('aes-256-gcm',settingsKey,iv);dec.setAuthTag(Buffer.from(b,'base64url'));return Buffer.concat([dec.update(Buffer.from(c,'base64url')),dec.final()]).toString('utf8')}catch{return ''}};
+  const pricingSnapshot=()=>({
+    usdToman:Math.max(0,Number(settingGet('pricing_usd_toman')||0)),eurToman:Math.max(0,Number(settingGet('pricing_eur_toman')||0)),
+    previousUsdToman:Math.max(0,Number(settingGet('pricing_previous_usd_toman')||0)),previousEurToman:Math.max(0,Number(settingGet('pricing_previous_eur_toman')||0)),
+    updatedAt:settingGet('pricing_updated_at')||null,source:settingGet('pricing_source')||'manual',autoRefresh:settingGet('pricing_auto_refresh')==='true'
+  });
+  const applyAutomaticPlanPrices=()=>{const rates=pricingSnapshot(),now=new Date().toISOString(),rows=db.prepare("SELECT id,cost_currency,cost_amount,markup_percent FROM plans WHERE auto_price=1 AND cost_currency IN ('USD','EUR')").all(),update=db.prepare('UPDATE plans SET price_irr=?,updated_at=? WHERE id=?');let updated=0;db.exec('BEGIN IMMEDIATE');try{for(const row of rows){const rate=row.cost_currency==='USD'?rates.usdToman:rates.eurToman;if(!rate)continue;const raw=Number(row.cost_amount)*rate*(1+Number(row.markup_percent||0)/100),rounded=Math.max(0,Math.ceil(raw/5000)*5000);update.run(rounded*10,now,row.id);updated++;}db.exec('COMMIT');return updated;}catch(error){db.exec('ROLLBACK');throw error;}};
+  let pricingRefreshPromise=null;
+  const refreshCurrencyRates=async()=>{if(pricingRefreshPromise)return pricingRefreshPromise;pricingRefreshPromise=(async()=>{const key=decrypt(settingGet('pricing_navasan_key')||'');if(!key){const error=new Error('PRICING_API_KEY_REQUIRED');error.status=400;throw error;}const response=await fetch(`https://api.navasan.tech/latest/?api_key=${encodeURIComponent(key)}`,{headers:{accept:'application/json'},signal:AbortSignal.timeout(15000)}),data=await response.json().catch(()=>({}));if(!response.ok)throw Object.assign(new Error('PRICING_PROVIDER_ERROR'),{status:502});const value=(...names)=>{for(const name of names){const raw=data?.[name]?.value??data?.[name];const number=Number(String(raw??'').replace(/,/g,''));if(Number.isFinite(number)&&number>0)return number;}return 0},usd=value('usd_sell','usd','usd_farda_sell'),eur=value('eur_sell','eur');if(!usd||!eur)throw Object.assign(new Error('PRICING_PROVIDER_DATA_INVALID'),{status:502});const previous=pricingSnapshot();settingSet('pricing_previous_usd_toman',previous.usdToman||usd);settingSet('pricing_previous_eur_toman',previous.eurToman||eur);settingSet('pricing_usd_toman',usd);settingSet('pricing_eur_toman',eur);settingSet('pricing_updated_at',new Date().toISOString());settingSet('pricing_source','Navasan');const updatedPlans=applyAutomaticPlanPrices();return {...pricingSnapshot(),updatedPlans};})().finally(()=>{pricingRefreshPromise=null});return pricingRefreshPromise;};
   const emergencyConfig=()=>normalizeEmergencyConfig({
     enabled:settingGet('emergency_enabled')==='true',
     sources:(()=>{try{return JSON.parse(settingGet('emergency_sources')||'[]')}catch{return []}})(),
@@ -953,6 +964,12 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         return json(res, 200, rows.filter(row=>!staffOnlyPlan(row.id)).map(planFromRow));
       }
 
+      if(req.method==='GET'&&path==='/api/currency-rates'){
+        let rates=pricingSnapshot();if(rates.autoRefresh&&(!rates.updatedAt||Date.now()-Date.parse(rates.updatedAt)>23*60*60_000))try{rates=await refreshCurrencyRates()}catch{}
+        const percent=(current,previous)=>previous?Math.round((current-previous)*10000/previous)/100:0;
+        return json(res,200,{usdToman:rates.usdToman,eurToman:rates.eurToman,updatedAt:rates.updatedAt,source:rates.source,usdChangePercent:percent(rates.usdToman,rates.previousUsdToman),eurChangePercent:percent(rates.eurToman,rates.previousEurToman)});
+      }
+
       if (req.method === 'GET' && path === '/api/store-config') {
         const cards = db.prepare('SELECT id,card_number,card_holder,bank_name FROM payment_cards WHERE active=1 ORDER BY sort_order,created_at').all();
         return json(res, 200, {
@@ -1173,6 +1190,34 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const topups=db.prepare('SELECT id,amount_toman,receipt_reference,receipt_image_url,status,review_note,created_at,reviewed_at FROM wallet_topups WHERE account_id=? ORDER BY created_at DESC LIMIT 50').all(account.id),notifications=db.prepare('SELECT id,title,body,read_at,created_at FROM notifications WHERE account_id=? AND dismissed_at IS NULL ORDER BY created_at DESC LIMIT 30').all(account.id),debts=db.prepare(`SELECT d.id,d.amount_toman,d.note,d.status,d.created_at,d.payment_reported_at,a.name reseller_name FROM reseller_debts d JOIN accounts a ON a.id=d.reseller_id WHERE d.customer_account_id=? AND d.status IN ('open','payment_reported') ORDER BY d.created_at DESC`).all(account.id);
           const emergency=emergencyPool.status(),emergencyEntitled=await hasEmergencyEntitlement(account.id,panelStats);
           return json(res,200,{id:account.id,name:account.name,phone:account.phone,balanceToman:wallet.balanceToman,transactions:wallet.transactions,orders,topups,notifications,debts,device:deviceSummary(db,account.id),emergency:{enabled:Boolean(emergency.enabled&&emergencyEntitled),ready:Boolean(emergency.ready&&emergencyEntitled),nodeCount:emergencyEntitled?Number(emergency.nodeCount||0):0,updatedAt:emergencyEntitled?emergency.updatedAt||null:null}});
+        }
+        const customerSubscriptionAction=path.match(/^\/api\/customer\/subscriptions\/([^/]+)\/(refund-preview|cancel)$/);
+        if(customerSubscriptionAction&&(req.method==='GET'||req.method==='POST')){
+          const requested=db.prepare(`SELECT o.*,p.name plan_name,p.traffic_gb,p.duration_days,s.id subscription_id,s.status subscription_status,s.control_status,s.panel_client_id,s.activated_at,s.refunded_at,l.id location_id
+            FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id
+            WHERE o.id=? AND o.account_id=? AND o.order_kind='purchase'`).get(customerSubscriptionAction[1],account.id);
+          if(!requested)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
+          if(requested.reseller_id)return json(res,409,{error:'REFUND_RESELLER_REQUIRED'});
+          const group=requested.bundle_id?db.prepare(`SELECT o.*,p.traffic_gb,p.duration_days,s.id subscription_id,s.status subscription_status,s.control_status,s.panel_client_id,s.activated_at,s.refunded_at,l.id location_id FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.bundle_id=? AND o.order_kind='purchase'`).all(account.id,requested.bundle_id):[requested];
+          if(group.some(item=>item.refunded_at))return json(res,409,{error:'SUBSCRIPTION_ALREADY_REFUNDED'});
+          let panelStats={};try{panelStats=await panelStatsReader()||{}}catch{}
+          const dayMs=86_400_000,nowMs=Date.now(),paidToman=Math.max(...group.map(item=>Math.round(Number(item.amount_transferred_irr||0)/10)),0);
+          let usedDays=0,consumedRatio=0;
+          for(const item of group){const stats=panelStats[item.panel_client_id]||{},activated=Date.parse(item.activated_at||item.created_at||'');usedDays=Math.max(usedDays,Number.isFinite(activated)?Math.max(0,Math.ceil((nowMs-activated)/dayMs)):0);const total=Number(stats.totalBytes??(Number(item.traffic_gb||0)*1024**3)),used=Number(stats.upBytes||0)+Number(stats.downBytes||0),trafficRatio=total>0?Math.min(1,used/total):0,timeRatio=Number(item.duration_days)>0?Math.min(1,usedDays/Number(item.duration_days)):0;consumedRatio=Math.max(consumedRatio,trafficRatio,timeRatio);}
+          const maximumRate=usedDays>5?.5:1,refundRate=Math.max(0,Math.min(maximumRate,1-consumedRatio)),refundToman=Math.max(0,Math.floor(paidToman*refundRate/1000)*1000),preview={paidToman,refundToman,refundRate:Math.round(refundRate*10000)/100,usedDays,policy:usedDays>5?'MAX_50_PERCENT':'PRORATED_UNUSED',subscriptionCount:group.length};
+          if(customerSubscriptionAction[2]==='refund-preview')return json(res,200,preview);
+          if(req.method!=='POST')return json(res,405,{error:'METHOD_NOT_ALLOWED'});
+          if(!refundToman)return json(res,409,{error:'NO_REFUND_AVAILABLE'});
+          for(const item of group){if(item.control_status==='deleted')continue;const remote=provisionerForLocation(db.prepare('SELECT * FROM service_locations WHERE id=?').get(item.location_id));if(!remote?.remove)return json(res,409,{error:'PANEL_CONTROL_NOT_SUPPORTED'});try{await remote.remove({panelClientId:item.panel_client_id})}catch{return json(res,502,{error:'PANEL_CONTROL_FAILED'});}}
+          const now=new Date().toISOString(),reference=`customer-refund:${requested.bundle_id||requested.id}`;db.exec('BEGIN IMMEDIATE');try{postWalletTransactionInTransaction(db,{accountId:account.id,amountToman:refundToman,type:'refund',reference,actor:account.id,note:`بازگشت وجه ${requested.plan_name}`});const update=db.prepare("UPDATE subscriptions SET control_status='deleted',deleted_at=?,refunded_at=?,refund_toman=?,refund_reason='CUSTOMER_DISSATISFACTION' WHERE id=? AND refunded_at IS NULL");for(const item of group)update.run(now,now,refundToman,item.subscription_id);db.exec('COMMIT');}catch(error){db.exec('ROLLBACK');if(String(error.message).includes('UNIQUE'))return json(res,409,{error:'SUBSCRIPTION_ALREADY_REFUNDED'});throw error;}
+          notify(account.id,'بازگشت وجه انجام شد',`${refundToman.toLocaleString('fa-IR')} تومان به کیف پول شما برگشت.`);audit(account.id,'refund','subscription',requested.subscription_id,preview);return json(res,200,{...preview,balanceToman:getWalletStatement(db,account.id,1).balanceToman});
+        }
+        const customerExpiredDelete=path.match(/^\/api\/customer\/subscriptions\/([^/]+)$/);
+        if(customerExpiredDelete&&req.method==='DELETE'){
+          const row=db.prepare(`SELECT o.id,s.id subscription_id,s.status subscription_status,s.control_status,s.panel_client_id,s.activated_at,p.duration_days,p.traffic_gb,o.location_id FROM orders o JOIN subscriptions s ON s.order_id=o.id JOIN plans p ON p.id=o.plan_id WHERE o.id=? AND o.account_id=? AND o.order_kind='purchase'`).get(customerExpiredDelete[1],account.id);if(!row)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
+          let stats={};try{stats=(await panelStatsReader()||{})[row.panel_client_id]||{}}catch{}const expiry=Number(stats.expiryTime||0),total=Number(stats.totalBytes??(Number(row.traffic_gb||0)*1024**3)),used=Number(stats.upBytes||0)+Number(stats.downBytes||0),localExpiry=row.duration_days>0&&row.activated_at?Date.parse(row.activated_at)+row.duration_days*86_400_000:0,expired=row.subscription_status==='expired'||(expiry>0&&expiry<=Date.now())||(localExpiry>0&&localExpiry<=Date.now())||(total>0&&used>=total);
+          if(!expired)return json(res,409,{error:'SUBSCRIPTION_NOT_EXPIRED'});if(row.control_status!=='deleted'&&row.panel_client_id){const remote=provisionerForLocation(db.prepare('SELECT * FROM service_locations WHERE id=?').get(row.location_id));if(remote?.remove)try{await remote.remove({panelClientId:row.panel_client_id})}catch{return json(res,502,{error:'PANEL_CONTROL_FAILED'});}}
+          db.prepare("UPDATE subscriptions SET status='expired',control_status='deleted',deleted_at=? WHERE id=?").run(new Date().toISOString(),row.subscription_id);audit(account.id,'delete_expired','subscription',row.subscription_id);return json(res,200,{deleted:true});
         }
         if(req.method==='PATCH'&&path==='/api/customer/profile'){
           const b=await readJson(req),name=String(b.name||'').trim().replace(/\s+/g,' ');
@@ -2111,6 +2156,19 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         return json(res,201,{id,cardNumber:digits,cardHolder:b.cardHolder.trim(),bankName:b.bankName?.trim()||'',sortOrder:b.sortOrder||0,active:b.active!==false});
       }
 
+      if(req.method==='GET'&&path==='/api/admin/pricing'){
+        const rates=pricingSnapshot();return json(res,200,{...rates,provider:'Navasan',apiKeyConfigured:Boolean(decrypt(settingGet('pricing_navasan_key')||'')),automaticPlanCount:Number(db.prepare('SELECT COUNT(*) count FROM plans WHERE auto_price=1').get().count)});
+      }
+      if(req.method==='PATCH'&&path==='/api/admin/pricing'){
+        const b=await readJson(req),current=pricingSnapshot(),usd=Number(b.usdToman??current.usdToman),eur=Number(b.eurToman??current.eurToman),key=String(b.apiKey||'').trim();
+        if(!Number.isFinite(usd)||usd<0||!Number.isFinite(eur)||eur<0||key.length>500)return json(res,400,{error:'INVALID_PRICING_SETTINGS'});
+        if(key)settingSet('pricing_navasan_key',encrypt(key));settingSet('pricing_previous_usd_toman',current.usdToman||usd);settingSet('pricing_previous_eur_toman',current.eurToman||eur);settingSet('pricing_usd_toman',Math.round(usd));settingSet('pricing_eur_toman',Math.round(eur));settingSet('pricing_auto_refresh',b.autoRefresh===true);settingSet('pricing_source','manual');settingSet('pricing_updated_at',new Date().toISOString());
+        const updatedPlans=applyAutomaticPlanPrices();audit('admin','update','pricing','currencies',{usdToman:usd,eurToman:eur,autoRefresh:b.autoRefresh===true,updatedPlans});return json(res,200,{saved:true,...pricingSnapshot(),updatedPlans});
+      }
+      if(req.method==='POST'&&path==='/api/admin/pricing/refresh'){
+        try{const result=await refreshCurrencyRates();audit('admin','refresh','pricing','currencies',{updatedPlans:result.updatedPlans});return json(res,200,result);}catch(error){return json(res,error.status||503,{error:error.message||'PRICING_PROVIDER_ERROR'});}
+      }
+
       const cardMatch = path.match(/^\/api\/admin\/cards\/([^/]+)$/);
       if (req.method === 'PATCH' && cardMatch) {
         const old=db.prepare('SELECT * FROM payment_cards WHERE id=?').get(cardMatch[1]);
@@ -2130,9 +2188,9 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if (!validPlan(b)) return json(res, 400, { error: 'INVALID_PLAN' });
         const id = randomUUID(), now = new Date().toISOString();
         const locationMode=b.locationMode==='multi'?'multi':'single',bundleSize=locationMode==='multi'?Number(b.bundleSize||3):1;
-        db.prepare(`INSERT INTO plans(id,name,description,price_irr,traffic_gb,duration_days,device_limit,location_mode,bundle_size,sort_order,active,created_at,updated_at)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, b.name.trim(), b.description || '', b.priceIrr * 10, b.trafficGb, b.durationDays,
-          b.deviceLimit, locationMode, bundleSize, b.sortOrder || 0, b.active === false ? 0 : 1, now, now);
+        db.prepare(`INSERT INTO plans(id,name,description,price_irr,traffic_gb,duration_days,device_limit,location_mode,bundle_size,sort_order,active,created_at,updated_at,auto_price,cost_currency,cost_amount,markup_percent)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, b.name.trim(), b.description || '', b.priceIrr * 10, b.trafficGb, b.durationDays,
+          b.deviceLimit, locationMode, bundleSize, b.sortOrder || 0, b.active === false ? 0 : 1, now, now,b.autoPrice?1:0,b.autoPrice?b.costCurrency:'NONE',b.autoPrice?Number(b.costAmount):0,b.autoPrice?Number(b.markupPercent):0);
         audit('admin', 'create', 'plan', id, b);
         db.prepare('UPDATE plans SET special_message=? WHERE id=?').run(String(b.specialMessage||'').slice(0,500),id);
         return json(res, 201, planFromRow(db.prepare('SELECT * FROM plans WHERE id=?').get(id)));
@@ -2146,8 +2204,8 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         if (!validPlan(b)) return json(res, 400, { error: 'INVALID_PLAN' });
         const now = new Date().toISOString();
         const locationMode=b.locationMode==='multi'?'multi':'single',bundleSize=locationMode==='multi'?Number(b.bundleSize||3):1;
-        db.prepare(`UPDATE plans SET name=?,description=?,price_irr=?,traffic_gb=?,duration_days=?,device_limit=?,location_mode=?,bundle_size=?,sort_order=?,active=?,updated_at=? WHERE id=?`)
-          .run(b.name.trim(), b.description || '', b.priceIrr * 10, b.trafficGb, b.durationDays, b.deviceLimit, locationMode, bundleSize, b.sortOrder || 0, b.active ? 1 : 0, now, planMatch[1]);
+        db.prepare(`UPDATE plans SET name=?,description=?,price_irr=?,traffic_gb=?,duration_days=?,device_limit=?,location_mode=?,bundle_size=?,sort_order=?,active=?,updated_at=?,auto_price=?,cost_currency=?,cost_amount=?,markup_percent=? WHERE id=?`)
+          .run(b.name.trim(), b.description || '', b.priceIrr * 10, b.trafficGb, b.durationDays, b.deviceLimit, locationMode, bundleSize, b.sortOrder || 0, b.active ? 1 : 0, now,b.autoPrice?1:0,b.autoPrice?b.costCurrency:'NONE',b.autoPrice?Number(b.costAmount):0,b.autoPrice?Number(b.markupPercent):0,planMatch[1]);
         audit('admin', 'update', 'plan', planMatch[1], b);
         db.prepare('UPDATE plans SET special_message=? WHERE id=?').run(String(b.specialMessage||'').slice(0,500),planMatch[1]);
         return json(res, 200, planFromRow(db.prepare('SELECT * FROM plans WHERE id=?').get(planMatch[1])));

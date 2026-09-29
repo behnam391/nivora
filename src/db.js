@@ -19,6 +19,10 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
       device_limit INTEGER NOT NULL DEFAULT 1 CHECK(device_limit > 0),
       location_mode TEXT NOT NULL DEFAULT 'single' CHECK(location_mode IN ('single','multi')),
       bundle_size INTEGER NOT NULL DEFAULT 1 CHECK(bundle_size BETWEEN 1 AND 10),
+      auto_price INTEGER NOT NULL DEFAULT 0,
+      cost_currency TEXT NOT NULL DEFAULT 'NONE',
+      cost_amount REAL NOT NULL DEFAULT 0,
+      markup_percent INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
@@ -388,6 +392,10 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!importColumns.includes('issued_by_admin')) db.exec('ALTER TABLE reseller_subscription_import_tokens ADD COLUMN issued_by_admin INTEGER NOT NULL DEFAULT 0');
   if (!planColumns.includes('location_mode')) db.exec("ALTER TABLE plans ADD COLUMN location_mode TEXT NOT NULL DEFAULT 'single' CHECK(location_mode IN ('single','multi'))");
   if (!planColumns.includes('bundle_size')) db.exec('ALTER TABLE plans ADD COLUMN bundle_size INTEGER NOT NULL DEFAULT 1 CHECK(bundle_size BETWEEN 1 AND 10)');
+  if (!planColumns.includes('auto_price')) db.exec('ALTER TABLE plans ADD COLUMN auto_price INTEGER NOT NULL DEFAULT 0');
+  if (!planColumns.includes('cost_currency')) db.exec("ALTER TABLE plans ADD COLUMN cost_currency TEXT NOT NULL DEFAULT 'NONE'");
+  if (!planColumns.includes('cost_amount')) db.exec('ALTER TABLE plans ADD COLUMN cost_amount REAL NOT NULL DEFAULT 0');
+  if (!planColumns.includes('markup_percent')) db.exec('ALTER TABLE plans ADD COLUMN markup_percent INTEGER NOT NULL DEFAULT 0');
   const orderColumns = db.prepare('PRAGMA table_info(orders)').all().map(c => c.name);
   if (!orderColumns.includes('tracking_token')) db.exec('ALTER TABLE orders ADD COLUMN tracking_token TEXT');
   if (!orderColumns.includes('account_id')) db.exec('ALTER TABLE orders ADD COLUMN account_id TEXT REFERENCES accounts(id)');
@@ -408,6 +416,9 @@ export function openDatabase(path = process.env.DATABASE_PATH || './data/nivora.
   if (!subscriptionColumns.includes('suspension_reason')) db.exec('ALTER TABLE subscriptions ADD COLUMN suspension_reason TEXT');
   if (!subscriptionColumns.includes('suspended_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN suspended_at TEXT');
   if (!subscriptionColumns.includes('deleted_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN deleted_at TEXT');
+  if (!subscriptionColumns.includes('refunded_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN refunded_at TEXT');
+  if (!subscriptionColumns.includes('refund_toman')) db.exec('ALTER TABLE subscriptions ADD COLUMN refund_toman INTEGER NOT NULL DEFAULT 0');
+  if (!subscriptionColumns.includes('refund_reason')) db.exec("ALTER TABLE subscriptions ADD COLUMN refund_reason TEXT NOT NULL DEFAULT ''");
   if (!subscriptionColumns.includes('control_status')) db.exec("ALTER TABLE subscriptions ADD COLUMN control_status TEXT NOT NULL DEFAULT 'active'");
   if (!subscriptionColumns.includes('hysteria_started_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN hysteria_started_at TEXT');
   if (!subscriptionColumns.includes('hysteria_expires_at')) db.exec('ALTER TABLE subscriptions ADD COLUMN hysteria_expires_at TEXT');
