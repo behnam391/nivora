@@ -15,3 +15,7 @@ const alertsResponse=await fetch(`${base}/api/admin/notifications`,{headers:{aut
 if(!alertsResponse.ok)throw new Error(`Admin notifications returned ${alertsResponse.status}`);
 const alerts=await alertsResponse.json();
 console.log(JSON.stringify({notificationCounts:alerts.counts,items:(alerts.items||[]).length,withId:(alerts.items||[]).filter(item=>item.id).length}));
+const telegramResponse=await fetch(`${base}/api/admin/telegram-settings`,{headers:{authorization:`Bearer ${process.env.ADMIN_TOKEN||''}`}});
+if(!telegramResponse.ok)throw new Error(`Telegram settings returned ${telegramResponse.status}`);
+const telegram=await telegramResponse.json();
+console.log(JSON.stringify({telegramEnabled:telegram.enabled,telegramTokenConfigured:telegram.tokenConfigured,telegramAdminCount:String(telegram.adminIds||'').split(',').filter(Boolean).length,webhookSecretConfigured:telegram.webhookSecretConfigured}));
