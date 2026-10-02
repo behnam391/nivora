@@ -16,7 +16,7 @@ import net from 'node:net';
 import { createHash, randomInt, randomBytes, createCipheriv, createDecipheriv, createHmac, timingSafeEqual } from 'node:crypto';
 import { sendSms } from './sms.js';
 import { createTelegramRecovery } from './telegram-bot.js';
-import { createThreeXuiProvisioner } from './providers/three-x-ui.js';
+import { createThreeXuiProvisioner, readThreeXuiStats } from './providers/three-x-ui.js';
 import { createOpenVpnProvisioner } from './providers/openvpn.js';
 import { deliverOpenVpn } from './openvpn-delivery.js';
 import { createHysteriaTicketService, HysteriaAuthError } from './hysteria-auth.js';
@@ -403,7 +403,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       FROM orders o JOIN subscriptions s ON s.order_id=o.id JOIN plans p ON p.id=o.plan_id
       WHERE o.account_id=? AND o.order_kind='purchase' AND o.status='approved' AND s.status='active' AND COALESCE(s.control_status,'active')='active'`).all(accountId);
     if(!rows.length)return false;
-    let stats=suppliedStats;try{if(!stats)stats=await panelStatsReader()||{};}catch{stats={}}
+    let stats=suppliedStats;try{if(!stats)stats=await readAllStats()||{};}catch{stats={}}
     const clock=Date.now();
     return rows.some(row=>{
       const panel=stats[row.panel_client_id];
@@ -524,15 +524,28 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
   };
   const guard=createRequestGuard();
   let openVpnStatsCache={at:0,rows:{}};
+  const xuiNodeStatsCache=new Map();
+  async function xuiStatsForNode(node){
+    const cached=xuiNodeStatsCache.get(node.id);
+    if(cached?.rows&&Date.now()-cached.at<30_000)return cached.rows;
+    if(cached?.promise)return cached.promise;
+    const promise=readThreeXuiStats({baseUrl:node.base_url,apiToken:decrypt(node.api_token_encrypted),rejectUnauthorized:false})
+      .then(rows=>{xuiNodeStatsCache.set(node.id,{at:Date.now(),rows});return rows})
+      .catch(()=>{const rows=cached?.rows&&Date.now()-cached.at<120_000?cached.rows:{};xuiNodeStatsCache.set(node.id,{at:Date.now()-15_000,rows});return rows});
+    xuiNodeStatsCache.set(node.id,{...cached,promise});
+    try{return await promise}finally{const current=xuiNodeStatsCache.get(node.id);if(current?.promise===promise)xuiNodeStatsCache.set(node.id,{at:cached?.at||0,rows:cached?.rows||{}})}
+  }
   async function readAllStats(){
-    const base=await readPanelStats();
+    const base=await panelStatsReader();
+    const xuiNodes=panelStatsReader===readPanelStats?db.prepare("SELECT id,base_url,api_token_encrypted FROM panel_nodes WHERE panel_type='3x-ui' AND active=1").all():[];
+    const remote=await Promise.all(xuiNodes.map(xuiStatsForNode));
     if(Date.now()-openVpnStatsCache.at>5000){
       const nodes=db.prepare("SELECT * FROM panel_nodes WHERE panel_type='openvpn' AND active=1").all();
       const rows={};
       await Promise.all(nodes.map(async node=>{try{Object.assign(rows,await createOpenVpnProvisioner({baseUrl:node.base_url,apiToken:decrypt(node.api_token_encrypted)}).statsAll());}catch{}}));
       openVpnStatsCache={at:Date.now(),rows};
     }
-    return {...base,...openVpnStatsCache.rows};
+    return {...base,...Object.assign({},...remote),...openVpnStatsCache.rows};
   }
   const guestReceiptLimiter=createKeyedRateLimiter({limit:8,windowMs:60*60_000});
   const accountReceiptLimiter=createKeyedRateLimiter({limit:12,windowMs:60*60_000});
@@ -843,6 +856,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       if(req.method==='GET'&&path==='/admin-topups.js'){const js=await readFile(resolve('public/admin-topups.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-notifications.js'){const js=await readFile(resolve('public/admin-notifications.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
+      if(req.method==='GET'&&path==='/admin-notification-actions.js'){const js=await readFile(resolve('public/admin-notification-actions.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
       if(req.method==='GET'&&path==='/admin-topups.css'){const css=await readFile(resolve('public/admin-topups.css'));res.writeHead(200,{'content-type':'text/css; charset=utf-8'});return res.end(css);}
       if(req.method==='GET'&&path==='/admin-customers.js'){const js=await readFile(resolve('public/admin-customers.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8'});return res.end(js);}
       if(req.method==='GET'&&path==='/openvpn-delivery.js'){const js=await readFile(resolve('public/openvpn-delivery.js'));res.writeHead(200,{'content-type':'text/javascript; charset=utf-8','cache-control':'no-store'});return res.end(js);}
@@ -997,6 +1011,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           if(request.created){
             audit(account.id,'request','device_recovery',request.id,{phone:account.phone});
             if(account.managed_by_reseller_id)notify(account.managed_by_reseller_id,'درخواست آزادسازی دستگاه',`${account.name} درخواست فعال‌سازی روی دستگاه جدید را ارسال کرد.`);
+            void telegramAdminAlert(`📱 درخواست آزادسازی دستگاه\n${account.name} — ${account.phone}\nآیا دستگاه جدید این مشتری را تأیید می‌کنید؟`,{inline_keyboard:[[{text:'✅ آزادسازی',callback_data:`device:approve:${request.id}`},{text:'❌ رد با دلیل',callback_data:`device:reject:${request.id}`}]]});
           }
           return json(res,202,request);
         }catch(error){return json(res,error.status||400,deviceRecoveryErrorBody(error));}
@@ -1038,7 +1053,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const b=await readJson(req),phone=String(b.phone||'').trim();
         if(!/^09\d{9}$/.test(phone))return json(res,400,{error:'INVALID_PHONE'});
         const account=db.prepare("SELECT id FROM accounts WHERE phone=? AND role='customer' AND status='active'").get(phone);
-        if(account){const pending=db.prepare("SELECT id FROM password_reset_requests WHERE account_id=? AND status='pending'").get(account.id);if(!pending){const id=randomUUID(),now=new Date().toISOString();db.prepare("INSERT INTO password_reset_requests(id,account_id,status,requested_at) VALUES(?,?,'pending',?)").run(id,account.id,now);audit(phone,'request','password_reset',id);}}
+        if(account){const pending=db.prepare("SELECT id FROM password_reset_requests WHERE account_id=? AND status='pending'").get(account.id);if(!pending){const id=randomUUID(),now=new Date().toISOString();db.prepare("INSERT INTO password_reset_requests(id,account_id,status,requested_at) VALUES(?,?,'pending',?)").run(id,account.id,now);audit(phone,'request','password_reset',id);void telegramAdminAlert(`🔑 درخواست بازیابی رمز\nشماره مشتری: ${phone}\nبرای احراز هویت و رسیدگی، بخش بازیابی رمز پنل مدیریت را باز کنید.`);}}
         return json(res,202,{accepted:true,message:'اگر حسابی با این شماره وجود داشته باشد، درخواست برای مدیر ارسال می‌شود.'});
       }
       if(path.startsWith('/api/customer/')){
@@ -1192,7 +1207,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           }
         }
         if(req.method==='GET'&&path==='/api/customer/me'){
-          let panelStats={};try{panelStats=await panelStatsReader()||{};}catch{}
+          let panelStats={};try{panelStats=await readAllStats()||{};}catch{}
           const wallet=getWalletStatement(db,account.id,25);
         const rows=db.prepare(`SELECT o.id,o.plan_id,o.order_kind,o.reseller_id,o.bundle_id,o.bundle_index,o.bundle_size,o.status,o.created_at,o.tracking_token,p.name plan_name,p.traffic_gb,p.duration_days,p.device_limit,COALESCE(NULLIF(s.special_message,''),p.special_message) special_message,s.status subscription_status,s.control_status,s.subscription_url,s.access_token subscription_access_token,s.panel_client_id,l.name location_name,l.country_code,l.flag_emoji,l.city,${locationSequenceSql} location_sequence,(SELECT COUNT(*) FROM location_endpoints e WHERE e.location_id=o.location_id AND e.active=1) route_count FROM orders o JOIN plans p ON p.id=o.plan_id LEFT JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.order_kind='purchase' AND COALESCE(s.control_status,'active')<>'deleted' ORDER BY o.created_at DESC LIMIT 100`).all(account.id);
           const orders=rows.map(row=>enrichSubscription(exposeSubscription(req,row),panelStats));
@@ -1210,7 +1225,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           const group=requested.bundle_id?db.prepare(`SELECT o.*,p.traffic_gb,p.duration_days,s.id subscription_id,s.status subscription_status,s.control_status,s.panel_client_id,s.activated_at,s.refunded_at,l.id location_id FROM orders o JOIN plans p ON p.id=o.plan_id JOIN subscriptions s ON s.order_id=o.id LEFT JOIN service_locations l ON l.id=o.location_id WHERE o.account_id=? AND o.bundle_id=? AND o.order_kind='purchase'`).all(account.id,requested.bundle_id):[requested];
           if(group.some(item=>item.refunded_at))return json(res,409,{error:'SUBSCRIPTION_ALREADY_REFUNDED'});
           if(group.some(item=>item.control_status==='deleted'||item.subscription_status!=='active'))return json(res,409,{error:'SUBSCRIPTION_NOT_ACTIVE'});
-          let panelStats={};try{panelStats=await panelStatsReader()||{}}catch{}
+          let panelStats={};try{panelStats=await readAllStats()||{}}catch{}
           const dayMs=86_400_000,nowMs=Date.now(),paidToman=Math.max(...group.map(item=>Math.round(Number(item.amount_transferred_irr||0)/10)),0);
           let usedDays=0,consumedRatio=0;
           for(const item of group){const stats=panelStats[item.panel_client_id]||{},activated=Date.parse(item.activated_at||item.created_at||'');usedDays=Math.max(usedDays,Number.isFinite(activated)?Math.max(0,Math.ceil((nowMs-activated)/dayMs)):0);const total=Number(stats.totalBytes??(Number(item.traffic_gb||0)*1024**3)),used=Number(stats.upBytes||0)+Number(stats.downBytes||0),trafficRatio=total>0?Math.min(1,used/total):0,timeRatio=Number(item.duration_days)>0?Math.min(1,usedDays/Number(item.duration_days)):0;consumedRatio=Math.max(consumedRatio,trafficRatio,timeRatio);}
@@ -1225,7 +1240,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const customerExpiredDelete=path.match(/^\/api\/customer\/subscriptions\/([^/]+)$/);
         if(customerExpiredDelete&&req.method==='DELETE'){
           const row=db.prepare(`SELECT o.id,s.id subscription_id,s.status subscription_status,s.control_status,s.panel_client_id,s.activated_at,p.duration_days,p.traffic_gb,o.location_id FROM orders o JOIN subscriptions s ON s.order_id=o.id JOIN plans p ON p.id=o.plan_id WHERE o.id=? AND o.account_id=? AND o.order_kind='purchase'`).get(customerExpiredDelete[1],account.id);if(!row)return json(res,404,{error:'SUBSCRIPTION_NOT_FOUND'});
-          let stats={};try{stats=(await panelStatsReader()||{})[row.panel_client_id]||{}}catch{}const expiry=Number(stats.expiryTime||0),total=Number(stats.totalBytes??(Number(row.traffic_gb||0)*1024**3)),used=Number(stats.upBytes||0)+Number(stats.downBytes||0),localExpiry=row.duration_days>0&&row.activated_at?Date.parse(row.activated_at)+row.duration_days*86_400_000:0,expired=row.subscription_status==='expired'||(expiry>0&&expiry<=Date.now())||(localExpiry>0&&localExpiry<=Date.now())||(total>0&&used>=total);
+          let stats={};try{stats=(await readAllStats()||{})[row.panel_client_id]||{}}catch{}const expiry=Number(stats.expiryTime||0),total=Number(stats.totalBytes??(Number(row.traffic_gb||0)*1024**3)),used=Number(stats.upBytes||0)+Number(stats.downBytes||0),localExpiry=row.duration_days>0&&row.activated_at?Date.parse(row.activated_at)+row.duration_days*86_400_000:0,expired=row.subscription_status==='expired'||(expiry>0&&expiry<=Date.now())||(localExpiry>0&&localExpiry<=Date.now())||(total>0&&used>=total);
           if(!expired)return json(res,409,{error:'SUBSCRIPTION_NOT_EXPIRED'});if(row.control_status!=='deleted'&&row.panel_client_id){const remote=provisionerForLocation(db.prepare('SELECT * FROM service_locations WHERE id=?').get(row.location_id));if(remote?.remove)try{await remote.remove({panelClientId:row.panel_client_id})}catch{return json(res,502,{error:'PANEL_CONTROL_FAILED'});}}
           db.prepare("UPDATE subscriptions SET status='expired',control_status='deleted',deleted_at=? WHERE id=?").run(new Date().toISOString(),row.subscription_id);audit(account.id,'delete_expired','subscription',row.subscription_id);return json(res,200,{deleted:true});
         }
@@ -1277,7 +1292,7 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
           audit(account.id,'change_password','account',account.id);return json(res,200,{changed:true,otherSessionsRevoked:true});
         }
         if(req.method==='GET'&&path==='/api/customer/tickets'){const tickets=db.prepare(`SELECT t.*,(SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1) last_message FROM support_tickets t WHERE account_id=? AND owner_archived_at IS NULL ORDER BY updated_at DESC`).all(account.id);return json(res,200,tickets);}
-        if(req.method==='POST'&&path==='/api/customer/tickets'){const b=await readJson(req),subject=String(b.subject||'').trim(),body=String(b.body||'').trim();if(subject.length<3||body.length<3)return json(res,400,{error:'INVALID_TICKET'});const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO support_tickets(id,account_id,subject,status,created_at,updated_at) VALUES(?,?,?,'open',?,?)`).run(id,account.id,subject,now,now);db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),id,body,now);return json(res,201,{id,status:'open'});}
+        if(req.method==='POST'&&path==='/api/customer/tickets'){const b=await readJson(req),subject=String(b.subject||'').trim(),body=String(b.body||'').trim();if(subject.length<3||body.length<3)return json(res,400,{error:'INVALID_TICKET'});const id=randomUUID(),now=new Date().toISOString();db.prepare(`INSERT INTO support_tickets(id,account_id,subject,status,created_at,updated_at) VALUES(?,?,?,'open',?,?)`).run(id,account.id,subject,now,now);db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),id,body,now);void telegramAdminAlert(`🎫 تیکت تازه از ${account.name}\n${subject}\n${body.slice(0,300)}\nبرای پاسخ، «تیکت‌های باز» را در ربات یا مرکز اعلان مدیریت باز کنید.`);return json(res,201,{id,status:'open'});}
         const customerTicket=path.match(/^\/api\/customer\/tickets\/([^/]+)$/);if(customerTicket&&req.method==='GET'){const ticket=db.prepare('SELECT * FROM support_tickets WHERE id=? AND account_id=?').get(customerTicket[1],account.id);if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});return json(res,200,{...ticket,messages:db.prepare('SELECT id,sender_role,body,created_at FROM ticket_messages WHERE ticket_id=? ORDER BY created_at').all(ticket.id)});}if(customerTicket&&req.method==='POST'){const ticket=db.prepare("SELECT * FROM support_tickets WHERE id=? AND account_id=? AND status<>'closed'").get(customerTicket[1],account.id),b=await readJson(req),body=String(b.body||'').trim();if(!ticket)return json(res,404,{error:'TICKET_NOT_FOUND'});if(body.length<2)return json(res,400,{error:'INVALID_MESSAGE'});const now=new Date().toISOString();db.prepare(`INSERT INTO ticket_messages(id,ticket_id,sender_role,body,created_at) VALUES(?,?,'customer',?,?)`).run(randomUUID(),ticket.id,body,now);db.prepare("UPDATE support_tickets SET status='open',owner_archived_at=NULL,updated_at=? WHERE id=?").run(now,ticket.id);return json(res,201,{sent:true});}
         if(req.method==='POST'&&path==='/api/customer/notifications/read'){db.prepare('UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE account_id=?').run(new Date().toISOString(),account.id);return json(res,200,{success:true});}
         if(req.method==='DELETE'&&path==='/api/customer/notifications'){const now=new Date().toISOString(),result=db.prepare('UPDATE notifications SET dismissed_at=?,read_at=COALESCE(read_at,?) WHERE account_id=? AND dismissed_at IS NULL').run(now,now,account.id);return json(res,200,{cleared:Number(result.changes)});}
@@ -1939,11 +1954,12 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const pendingTopups=db.prepare("SELECT COUNT(*) count FROM wallet_topups WHERE status='under_review'").get().count;
         const pendingResets=db.prepare("SELECT COUNT(*) count FROM password_reset_requests WHERE status='pending'").get().count;
         const pendingDevices=db.prepare("SELECT COUNT(*) count FROM device_recovery_requests WHERE status='pending'").get().count;
-        const latest=db.prepare(`SELECT 'ticket' type,t.subject title,a.name||' · '||COALESCE((SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1),'') body,t.updated_at created_at
+        const latest=db.prepare(`SELECT t.id,'ticket' type,t.subject title,a.name||' · '||COALESCE((SELECT body FROM ticket_messages WHERE ticket_id=t.id ORDER BY created_at DESC LIMIT 1),'') body,t.updated_at created_at
           FROM support_tickets t JOIN accounts a ON a.id=t.account_id WHERE t.status='open'
-          UNION ALL SELECT 'order','پرداخت در انتظار بررسی',customer_name||' · '||phone,created_at FROM orders WHERE status='under_review'
-          UNION ALL SELECT 'topup','شارژ کیف پول در انتظار بررسی',a.name||' · '||w.amount_toman||' تومان',w.created_at FROM wallet_topups w JOIN accounts a ON a.id=w.account_id WHERE w.status='under_review'
-          UNION ALL SELECT 'device_recovery','درخواست آزادسازی دستگاه',a.name||' · '||a.phone,r.requested_at FROM device_recovery_requests r JOIN accounts a ON a.id=r.account_id WHERE r.status='pending'
+          UNION ALL SELECT id,'order','پرداخت در انتظار بررسی',customer_name||' · '||phone,created_at FROM orders WHERE status='under_review'
+          UNION ALL SELECT w.id,'topup','شارژ کیف پول در انتظار بررسی',a.name||' · '||w.amount_toman||' تومان',w.created_at FROM wallet_topups w JOIN accounts a ON a.id=w.account_id WHERE w.status='under_review'
+          UNION ALL SELECT r.id,'device_recovery','درخواست آزادسازی دستگاه',a.name||' · '||a.phone,r.requested_at FROM device_recovery_requests r JOIN accounts a ON a.id=r.account_id WHERE r.status='pending'
+          UNION ALL SELECT r.id,'password_reset','درخواست بازیابی رمز',a.name||' · '||a.phone,r.requested_at FROM password_reset_requests r JOIN accounts a ON a.id=r.account_id WHERE r.status='pending'
           ORDER BY created_at DESC LIMIT 30`).all();
         return json(res,200,{counts:{openTickets,pendingOrders,pendingTopups,pendingResets,pendingDevices},items:latest});
       }
@@ -2096,10 +2112,12 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
       }
       const adminDeviceRecoveryAction=path.match(/^\/api\/admin\/device-recovery-requests\/([^/]+)\/(approve|reject)$/);
       if(req.method==='POST'&&adminDeviceRecoveryAction){
+        const body=await readJson(req),note=String(body.note||'').trim();
+        if(note.length>300)return json(res,400,{error:'INVALID_NOTE'});
         const request=db.prepare('SELECT account_id FROM device_recovery_requests WHERE id=?').get(adminDeviceRecoveryAction[1]);
         try{
           const result=resolveDeviceRecovery(db,adminDeviceRecoveryAction[1],{action:adminDeviceRecoveryAction[2],actor:'admin'});
-          if(request&&result.resolvedNow){notify(request.account_id,result.status==='approved'?'دستگاه جدید تأیید شد':'درخواست دستگاه رد شد',result.message);audit('admin',adminDeviceRecoveryAction[2],'device_recovery',adminDeviceRecoveryAction[1]);}
+          if(request&&result.resolvedNow){notify(request.account_id,result.status==='approved'?'دستگاه جدید تأیید شد':'درخواست دستگاه رد شد',note?`${result.message} توضیح مدیر: ${note}`:result.message);audit('admin',adminDeviceRecoveryAction[2],'device_recovery',adminDeviceRecoveryAction[1],{note});}
           return json(res,200,result);
         }catch(error){return json(res,error.status||400,deviceRecoveryErrorBody(error));}
       }

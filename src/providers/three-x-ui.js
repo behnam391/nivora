@@ -38,7 +38,7 @@ export function buildCompatibleClientPayload(client, inboundIds, flow = '', limi
   };
 }
 
-function nodeRequest({ url, method, token, body, rejectUnauthorized }) {
+function nodeRequest({ url, method, token, body, rejectUnauthorized, timeoutMs = 15_000 }) {
   return new Promise((resolve, reject) => {
     let sent=false;
     const transportFailure=error=>{if(sent && method!=='GET')error.uncertain=true;reject(error)};
@@ -52,7 +52,7 @@ function nodeRequest({ url, method, token, body, rejectUnauthorized }) {
         accept: 'application/json',
         ...(payload ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } : {})
       },
-      timeout: 15_000
+      timeout: timeoutMs
     }, res => {
       let raw = '';
       res.setEncoding('utf8');
@@ -73,6 +73,30 @@ function nodeRequest({ url, method, token, body, rejectUnauthorized }) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+export async function readThreeXuiStats({baseUrl,apiToken,rejectUnauthorized=false},transport=nodeRequest) {
+  if(!baseUrl||!apiToken)throw new Error('3X-UI statistics configuration is incomplete');
+  const url=new URL(`${baseUrl.replace(/\/$/,'')}/panel/api/inbounds/list`);
+  const result=await transport({url,method:'GET',token:apiToken,rejectUnauthorized,timeoutMs:4_000});
+  if(result?.success===false)throw new Error(result.msg||'3X-UI statistics request failed');
+  const inbounds=result?.obj??result;
+  if(!Array.isArray(inbounds))throw new Error('3X-UI statistics response is invalid');
+  const rows={},syncedAt=Date.now();
+  for(const inbound of inbounds){
+    for(const client of Array.isArray(inbound.clientStats)?inbound.clientStats:[]){
+      const email=String(client.email||'').trim();if(!email)continue;
+      const usage=Math.max(0,Number(client.up)||0)+Math.max(0,Number(client.down)||0);
+      const previous=rows[email],previousUsage=previous?previous.upBytes+previous.downBytes:-1;
+      // One 3X-UI client can appear in several inbounds with the same counters.
+      // Never sum these copies, or a multi-route subscription looks overused.
+      if(previous&&usage<previousUsage)continue;
+      rows[email]={upBytes:Math.max(0,Number(client.up)||0),downBytes:Math.max(0,Number(client.down)||0),
+        totalBytes:Math.max(0,Number(client.total)||0),expiryTime:Number(client.expiryTime)||0,
+        lastOnline:Number(client.lastOnline)||null,enabled:client.enable!==false,syncedAt};
+    }
+  }
+  return rows;
 }
 
 export function createThreeXuiProvisioner(config = {}, transport = nodeRequest) {

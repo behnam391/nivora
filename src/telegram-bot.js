@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hashPassword } from './auth.js';
 import { postWalletTransaction } from './wallet.js';
 import { approveWalletTopup } from './auto-review.js';
+import { resolveDeviceRecovery } from './device-recovery.js';
 
 const phone=v=>String(v||'').replace(/[^\d+]/g,'').replace(/^\+98/,'0').replace(/^0098/,'0');
 const fa=v=>Number(v||0).toLocaleString('fa-IR');
@@ -58,6 +59,16 @@ export function createTelegramRecovery(db,{getConfig,fetchImpl=fetch,aiOperation
 
     if(admin){
       const state=states.get(user)||{};
+      if(/^device:(approve|reject):[a-f0-9-]+$/i.test(text)){
+        const [,action,id]=text.match(/^device:(approve|reject):([a-f0-9-]+)$/i),request=db.prepare("SELECT r.id,r.status,r.account_id,a.name FROM device_recovery_requests r JOIN accounts a ON a.id=r.account_id WHERE r.id=?").get(id);
+        if(!request||request.status!=='pending'){await answerCallback('این درخواست دیگر منتظر نیست');return json(res,200,{ok:true});}
+        if(action==='reject'){states.set(user,{mode:'device-reject-reason',requestId:id});await answerCallback('دلیل را بفرستید');await send(chat,`دلیل رد درخواست ${request.name} را بنویسید.`,{reply_markup:{keyboard:[[{text:'لغو'}]],resize_keyboard:true}});return json(res,200,{ok:true});}
+        try{const result=resolveDeviceRecovery(db,id,{action:'approve',actor});if(result.resolvedNow){db.prepare('INSERT INTO notifications(id,account_id,title,body,created_at) VALUES(?,?,?,?,?)').run(randomUUID(),request.account_id,'دستگاه جدید تأیید شد',result.message,new Date().toISOString());log(db,actor,'approve','device_recovery',id);}await answerCallback('دستگاه آزاد شد');await send(chat,'✅ دستگاه جدید تأیید و دستگاه قبلی آزاد شد.',{reply_markup:adminMenu});}catch{await answerCallback('تأیید ممکن نشد');await send(chat,'تأیید انجام نشد؛ وضعیت درخواست را در پنل بررسی کنید.',{reply_markup:adminMenu});}return json(res,200,{ok:true});
+      }
+      if(state.mode==='device-reject-reason'&&text!=='لغو'&&text!=='/cancel'){
+        const reason=text.slice(0,300).trim();if(reason.length<3){await send(chat,'دلیل رد را کمی کامل‌تر بنویسید یا «لغو» را بزنید.');return json(res,200,{ok:true});}
+        try{const request=db.prepare('SELECT account_id FROM device_recovery_requests WHERE id=?').get(state.requestId),result=resolveDeviceRecovery(db,state.requestId,{action:'reject',actor});if(request&&result.resolvedNow){db.prepare('INSERT INTO notifications(id,account_id,title,body,created_at) VALUES(?,?,?,?,?)').run(randomUUID(),request.account_id,'درخواست دستگاه رد شد',`${result.message} توضیح مدیر: ${reason}`,new Date().toISOString());log(db,actor,'reject','device_recovery',state.requestId,{reason});}await send(chat,result.resolvedNow?'❌ درخواست با دلیل ثبت‌شده رد شد.':'این درخواست قبلاً بررسی شده است.',{reply_markup:adminMenu});}catch{await send(chat,'رد درخواست انجام نشد؛ وضعیت آن را در پنل بررسی کنید.',{reply_markup:adminMenu});}states.delete(user);return json(res,200,{ok:true});
+      }
       if(/^topup:approve:[a-f0-9-]+$/i.test(text)){
         const id=text.split(':').at(-1);try{const result=approveWalletTopup(db,id,{actor,note:'تأیید مدیر در ربات تلگرام'});log(db,actor,'approve','wallet_topup',id);await answerCallback('تأیید شد');await send(chat,`✅ پرداخت تأیید و کیف پول شارژ شد. موجودی جدید: ${fa(result.balanceToman)} تومان`,{reply_markup:adminMenu});}catch{await answerCallback('قبلاً بررسی شده');await send(chat,'این درخواست قبلاً بررسی شده یا قابل تأیید نیست.',{reply_markup:adminMenu});}return json(res,200,{ok:true});
       }

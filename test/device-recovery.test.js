@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { openDatabase } from '../src/db.js';
 import { createApp } from '../src/app.js';
+import { createTelegramRecovery } from '../src/telegram-bot.js';
 
 const DEVICE_A='nivora-recovery-device-a-1234567890';
 const DEVICE_B='nivora-recovery-device-b-1234567890';
@@ -30,7 +31,7 @@ test('a blocked phone can request approval and admin approval replaces the oldes
   response=await fetch(`${base}/api/device-recovery/request`,{method:'POST',headers:{'content-type':'application/json','x-nivora-device':DEVICE_B},body:JSON.stringify(credentials)});
   assert.equal(response.status,202);assert.equal((await response.json()).id,request.id);
 
-  response=await fetch(`${base}/api/admin/notifications`,{headers:{authorization:'Bearer test-token'}});const notifications=await response.json();assert.equal(notifications.counts.pendingDevices,1);
+  response=await fetch(`${base}/api/admin/notifications`,{headers:{authorization:'Bearer test-token'}});const notifications=await response.json();assert.equal(notifications.counts.pendingDevices,1);assert.equal(notifications.items.find(item=>item.type==='device_recovery').id,request.id);
   response=await fetch(`${base}/api/admin/device-recovery-requests/${request.id}/approve`,{method:'POST',headers:{authorization:'Bearer test-token','content-type':'application/json'},body:'{}'});
   assert.equal(response.status,200);const approval=await response.json();assert.equal(approval.status,'approved');
   response=await fetch(`${base}/api/admin/device-recovery-requests/${request.id}/approve`,{method:'POST',headers:{authorization:'Bearer test-token','content-type':'application/json'},body:'{}'});
@@ -53,6 +54,22 @@ test('a blocked phone can request approval and admin approval replaces the oldes
   response=await fetch(`${base}/api/customer/login`,{method:'POST',headers:customerHeaders,body:JSON.stringify(credentials)});
   assert.equal(response.status,403);
   response=await fetch(`${base}/api/admin/accounts/${registration.account.id}/devices`,{headers:{authorization:'Bearer test-token'}});const devices=await response.json();assert.equal(devices.devices.length,1);assert.equal(devices.recoveryRequests.length,0);
+});
+
+test('only the configured Telegram admin can decide a device recovery request', async t=>{
+  const {db,server,base}=await start();t.after(()=>server.close());
+  const credentials={phone:'09123330009',password:'device-recovery-pass'};
+  let response=await fetch(`${base}/api/customer/register`,{method:'POST',headers:{'content-type':'application/json','x-nivora-device':DEVICE_A},body:JSON.stringify({name:'مشتری تلگرام',...credentials})});
+  assert.equal(response.status,201);
+  response=await fetch(`${base}/api/device-recovery/request`,{method:'POST',headers:{'content-type':'application/json','x-nivora-device':DEVICE_B},body:JSON.stringify(credentials)});
+  const request=await response.json();assert.equal(response.status,202);
+  const sent=[],handler=createTelegramRecovery(db,{getConfig:()=>({enabled:true,token:'test',secret:'secret',adminIds:['77']}),fetchImpl:async(_url,options)=>{sent.push(JSON.parse(options.body));return {ok:true}}});
+  const deliver=async(from,data)=>handler({headers:{'x-telegram-bot-api-secret-token':'secret'}},{writeHead(){},end(){}},async()=>({callback_query:{id:'cb',from:{id:from},data,message:{message_id:1,chat:{id:from,type:'private'}}}}),(res,_code,payload)=>res.end(JSON.stringify(payload)));
+  await deliver(78,`device:approve:${request.id}`);
+  assert.equal(db.prepare('SELECT status FROM device_recovery_requests WHERE id=?').get(request.id).status,'pending');
+  await deliver(77,`device:approve:${request.id}`);
+  assert.equal(db.prepare('SELECT status FROM device_recovery_requests WHERE id=?').get(request.id).status,'approved');
+  assert.ok(sent.some(message=>String(message.text||'').includes('دستگاه جدید تأیید')));
 });
 
 test('stale device recovery expires and no longer blocks a fresh request', async t => {

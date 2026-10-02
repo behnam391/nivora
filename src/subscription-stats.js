@@ -7,7 +7,9 @@ export async function readPanelStats(file = process.env.PANEL_STATS_PATH || 'dat
 
 export function enrichSubscription(order, stats = {}, now = Date.now()) {
   if(order.control_status&&order.control_status!=='active')order.subscription_status=order.control_status;
-  const row = stats[order.panel_client_id] || {};
+  const panelRow=stats[order.panel_client_id],row=panelRow||{};
+  const statsSyncedAt=Number(row.syncedAt)||null;
+  const statsAvailable=Boolean(panelRow),statsStale=Boolean(statsSyncedAt&&now-statsSyncedAt>5*60_000);
   const totalBytes = order.traffic_gb === 0 ? 0 : Number(row.totalBytes ?? (Number(order.traffic_gb || 0) * 1024 ** 3));
   const usedBytes = Number(row.upBytes || 0) + Number(row.downBytes || 0);
   const expiry = Number(row.expiryTime || 0);
@@ -16,5 +18,5 @@ export function enrichSubscription(order, stats = {}, now = Date.now()) {
     usagePercent:totalBytes?Math.min(100,Math.round(usedBytes*10000/totalBytes)/100):0,
     expiryTime, remainingDays:expiryTime?Math.max(0,Math.ceil((expiryTime-now)/86400000)):Number(order.duration_days||0),
     startsOnFirstUse:expiry<0, lastOnline:row.lastOnline||null,
-    panelEnabled:row.enabled===undefined?null:Boolean(row.enabled), statsSyncedAt:row.syncedAt||null};
+    panelEnabled:row.enabled===undefined?null:Boolean(row.enabled), statsAvailable,statsStale,statsSyncedAt};
 }
