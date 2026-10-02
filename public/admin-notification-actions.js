@@ -15,8 +15,8 @@
   document.addEventListener('DOMContentLoaded',()=>{
     const old=document.querySelector('#admin-notification-list');
     if(!old)return;
+    old.hidden=true;old.style.display='none';
     old.insertAdjacentHTML('beforebegin','<h3>درخواست‌های قابل پاسخ</h3><div id="admin-notification-actions" class="admin-notification-list"></div>');
-    old.insertAdjacentHTML('beforebegin','<h3>نمای کلی اعلان‌ها</h3>');
     document.querySelector('#admin-notification-actions').addEventListener('click',async event=>{
       const button=event.target.closest('button[data-action]'),card=button?.closest('article[data-id]');if(!button||!card)return;
       const {action}=button.dataset,id=card.dataset.id;
