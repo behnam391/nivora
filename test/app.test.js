@@ -26,6 +26,22 @@ const uploadReceipt=async(base,token='')=>{
   return {...receipt,cleanup:()=>unlink(resolve('receipts',filename)).catch(()=>{})};
 };
 
+test('searched admin customer includes each active subscription remaining traffic and validity',async t=>{
+  const now=new Date().toISOString(),expiry=Date.now()+8*86_400_000;
+  const {db,server,base}=await start({panelStatsReader:async()=>({'customer-test-client':{totalBytes:30*1024**3,upBytes:2*1024**3,downBytes:8*1024**3,expiryTime:expiry,syncedAt:Date.now()}})});
+  t.after(()=>server.close());
+  db.prepare("INSERT INTO accounts(id,phone,name,role,status,created_at,updated_at) VALUES('customer-stats','09120009090','مشتری آمار','customer','active',?,?)").run(now,now);
+  db.prepare("INSERT INTO plans(id,name,price_irr,traffic_gb,duration_days,device_limit,created_at,updated_at) VALUES('plan-stats','بسته آزمایشی',100000,30,30,1,?,?)").run(now,now);
+  db.prepare("INSERT INTO orders(id,customer_name,phone,plan_id,status,created_at,account_id,order_kind) VALUES('order-stats','مشتری آمار','09120009090','plan-stats','approved',?,'customer-stats','purchase')").run(now);
+  db.prepare("INSERT INTO subscriptions(id,order_id,status,panel_client_id,created_at) VALUES('sub-stats','order-stats','active','customer-test-client',?)").run(now);
+  const response=await fetch(`${base}/api/admin/accounts?role=customer&page=1&pageSize=10&q=${encodeURIComponent('مشتری آمار')}&includeSubscriptions=1`,{headers:{authorization:'Bearer test-token'}});
+  assert.equal(response.status,200);
+  const data=await response.json();assert.equal(data.total,1);assert.equal(data.items[0].subscriptions.length,1);
+  const subscription=data.items[0].subscriptions[0];assert.equal(subscription.remainingBytes,20*1024**3);assert.ok(subscription.remainingDays>=7&&subscription.remainingDays<=8);assert.equal(subscription.statsAvailable,true);
+  const legacy=await fetch(`${base}/api/admin/accounts?role=customer`,{headers:{authorization:'Bearer test-token'}}).then(result=>result.json());
+  assert.equal(legacy[0].subscriptions,undefined);
+});
+
 test('plan creation, order and manual approval flow', async t => {
   const { server, base } = await start();
   t.after(() => server.close());

@@ -2103,6 +2103,19 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const where=[],args=[];if(role){where.push('a.role=?');args.push(role);}if(query){where.push('(a.name LIKE ? OR a.phone LIKE ?)');args.push(like,like);}const clause=where.length?` WHERE ${where.join(' AND ')}`:'';
         const base=`SELECT a.id,a.phone,a.name,a.role,a.status,a.default_discount_percent,a.device_limit_override,a.created_at,a.updated_at,a.device_bound_at,CASE WHEN EXISTS(SELECT 1 FROM account_devices d WHERE d.account_id=a.id AND d.status='active') OR a.device_binding_hash IS NOT NULL THEN 1 ELSE 0 END device_bound,(SELECT COUNT(*) FROM device_recovery_requests r WHERE r.account_id=a.id AND r.status='pending') device_recovery_pending,COALESCE(w.balance_toman,0) balance_toman FROM accounts a LEFT JOIN wallet_accounts w ON w.account_id=a.id`;
         const rows=paginated?db.prepare(`${base}${clause} ORDER BY a.created_at DESC LIMIT ? OFFSET ?`).all(...args,pageSize,(page-1)*pageSize):db.prepare(`${base}${clause} ORDER BY a.created_at DESC`).all(...args),items=rows.map(row=>row.role==='customer'?{...row,...deviceSummary(db,row.id)}:row);
+        if(url.searchParams.get('includeSubscriptions')==='1'){
+          const customerIds=items.filter(item=>item.role==='customer').map(item=>item.id);
+          const grouped=new Map(customerIds.map(id=>[id,[]]));
+          if(customerIds.length){
+            const stats=await readAllStats();
+            const subscriptions=db.prepare(`SELECT o.id,o.account_id,o.created_at,p.name plan_name,p.traffic_gb,p.duration_days,s.status subscription_status,s.control_status,s.panel_client_id,l.name location_name
+              FROM orders o JOIN subscriptions s ON s.order_id=o.id JOIN plans p ON p.id=o.plan_id LEFT JOIN service_locations l ON l.id=o.location_id
+              WHERE o.account_id IN (${customerIds.map(()=>'?').join(',')}) AND o.order_kind='purchase' AND o.status='approved' AND s.status='active' AND COALESCE(s.control_status,'active')='active'
+              ORDER BY o.created_at DESC`).all(...customerIds);
+            for(const row of subscriptions)grouped.get(row.account_id)?.push(enrichSubscription(row,stats));
+          }
+          for(const item of items)if(item.role==='customer')item.subscriptions=grouped.get(item.id)||[];
+        }
         if(!paginated)return json(res,200,items);
         const total=Number(db.prepare(`SELECT COUNT(*) count FROM accounts a${clause}`).get(...args).count),totalPages=Math.max(1,Math.ceil(total/pageSize));
         return json(res,200,{items,page:Math.min(page,totalPages),pageSize,total,totalPages});
