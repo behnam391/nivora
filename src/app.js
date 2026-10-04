@@ -830,6 +830,14 @@ export function createApp(db, { adminToken = process.env.ADMIN_TOKEN || 'dev-onl
         const css = await readFile(resolve('public/admin-extra.css'));
         res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' }); return res.end(css);
       }
+      if (req.method === 'GET' && path === '/admin-dashboard.css') {
+        const css = await readFile(resolve('public/admin-dashboard.css'));
+        res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-store' }); return res.end(css);
+      }
+      if (req.method === 'GET' && path === '/admin-dashboard.js') {
+        const js = await readFile(resolve('public/admin-dashboard.js'));
+        res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' }); return res.end(js);
+      }
       if (req.method === 'GET' && path === '/admin-resellers.css') {
         const css = await readFile(resolve('public/admin-resellers.css'));
         res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' }); return res.end(css);

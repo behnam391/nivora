@@ -76,7 +76,15 @@ test('admin dashboard is served and protected API rejects invalid token', async 
   let r = await fetch(`${base}/admin`);
   assert.equal(r.status, 200);
   assert.equal(r.headers.get('x-robots-tag'), 'noindex, nofollow, noarchive');
-  assert.match(await r.text(), /مدیریت Nivora/);
+  const adminHtml=await r.text();
+  assert.match(adminHtml, /مدیریت Nivora/);
+  assert.match(adminHtml, /dashboard-action-list/);
+  assert.match(adminHtml, /admin-dashboard\.js/);
+  for(const asset of ['/admin-dashboard.css','/admin-dashboard.js']){
+    const response=await fetch(`${base}${asset}`);
+    assert.equal(response.status,200);
+    assert.ok((await response.text()).length>100);
+  }
   r = await fetch(`${base}/api/admin/plans`, { headers: { authorization: 'Bearer wrong' } });
   assert.equal(r.status, 401);
   r = await fetch(`${base}/reseller`); assert.equal(r.status,200); assert.equal(r.headers.get('x-robots-tag'),'noindex, nofollow, noarchive'); assert.match(await r.text(),/پنل همکاری Nivora/);
