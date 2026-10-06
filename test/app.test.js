@@ -92,6 +92,20 @@ test('admin dashboard is served and protected API rejects invalid token', async 
   r = await fetch(`${base}/brand-mark.png`); assert.equal(r.status,200); assert.equal(r.headers.get('content-type'),'image/png'); assert.ok((await r.arrayBuffer()).byteLength>1000);
 });
 
+test('marketing studio stays admin-only and never publishes during drafting',async t=>{
+  const {server,base}=await start();t.after(()=>server.close());
+  const path='/api/admin/ai/marketing-campaign',headers={'content-type':'application/json'},valid={audience:'کاربران اندروید',goal:'sales',channel:'telegram',brief:'معرفی مزیت‌های واقعی یک پلن به شکلی روشن و بدون ادعای تضمینی'};
+  let response=await fetch(`${base}${path}`,{method:'POST',headers,body:JSON.stringify(valid)});
+  assert.equal(response.status,401);
+  response=await fetch(`${base}${path}`,{method:'POST',headers:{...headers,authorization:'Bearer test-token'},body:JSON.stringify({...valid,goal:'invalid'})});
+  assert.equal(response.status,400);
+  response=await fetch(`${base}${path}`,{method:'POST',headers:{...headers,authorization:'Bearer test-token'},body:JSON.stringify({...valid,planId:'unknown-plan'})});
+  assert.equal(response.status,404);
+  response=await fetch(`${base}${path}`,{method:'POST',headers:{...headers,authorization:'Bearer test-token'},body:JSON.stringify(valid)});
+  assert.equal(response.status,400);
+  assert.equal((await response.json()).error,'AI_NOT_CONFIGURED');
+});
+
 test('admin and managing reseller can permanently purge customer accounts only with confirmation',async t=>{
   const {server,base,db}=await start();t.after(()=>server.close());const admin={authorization:'Bearer test-token','content-type':'application/json'},password=hashPassword('StrongPass88'),now=new Date().toISOString();
   const create=(id,phone,role,manager=null)=>{db.prepare('INSERT INTO accounts(id,phone,name,role,status,default_discount_percent,created_at,updated_at,password_hash,password_salt,managed_by_reseller_id) VALUES(?,?,?, ?,\'active\',0,?,?,?,?,?)').run(id,phone,id,role,now,now,password.hash,password.salt,manager);db.prepare('INSERT INTO wallet_accounts(id,account_id,balance_toman,updated_at) VALUES(?,?,0,?)').run(`w-${id}`,id,now)};
